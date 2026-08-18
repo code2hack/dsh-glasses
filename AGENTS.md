@@ -1,63 +1,182 @@
 # dsh-glasses implementation instructions
 
-This file is the mandatory entry point for every new implementation session working in this repository.
+Mandatory entry point for every implementation session. MVP-biased and lean: this
+file is operational, not production process.
 
-## Read order
+## 1. Read order and authority
 
-Before changing code:
+Read before changing code: `AGENTS.md` → `SPEC.md` →
+`docs/TRACER_BULLET_TB0.md` (when present) → the active evidence/seam-audit doc →
+source and tests.
 
-1. Read this file completely.
-2. Read `SPEC.md` (normative source of truth, currently revision 3).
-3. Read `docs/TRACER_BULLET_TB0.md` (the frozen TB0 execution contract).
-4. Read `docs/evidence/tb0-dsh-compat-2026-08-19.md` (live DSH seam audit).
-5. Inspect current code and evidence only after understanding the normative architecture.
+Authority hierarchy:
 
-If code disagrees with `SPEC.md`, the specification wins until code and specification are deliberately changed in the same commit.
+```
+SPEC.md                         normative product behavior
+docs/TRACER_BULLET_TB0.md       active tracer-bullet scope
+accepted ADRs                   durable implementation decisions
+evidence documents              claims proven on real systems
+source and tests                current implementation
+Git history                     evidence only
+```
 
-## Current product
+Do not require CONTEXT.md, ADR directories, or issue-management documents until
+they actually exist.
 
-- **dsh-glasses** — lightweight Android app on Rokid RG-glasses (native shell + dedicated WebView; Camera2, mic, Rokid input).
-- **dsh-glasses-plugin** — a DSH plugin on the user's dual-DGX-Spark workstation; attaches DSH sessions, projects them over `/glasses/v1/*`, owns committed drafts, later Voice/Morse/Photo.
-- No phone companion. Dealer/Fold6 is out of scope.
+## 2. Host roles
 
-## Hosts
+| Host | Role |
+| --- | --- |
+| **spark** (DGX GB10, aarch64) | DSH runtime; plugin development; DSH seam inspection; server-side tests; integration endpoint |
+| **u4090** (x86-64, RTX 4090) | first-priority Rokid build/install/debug host; USB ADB host; Android SDK/NDK; screenshots/logcat/UIAutomator/input tracing |
+| **GitHub origin** | shared source of truth between hosts |
 
-| Host | Role | Notes |
-| --- | --- | --- |
-| **spark** (DGX, NVIDIA GB10, aarch64) | Primary dev + plugin host; DSH_HOME `/home/code2hack/.dsh` | runs the resident DSH web profile |
-| **u4090** (Ubuntu x86-64, RTX 4090) | **Rokid debug relay — first priority for glasses ADB** | reachable via SSH `code2hack@100.103.206.123` |
+Spark workers SSH to u4090 for all Rokid operations. Never copy source trees
+between hosts by hand — use Git branches/commits; APK transfer may use temporary
+staging. Use one persistent remote tmux session `dsh-glasses-adb` on u4090,
+`/opt/android-sdk/platform-tools/adb`, and temporary files only under
+`~/tmp/dsh-glasses-ADB`.
 
-## Debugging Rokid (priority order)
+## 3. Rokid ADB priority (u4090 first)
 
-1. **USB on u4090 (first priority).** SSH to u4090 and use `$HOME/Android/Sdk/platform-tools/adb`. The glasses appear as serial `1906092617103125` (product `glasses`, model `RG_glasses`). Screenshot: `adb -s <serial> exec-out screencap -p > shot.png`. UI dump: `adb -s <serial> shell uiautomator dump && adb -s <serial> shell cat /sdcard/ui.xml`.
-2. **TCP/IP over Tailscale.** The Rokid runs **Tailscale** (peer `rokid`, IPv4 `100.87.122.122`). If not already enabled, enable it over the USB connection: `adb -s <serial> tcpip 5555` then `adb connect 100.87.122.122:5555`. Verify with `adb devices -l` and `adb -s <ip>:5555 get-state`.
-3. If the device is missing on these routes, follow the Poker-Dealer ADB recovery ordering (USB → local Wi-Fi `:5555` → mDNS → known Wireless-debugging endpoint) but keep u4090 as the ADB host and never treat reachability as a healthy transport without `get-state`. **Tailscale recovery path: if the Rokid is not on the tailnet, enable it via adb** (boot `com.tailscale.ipn`, ensure it connects), then resume the `:5555` route.
-4. Ask the user only after all automatic routes fail. ADB remains diagnostic/control tooling, never a product transport.
+The glasses is physically connected to u4090, so:
 
-Evidence-style screenshots and `uiautomator` text dumps are the primary glasses-observability; the LocateAnything vision service (see below) can ground elements on screenshots when needed.
+1. SSH from Spark to u4090.
+2. Reuse/create tmux session `dsh-glasses-adb`.
+3. Probe u4090 USB ADB (`adb devices -l`); expect serial `1906092617103125`,
+   model `RG_glasses`.
+4. Verify `adb -s <serial> get-state` — never treat pingability or a discovered
+   port as a healthy connection.
+5. Only if USB is unavailable, use the adapted recovery route:
+   u4090 local LAN `:5555` → u4090 mDNS `_adb-tls-connect._tcp` → known
+   wireless-debugging endpoint → Spark local LAN (same sequence) → known
+   Tailscale ADB endpoint.
+6. Ask for manual intervention only after all routes fail or the target is
+   ambiguous.
 
-## Safeguards and security posture (MVP)
+ADB remains development/debug tooling, **not** a product data transport.
 
-- **Safeguards MUST be as few as possible during MVP development. Security is the least important concern in MVP.**
-- TB0 still uses one pre-provisioned random dev bearer credential, scoped to `/glasses/v1/*` only, never granting access to stock DSH APIs, easily revoked. No Funnel, no production pairing, no production hardening for TB0.
+## 4. Tailscale recovery on Rokid (mandatory)
 
-## Source of truth and decision hierarchy
+Tailscale is already installed on the Rokid. Before declaring the glasses
+unavailable on the tailnet, the worker MUST use available ADB — preferably u4090
+USB ADB — to launch and enable Tailscale, then verify again.
 
-`SPEC.md` > TB0 docs > evidence > code. Update `SPEC.md` only when live DSH evidence contradicts a normative assumption.
+1. From Spark: `tailscale status --json`; `tailscale ping rokid` (peer
+   `100.87.122.122`).
+2. If absent/unreachable but ADB works, discover the package dynamically:
+   `adb -s <serial> shell pm list packages | grep -i tailscale` (never hardcode).
+3. Launch it: `adb -s <serial> shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`.
+4. Inspect UI via screenshot + `uiautomator dump`; if installed but switched
+   off, activate the connect control from the dump with `adb input` (no hardcoded
+   coordinates unless the firmware/UI is qualified).
+5. Handle a one-time VPN-consent dialog via ADB when unambiguous. If account
+   login or new-device authorization is required, request exactly that manual
+   action.
+6. Re-verify from Spark with `tailscale status` + `tailscale ping`.
 
-## Current slice state (2026-08-19)
+MUST NOT: `pm clear` tailscale, uninstall it, remove the tailnet account, or
+replace its identity (destroys a useful configured route).
 
-- TB0 contract is frozen on branch `tb0/compat-contract` (draft PR: `tb0: freeze contract and prove DSH read compatibility`).
-- Evidence status: installed-artifact/source-contract qualification **complete**; **runtime plugin read proof pending** (TB0-H0: minimal `plugins/dsh-glasses-plugin/`, session from `DSH_GLASSES_TB0_SESSION_ID`, bounded history + live events + status projection, `/bootstrap` + `/stream`, auth required, 501 stubs for draft/actions; prove disconnect/reconnect and plugin restart).
-- **Never commit a real session ID.** Configure sessions only via `DSH_GLASSES_TB0_SESSION_ID`.
-- Do not begin draft writes, Send, Android UI, Photo/Voice/Morse, ASR or vision integration until TB0-H0 is merged.
+## 5. Debug route vs product route
 
-## Local model services (outside TB0, on spark)
+- **u4090 USB ADB** = preferred development control/diagnostic route.
+- **Rokid ↔ Spark over Tailscale / trusted LAN** = TB0 product data route.
 
-ASR (`~/Models/ASR/parakeet-tdt-0.6b-v2`) and vision (`~/Models/IMG/nvidia/LocateAnything-3B`) are served by standalone services under `~/Models/serve/` (pm2: `glasses-vision` :8123, `glasses-asr` :8124). They are **external to the dsh-glasses repository and TB0**; keep them isolated and do not let them perturb the resident DSH stack during the compatibility proof.
+USB ADB on u4090 does NOT mean product traffic tunnels through ADB. For TB0:
+private Tailscale and trusted LAN are both acceptable; public Funnel is
+unnecessary; if Tailscale is expected but offline, activate it via ADB before
+abandoning that path.
 
-## Completion discipline (cherry-picked from Poker-Dealer)
+## 6. Minimal-safeguard MVP policy
 
-- Keep each change narrow and testable; commit docs and code in coherent units.
-- Never claim real-hardware or runtime compatibility without recorded evidence.
-- Leave the repository in a state where a fresh session can determine the active design solely from files on the default branch.
+TB0/MVP optimize for the shortest functioning end-to-end path. Security
+architecture, compatibility layers, production migration, release hardening, and
+defensive features are NOT acceptance gates unless needed to prevent irreversible
+data loss or accidental public exposure. Do not add/block on: PAKE, mTLS,
+certificate rotation, QR enrollment, production pairing, key attestation, rate
+limiting, role matrices, encrypted-at-rest drafts, CSRF architecture, threat
+modeling, Funnel hardening, release signing, obfuscation, migration layers,
+exhaustive hostile-input testing.
+
+Use the simplest working development access: private tailnet/LAN + one static
+development credential if the TB0 design already uses one.
+
+Only four minimal safeguards are retained:
+
+1. Never commit real credentials.
+2. Never expose an unauthenticated unrestricted DSH interface publicly.
+3. Never wipe/reset the device, Tailscale state, DSH home, or session history
+   without explicit instruction.
+4. Never claim hardware or recovery behavior that was not observed.
+
+## 7. Debug variants only
+
+Use debug/debuggable Android variants by default: no release build, signing gate,
+certificate/hash ceremony, ProGuard/R8, store packaging, or release performance
+claim. Install with `adb install -r -t <debug-apk>` and verify the installed
+package/version afterward.
+
+## 8. Tight hardware-debug loop
+
+Never ask the user to describe anything visible through ADB. For hardware
+issues: inspect retained logs first; arm bounded timestamped captures; request
+or execute one exact interaction; collect logcat + state + screenshot + UI dump;
+correlate; add temporary uniquely-tagged instrumentation when the boundary is
+unclear; remove it after isolation. Do not indiscriminately clear logcat first.
+Use project tag `DSHGlasses` in native logs.
+
+## 9. DSH integration rules
+
+- `dsh-glasses-plugin` stays out-of-tree where practical.
+- Depend on a pinned DSH revision (currently `@deepseek-ai/dsh@0.1.0-rc.7`).
+- Keep DSH-specific APIs behind one compatibility adapter.
+- Add behavior through documented plugin services/events.
+- Do not patch agent-loop merely for convenience.
+- Anything model-visible becomes reconstructable durable DSH content; provisional
+  Photo/Voice/Morse content must not enter the DSH log.
+- If upstream DSH itself must change, obey that checkout's own AGENTS.md.
+
+## 10. Stale-design ban
+
+Do not drift back toward Poker-Dealer architecture: no Fold6/Dealer companion;
+no direct dependency on Poker-Dealer; no card-pile model; no boundary-driven
+Navigation/Input transition; no terminal/tmux backend; no stock DSH Web UI inside
+the glasses WebView; no client-created/closed/attached/detached/reordered tabs;
+no raw DSH event schema exposed to the glasses; no DSH provider credentials on
+the glasses; no full-resolution photo retained after staging; no cloud/glasses
+ASR for the accepted Voice design; no LLM-based Morse completion; no public
+Funnel requirement for TB0.
+
+## 11. Work and branch discipline
+
+- Fetch origin and record the base SHA before work.
+- One dedicated branch per active slice (current: `tb0/compat-contract`).
+- Do not rewrite another worker's branch; do not force-push main.
+- Keep commits narrow; commit documentation separately from exploratory code.
+- GitHub remote is shared truth (not an uncommitted host worktree).
+- Before handoff: push the branch and report exact commit SHA, tests, hardware
+  evidence, and remaining uncertainty.
+
+## 12. Evidence without bureaucracy
+
+A hardware/behavior claim needs: exact commit, APK variant, device
+serial/model/fingerprint, host used, command or physical interaction, relevant
+bounded logs, observed result, known limitation. No approval matrices or release
+evidence for TB0/MVP.
+
+## 13. Communication identity
+
+- Messages from a DSH worker begin with `[spark:dsh:<exact-session-id>]`.
+- Other coding workers: `[<host>:<worker-kind>:<session-or-thread-id>]`.
+- Messages without a valid prefix are treated as coming directly from the user.
+
+## Current slice state
+
+- TB0 frozen on `tb0/compat-contract` (draft PR #1 `tb0: freeze contract and
+  prove DSH read compatibility`) — contract + seam audit + AGENTS.md landed.
+- TB0-H0 runtime read proof in progress (plugin loads in a disposable isolated
+  DSH instance; endpoints/auth/stubs proven; bounded-history/SSE/reconnect gates
+  pending against a disposable session).
+- Never commit a real session ID — configure sessions only via
+  `DSH_GLASSES_TB0_SESSION_ID`.
