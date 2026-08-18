@@ -3,6 +3,7 @@
 **Date:** 2026-08-19
 **Host:** spark (DGX Spark, NVIDIA GB10) — the dual-Spark workstation where `dsh-glasses-plugin` will run.
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/compat-contract`.
+**Status:** installed-artifact/source-contract qualification **complete**; runtime plugin read proof **pending** (tracked as TB0-H0).
 **Scope:** Host-only read compatibility proof required by the TB0 execution contract. No glasses, no Funnel, no draft mutation, no Send, no Photo/Voice/Morse. Nothing in this document contains credentials, private endpoints, prompt text, or session IDs.
 
 ---
@@ -24,7 +25,7 @@
 | Profile bundles (`dsh.profile.bundles`) | `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@dsh-external/dsh-super-injector` (all resolved at `0.1.0-rc.7` where versioned) |
 | Profile root config | `cordis.yml` = `[]` (empty; the tree is composed as patches) |
 | User patch layer | `cordis.patch.yml` — currently `mcp-browser` (@playwright/mcp, headless chromium) + `mcp-chatgpt` (@playwright/mcp `--cdp-endpoint http://127.0.0.1:9222`) |
-| Effective composed config | `dsh --profile web --dump-config` → 520-line tree (timer, hmr[disabled], llm, session, typert, typert-loader, typert-gateway/api-gateway, session-title, user-questions, agent, agent-default-model, …). Full dump archived beside this file for the record. |
+| Effective composed config | `dsh --profile web --dump-config` → 520-line tree (timer, hmr[disabled], llm, session, typert, typert-loader, typert-gateway/api-gateway, session-title, user-questions, agent, agent-default-model, …). Raw environment-specific dump retained locally only (NOT committed); SHA-256 `27d34c0724c0069e75d119fa59da51b09ebb1f69a59f137727896b6e28a88c79`. |
 | Plugin loading mechanism | `dsh` CLI boots the profile; bundles named in `dsh.profile.bundles` resolve first from the dsh installation, then from the profile's `node_modules`; the cordis loader (`cordis-plugin-loader`, `dsh-cordis-host-runner`/`dsh-app-boot`) composes `cordis.patch.yml` over bundle layers. Out-of-tree plugins are added through `dsh plugin` → pnpm in the profile dir. |
 | Persisted session store | `$DSH_HOME/sessions/<workspace-slug>/<session-id>/session.jsonl.zstd` — 6 durable session logs present, including the live session used for this proof. |
 
@@ -115,7 +116,7 @@ The plugin will call these through the DSH service context (`ctx`) exactly as sh
 - Ran `dsh --profile web --dump-config` against the live `web` profile; 520-line composed tree captured (see §1).
 - Confirmed the durable session store layout and 6 persisted logs under `$DSH_HOME/sessions/`.
 - Read all contract signatures from the installed packages' shipped TypeScript declarations (`lib/types/*.d.ts`) — **no memory, no docs-only claims**.
-- The disposable live session used for read correlation is the current DSH session of this workspace (`$DSH_HOME/sessions/<workspace-slug>/session-4399885b-…/session.jsonl.zstd`); no private content was read or recorded.
+- A disposable workspace session under `$DSH_HOME/sessions/<workspace-slug>/` was used for read correlation. No private content was read or recorded, and **no session identity is committed** in this document. (TB0-H0 will run the runtime proof against a fresh disposable session configured only via `DSH_GLASSES_TB0_SESSION_ID`.)
 
 ## 4. Directly proven vs inferred/residual
 

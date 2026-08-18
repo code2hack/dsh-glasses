@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0 — one-session text round trip
 
-**Status:** Normative execution contract for the first tracer bullet.
+**Status:** TB0 contract frozen; runtime plugin read proof **pending** (TB0-H0).
 **Date:** 2026-08-19
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/compat-contract`
 **Normative source:** `SPEC.md` (revision 3). When TB0 implementation contradicts a normative SPEC assumption, `SPEC.md` is updated in the same commit.
@@ -19,7 +19,7 @@ Supporting evidence: `docs/evidence/tb0-dsh-compat-2026-08-19.md`.
 | pnpm / npm | `11.22.0` / `11.11.0` |
 | Host | spark (DGX Spark, NVIDIA GB10) |
 | Plugin package name | `dsh-glasses-plugin` |
-| Source commit SHA | recorded as `version + dist integrity` until a matching upstream SHA is confirmed (see evidence §1) |
+| DSH artifact identity | `@deepseek-ai/dsh@0.1.0-rc.7` + exact npm dist-integrity `sha512-ZceDCJ8FAywih+USW/OMk9jEhunlvJBGEz4kqrhau23hPzbciOazZrywH0nBRsaalSeAJ1JGBmjtw4OSjToStw==`; upstream source SHA unavailable from the installed artifact |
 
 ## 2. Scope
 
@@ -76,7 +76,7 @@ Project-owned namespace unless the compatibility probe proves a concrete conflic
 | `GET  /glasses/v1/bootstrap` | bounded initial history, attachment projection, current status, committed draft |
 | `GET  /glasses/v1/stream` | live SSE event stream (host holds response open) |
 | `POST /glasses/v1/draft/mutations` | plugin-authoritative draft mutations (monotonic revision) |
-| `POST /glasses/v1/actions` | semantic actions: Send / Steer / cancel |
+| `POST /glasses/v1/actions` | semantic action: **Send only** for TB0 (`Steer` reserved for TB0.1; `Interrupt` for a later slice) |
 
 Unrestricted DSH APIs MUST NOT be exposed through this namespace.
 
