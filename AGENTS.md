@@ -180,3 +180,14 @@ evidence for TB0/MVP.
   pending against a disposable session).
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
+
+- Never commit a real session ID — configure sessions only via
+  `DSH_GLASSES_TB0_SESSION_ID`.
+
+## Hosted model services (outside TB0, user-deployed, on spark)
+
+- Vision "eyes": `lfm2.5-vl-3b` via vLLM at `127.0.0.1:8889`
+  (OpenAI-compatible `/v1/chat/completions`; images as base64 `image_url`
+  data URLs). Do not redeploy; this replaced the earlier LocateAnything attempt.
+- ASR: `nemotron-3.5-asr` at `127.0.0.1:8090` (endpoint format TBD while live).
+- Keep both isolated from TB0 and from the resident DSH/text-serving stack.
