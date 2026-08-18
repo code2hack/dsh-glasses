@@ -1,6 +1,6 @@
 # dsh-glasses Implementation Specification
 
-**Status:** Draft normative implementation contract, revision 1  
+**Status:** Draft normative implementation contract, revision 2  
 **Date:** 2026-08-18  
 **Repository:** `code2hack/dsh-glasses`  
 **Products:** **dsh-glasses** = Rokid glasses client; **dsh-glasses-plugin** = DeepSeek Harness plugin and glasses server
@@ -37,6 +37,7 @@ The first production-capable version MUST support:
 - a glasses-native word cursor, selection, copy, paste, replace, and cut interaction model;
 - an invisible head-navigation mode for scrolling and tab switching;
 - Photo capture through Camera2, with immediate server-side staging and later atomic draft-token commitment;
+- streaming Voice recognition on the DSH server host, with provisional transcript slices and explicit revision-bound commitment into the synchronized draft;
 - exact mixed text/image ordering in the canonical draft and submitted DSH message;
 - explicit handling of multimodal, text-only, and unknown-capability models.
 
@@ -54,7 +55,7 @@ The initial product MUST NOT attempt to provide:
 - provider credential or model-runtime management from the glasses;
 - silent image removal, flattening, OCR, captioning, or placeholder substitution for a text-only model;
 - durable storage of full-resolution draft images on the glasses after successful plugin staging;
-- final Voice or Morse interaction semantics before those modes receive their own accepted design revisions.
+- final Morse interaction semantics before that mode receives its own accepted design revision.
 
 ### 1.3 Relationship to Poker-Dealer
 
@@ -88,6 +89,7 @@ Dual DGX Spark workstation
 │    ├─ glasses projection reducer                                     │
 │    ├─ committed draft and rich-clipboard store                       │
 │    ├─ Photo staging/session manager                                  │
+│    ├─ Voice recognition/session manager                              │
 │    ├─ authentication and device authorization                        │
 │    └─ glasses HTTP/SSE edge                                          │
 └───────────────────────────────▲──────────────────────────────────────┘
@@ -172,6 +174,8 @@ For photos, two additional states exist:
 
 A photo is not committed draft content merely because its bytes were staged.
 
+For Voice, an **uncommitted transcript slice** is recognition output owned by one active Voice session that has not yet advanced the plugin-authoritative draft revision. It may be displayed provisionally on synchronized surfaces but is not committed draft content or DSH session history.
+
 ### 3.6 Control and action
 
 A **raw event** is a Rokid SDK event, Android broadcast, `KeyEvent`, `MotionEvent`, HID event, or IMU sample.
@@ -188,7 +192,7 @@ SECONDARY
 COMMAND
 ```
 
-A **semantic action** is the mode-specific interpretation of a control, such as moving the cursor, scrolling the viewport, switching a tab, cutting a token range, committing a Photo session, sending a draft, steering, or interrupting.
+A **semantic action** is the mode-specific interpretation of a control, such as moving the cursor, scrolling the viewport, switching a tab, cutting a token range, committing a Photo session, committing or discarding a Voice slice, sending a draft, steering, or interrupting.
 
 Raw device events MUST NOT leak into web UI reducers, draft logic, or DSH mutation code.
 
@@ -222,6 +226,8 @@ DSH is authoritative for:
 - plugin-side rich clipboard references;
 - pending/unknown mutation identities and reconciliation state;
 - Photo-session staging metadata;
+- installed and selected Voice model packs, revisions, profiles, and runtime state;
+- active Voice-session identities, sample offsets, fences, provisional transcripts, and committed-slice identities;
 - provider/modality preflight results exposed to the glasses.
 
 ### 4.3 Glasses authority
@@ -237,13 +243,15 @@ DSH is authoritative for:
 - optimistic unacknowledged draft presentation;
 - Camera2 preview state;
 - one current captured image while it is being staged;
-- ephemeral Photo-session descriptors mirrored from plugin acknowledgments.
+- ephemeral Photo-session descriptors mirrored from plugin acknowledgments;
+- the live glasses-microphone capture stream and its source-owned next-sample offset;
+- a bounded unsent Voice-audio queue needed to bridge transport and fence acknowledgments.
 
-The glasses MUST NOT be the durable authority for committed draft text, choices, image tokens, or original photo assets.
+The glasses MUST NOT be the durable authority for committed draft text, choices, image tokens, original photo assets, Voice model state, or committed Voice slices.
 
 ### 4.4 Commitment rule
 
-Only a successful plugin acknowledgment advancing the authoritative draft revision makes text, choices, or image tokens committed.
+Only a successful plugin acknowledgment advancing the authoritative draft revision makes text, choices, image tokens, or a Voice transcript slice committed.
 
 The glasses MAY render an optimistic local mutation, but it MUST retain the operation identity and expected base revision until one of these outcomes is established:
 
@@ -279,6 +287,8 @@ All code outside this adapter MUST depend on project-owned types rather than uns
 ### 5.1 Model-visible content
 
 Anything submitted to a model MUST be reconstructable from the DSH session log. Canonical submitted images MUST be represented by durable DSH image attachment references, not browser object URLs, glasses paths, plugin staging paths, provider URLs, or base64 embedded in durable session events.
+
+Voice audio and provisional transcript slices are not model-visible content. Only Voice text committed into a plugin-owned draft and later accepted through Send, Steer, or request resolution may become model-visible DSH content.
 
 ### 5.2 Mixed-content qualification
 
@@ -361,6 +371,8 @@ The transport implementation may evolve, but the initial protocol SHOULD use:
 - bounded history paging for older projection content;
 - session-authorized image reads.
 
+Voice audio MAY use a dedicated authenticated streaming request or a future bidirectional transport, but it MUST preserve the same connection epoch, session fencing, queue bounds, and reserved control capacity defined by this specification.
+
 A later WebSocket transport MAY replace SSE only if measurements justify it without weakening the protocol invariants below.
 
 ### 7.1 Connection epoch and revisions
@@ -409,9 +421,9 @@ An operation with stale attachment generation, control generation, target, draft
 
 ### 7.3 Slow clients and streaming
 
-The plugin MUST coalesce high-frequency model deltas before sending them to the 480×640 client. It MUST NOT require one DOM update per model token.
+The plugin MUST coalesce high-frequency model and provisional Voice transcript deltas before sending them to the 480×640 client. It MUST NOT require one DOM update per model token or ASR decoder update.
 
-A slow client MUST be disconnected and resynchronized rather than silently dropping semantic revisions.
+A slow client MUST be disconnected and resynchronized rather than silently dropping semantic revisions. Voice audio backpressure follows the stricter bounded-queue and terminal-failure rules in section 23.
 
 ---
 
@@ -451,7 +463,7 @@ END or CANCEL
 
 The first physical source beginning an interaction owns canonical input until it ends or cancels. Competing raw events are ignored and never queued.
 
-Focus loss, `ACTION_CANCEL`, device disconnection, application backgrounding, or native-bridge loss MUST cancel an unfinished interaction. Cancellation MUST NOT synthesize a click, double-click, cut, paste, mode switch, wheel choice, Photo capture, or Photo commit.
+Focus loss, `ACTION_CANCEL`, device disconnection, application backgrounding, or native-bridge loss MUST cancel an unfinished interaction. Cancellation MUST NOT synthesize a click, double-click, cut, paste, mode switch, wheel choice, Photo capture, Photo commit, Voice fence, or Voice exit.
 
 ### 8.2 Click classification
 
@@ -699,7 +711,7 @@ The wheel SHOULD reuse relative-pose dead zone, dominant-axis selection, stable 
 
 Photo is disabled for a request-choice-only target and enabled for an ordinary composer or a request target that includes an editable input field.
 
-Voice and Morse placement is fixed by this revision, but their internal control protocols remain TBD.
+Voice is governed by section 23. Morse placement is fixed by this revision, but its internal control protocol remains TBD.
 
 ---
 
@@ -1044,16 +1056,17 @@ A request panel may contain:
 
 Choices remain structured and are synchronized as part of the plugin-authoritative target draft.
 
-Photo is disabled for choices-only panels.
+Photo is disabled for choices-only panels. Voice is disabled for choices-only panels unless an editable **Other** field has been activated.
 
 For choices-plus-input panels:
 
 - Photo inserts image tokens only into the editable input sequence at its pinned cursor;
+- Voice commits recognized text only into the exact editable input sequence at its pinned cursor;
 - existing selected choices remain unchanged;
 - the command wheel bottom action resolves the exact request only when the complete response is valid;
 - request resolution submits choices and input as one atomic semantic response when required by the DSH request contract.
 
-The plugin MUST NOT reinterpret a Photo or text input as a normal follow-up when the target is a request response.
+The plugin MUST NOT reinterpret Photo, Voice, or text input as a normal follow-up when the target is a request response.
 
 ---
 
@@ -1112,6 +1125,12 @@ Committed draft images may render as lightweight `📷` tokens without downloadi
 
 Historical session images MAY use plugin-provided bounded previews, but full originals MUST be fetched only on explicit demand and MUST remain nonpersistent on the glasses unless a later accepted cache policy says otherwise.
 
+### 20.3 Provisional Voice rendering
+
+A Voice provisional transcript MUST be visually distinguishable from committed draft text on both the glasses and the synchronized DSH-side draft surface.
+
+Rendering or replacing a provisional transcript MUST NOT advance the committed draft revision, enter session history, or alter the pinned insertion range. A commit, discard, deletion, failure, or terminal result bypasses ordinary coalescing and removes or replaces the provisional projection immediately.
+
 ---
 
 ## 21. Security and privacy
@@ -1122,17 +1141,19 @@ The glasses edge MUST:
 
 - use TLS;
 - authenticate a device-specific, revocable identity;
-- authorize every session, draft, image, and mutation against that device's attachment set;
+- authorize every session, draft, image, Voice stream, and mutation against that device's attachment set;
 - avoid exposing stock DSH endpoints or credentials;
 - avoid placing provider credentials, Funnel administration secrets, or general DSH credentials on the glasses;
-- prevent one device from reading another device's drafts or staged assets;
-- keep original images, draft text, choices, and session content out of ordinary logs and diagnostics;
+- prevent one device from reading another device's drafts, staged assets, audio, or provisional transcripts;
+- keep original images, draft text, choices, raw Voice audio, provisional transcripts, and session content out of ordinary logs and diagnostics;
 - use an origin-checked, narrowly typed native WebView bridge;
 - reject arbitrary native signing, filesystem, camera, microphone, or shell requests from untrusted web origins.
 
 The exact initial pairing ceremony remains TBD, but it MUST issue device-specific revocable credentials and MUST NOT rely only on secrecy of the Funnel URL.
 
 Photo originals and staged files MUST use private plugin/DSH storage with restrictive permissions. Temporary glasses captures MUST use private backup-excluded storage and MUST be deleted after acknowledged staging or terminal failure.
+
+Raw Voice audio and provisional transcript slices MUST remain bounded, transient, and excluded from durable drafts, DSH session history, ordinary diagnostics, and backups. The streaming-only Voice design MUST discard consumed audio as soon as the recognizer and any unresolved fence no longer require it.
 
 ---
 
@@ -1153,7 +1174,7 @@ On reconnect, the glasses:
 
 Unfinished gestures, selections whose target no longer exists, command wheels, head anchors, Photo preview, Voice, Morse, and uncommitted modal content MUST NOT resume automatically.
 
-Committed draft text, choices, and image tokens are restored from the plugin snapshot without downloading original images.
+Committed draft text, choices, image tokens, and committed Voice slices are restored from the plugin snapshot without downloading original images or restoring raw audio.
 
 ### 22.2 Unknown operations
 
@@ -1166,6 +1187,9 @@ The client MUST NOT generate a new operation identity and replay:
 - choice selection;
 - Photo-session commit;
 - staged-image deletion;
+- Voice-slice commit;
+- Voice-slice discard;
+- Voice-session slice deletion;
 - Send;
 - Steer;
 - Interrupt;
@@ -1177,23 +1201,402 @@ The plugin MUST rebuild session projections from DSH logs and restore its own co
 
 A plugin generation change invalidates transient modes and old write eligibility. The glasses returns to read-only state until a new snapshot is installed.
 
+Voice never resumes across plugin generation replacement, glasses reconnect, process replacement, or application backgrounding. Previously committed slices remain in the plugin-owned draft; provisional audio and text are discarded.
+
 A DSH restart during an accepted or unknown Send/Steer MUST produce an explicit accepted, rejected, interrupted, or unknown result based on authoritative history; the plugin MUST NOT fabricate completion.
 
 ---
 
-## 23. Voice and Morse placeholders
+## 23. Voice mode
 
-Voice and Morse remain command-wheel modes with these currently accepted high-level invariants:
+Voice is a modal Input mode entered from the command wheel. It converts glasses-microphone audio into reviewable text in the plugin-authoritative draft. Voice never directly sends, steers, interrupts, or resolves a request.
 
-- they are entered only from eligible Input targets;
-- they modify the reviewed plugin-authoritative draft or eligible request-input target;
-- they do not directly Send, Steer, Interrupt, or resolve a request;
+### 23.1 Eligible targets
+
+Voice may target:
+
+- the ordinary DSH-session composer while the glasses is in Input mode;
+- an eligible free-text request-answer field;
+- the editable **Other** field of an option question;
+- the editable input portion of a request panel containing choices plus input.
+
+Voice MUST NOT target:
+
+- a read-only session card;
+- a choice-only request panel without an active editable **Other** field;
+- a stale, collapsed, detached, unauthorized, or noneditable target.
+
+### 23.2 Voice start fence
+
+Selecting Voice sends the plugin a start request pinned to:
+
+- connection epoch and plugin generation;
+- attachment ID and attachment generation;
+- exact DSH session identity;
+- exact target field identity;
+- exact target revision;
+- exact insertion cursor or stable draft anchor;
+- control generation;
+- microphone source, fixed to the glasses microphone in the initial version;
+- selected streaming ASR model-pack ID and immutable revision;
+- selected validated profile identity and revision or digest;
+- fresh `voiceSessionId`.
+
+The glasses temporarily shows:
+
+```text
+Preparing…
+```
+
+and locks the exact target.
+
+The glasses native shell MUST confirm:
+
+- the application remains foreground;
+- microphone permission is granted;
+- audio capture can be opened;
+- the native bridge and requested connection epoch remain valid;
+- the preparation has not been cancelled.
+
+The plugin MUST confirm:
+
+- the glasses-to-plugin connection is authenticated;
+- the attachment and target are authorized;
+- the target still exists and is editable;
+- the expected target revision still matches;
+- the requested streaming model pack is installed and integrity-verified;
+- the profile is valid for that exact pack revision;
+- the recognition runtime has loaded;
+- the `voiceSessionId` is fresh;
+- bounded runtime resources are available.
+
+The microphone MUST NOT open until both sides have accepted preparation.
+
+Failure cancels preparation, unlocks the target, returns to ordinary Input, and shows `Voice unavailable` for one second. The plugin MAY retain a sanitized diagnostic cause, but MUST NOT log raw audio or transcript content.
+
+The plugin owns the complete authoritative pack/profile definition. The glasses carries only the selected identities and expected revisions needed to fence preparation.
+
+### 23.3 Recognition location and runtime
+
+Recognition runs locally on the DSH server host under `dsh-glasses-plugin` or a plugin-owned local worker.
+
+The initial Voice path MUST NOT use:
+
+- Rokid cloud speech recognition;
+- Android cloud speech recognition;
+- glasses-side ASR inference;
+- a phone companion;
+- an external cloud ASR service;
+- the active conversational model.
+
+Only streaming ASR models are supported. Offline batch recognition, whole-slice spool decoding, and Poker-Dealer's offline Silero-VAD path are not part of this project.
+
+Voice runtime admission MUST NOT assume unused GPU memory merely because the host has accelerators. The implementation may use CPU or a separately admitted accelerator backend, but it MUST remain compatible with the resident DSH text-serving workload and fail preparation cleanly when resources are unavailable.
+
+### 23.4 Microphone source
+
+The only initial source is the **glasses microphone**.
+
+`dsh-glasses` owns microphone permission, audio capture, and the monotonic source sample counter. It transmits audio to `dsh-glasses-plugin` and never hot-switches to another source within an active Voice session.
+
+Permission denial before start produces `Voice unavailable`. Permission revocation, microphone failure, or audio-focus loss after start terminates Voice under section 23.13.
+
+### 23.5 Audio format and transport
+
+The glasses produces:
+
+```text
+16 kHz
+mono
+signed little-endian PCM16
+```
+
+Every audio frame contains whole samples and an exact first-sample offset:
+
+```ts
+interface VoiceAudioFrame {
+  voiceSessionId: string
+  firstSampleOffset: number
+  pcm16: ArrayBuffer
+}
+```
+
+The plugin rejects rather than guesses around:
+
+- sample gaps;
+- overlaps;
+- duplicate sample ranges;
+- odd-byte or malformed PCM16 alignment;
+- frames from the wrong Voice session;
+- frames after termination;
+- frames preceding the acknowledged sample position.
+
+There is no compressed audio codec, retained-audio replay, or recovery of an unfinished Voice stream in the initial version.
+
+At 16 kHz mono PCM16, two seconds of raw audio is approximately 64 KiB. The initial queued-audio budget SHOULD be calibrated around that value and MUST remain bounded.
+
+Transport capacity MUST be reserved for:
+
+- commit fences;
+- discard fences;
+- terminal exit;
+- acknowledgments;
+- failures;
+- cancellation.
+
+An audio backlog MUST NOT starve the operation that commits, discards, or stops Voice.
+
+### 23.6 Provisional transcript model
+
+The plugin owns exactly one current uncommitted transcript slice for each active Voice session.
+
+Recognition output appears in the pinned target as visibly provisional text. It is not part of the authoritative committed draft and MUST NOT advance the draft revision.
+
+Interim projections SHOULD be coalesced to at most approximately 10 Hz. Commit acknowledgments, discard/delete results, failures, and terminal events bypass coalescing.
+
+The following remain provisional:
+
+- recognizer partials;
+- recognizer “final” output;
+- punctuation produced at a speech pause;
+- endpoint detection;
+- internal streaming-model segment boundaries.
+
+Silence MUST NOT automatically commit text. Only an explicit `PRIMARY` operation can commit the current slice.
+
+The provisional slice MUST NOT enter DSH session history, model context, persistent logs, backups, or a committed draft snapshot.
+
+### 23.7 Voice controls
+
+Voice overrides the ordinary Input control meanings:
+
+| Control | Voice behavior |
+| --- | --- |
+| `PRIMARY` | fence and commit the current provisional slice; begin a new empty slice |
+| long `SECONDARY`, current slice nonempty | fence and discard the current provisional slice; begin a new empty slice |
+| long `SECONDARY`, current slice empty | delete the most recent slice committed by this exact Voice session |
+| short `COMMAND` | normal Voice exit; preserve committed slices and discard provisional state |
+| long `COMMAND` | immediate/emergency Voice exit; never reopen the command wheel |
+| every other control | no-op |
+
+Ordinary cursor navigation, selection, paste, replace, cut, HUD hiding, tab switching, and command-wheel reopening are unavailable while Voice is active.
+
+If `PRIMARY` fences a genuinely empty slice, it commits no empty mutation, acknowledges as a no-op, and begins or retains an empty next slice.
+
+If long `SECONDARY` observes an empty current slice and this Voice session has no safely deletable committed slice, it is a no-op and Voice remains active.
+
+### 23.8 Commit by audio fence
+
+`PRIMARY` MUST NOT commit the last partial text merely because it is currently displayed.
+
+When `PRIMARY` is accepted:
+
+1. the glasses microphone source snapshots its exact next-sample offset;
+2. that offset becomes the operation's audio fence;
+3. every sample before the fence belongs to the current slice;
+4. every sample at or after the fence belongs to the next slice;
+5. the plugin consumes every pre-fence sample;
+6. the streaming recognizer finalizes the exact pre-fence interval;
+7. the plugin performs one atomic revision-bound text insertion at the pinned Voice cursor;
+8. the plugin assigns a stable committed-slice identity;
+9. the plugin acknowledges the exact operation and authoritative draft revision;
+10. post-fence samples become the beginning of the next provisional slice without leaving Voice.
+
+The glasses' last displayed partial is never authoritative.
+
+While the commit fence is unresolved:
+
+- another `PRIMARY` is unavailable;
+- long `SECONDARY` is unavailable;
+- short `COMMAND` is unavailable;
+- capture may continue only within the bounded queue;
+- long `COMMAND` remains available as the emergency exit.
+
+Committed text becomes visible on both the glasses and the synchronized DSH-side draft surface only through the authoritative draft revision.
+
+### 23.9 Long SECONDARY: discard or delete
+
+Long `SECONDARY` captures the microphone's exact next-sample offset as a discard/delete fence. The plugin decides whether the current slice was empty from authoritative pre-fence state, not a possibly stale screen projection.
+
+#### Nonempty current slice
+
+The plugin:
+
+1. consumes enough exact pre-fence audio to settle the slice boundary;
+2. discards the provisional transcript and recognition state for that slice;
+3. discards queued data belonging to the discarded slice;
+4. commits no draft text;
+5. starts the next slice with post-fence samples.
+
+Voice remains active.
+
+#### Empty current slice
+
+The plugin deletes only the most recent draft slice committed by the exact `voiceSessionId`.
+
+It MUST NOT delete:
+
+- text that existed before Voice started;
+- arbitrary neighboring words;
+- text committed by another Voice session;
+- text in another target;
+- a slice whose exact committed identity can no longer be mapped safely after later edits.
+
+Each committed Voice slice therefore has identity equivalent to:
+
+```ts
+interface VoiceCommittedSlice {
+  voiceSessionId: string
+  sliceId: string
+  operationId: string
+  targetId: string
+  committedDraftRevision: number
+  insertedRange: StableDraftRange
+}
+```
+
+If safe exact deletion is no longer possible, the plugin rejects and reconciles rather than guessing. Voice remains active after a successful deletion, rejection, or valid no-op.
+
+### 23.10 Voice exit
+
+Short `COMMAND` is the normal exit operation when no commit/discard mutation is unresolved.
+
+It:
+
+- stops microphone capture;
+- terminates the plugin recognition session;
+- discards queued audio;
+- discards the current provisional transcript;
+- preserves all previously committed Voice slices;
+- releases the target-scoped Voice lease;
+- unlocks the target;
+- returns to ordinary Input mode.
+
+Long `COMMAND` never opens the action wheel while Voice is active. It performs an immediate/emergency exit and remains available while a commit or discard fence is unresolved.
+
+A pending mutation and terminal exit follow one-winner semantics:
+
+- if commit won first, its committed text remains and exit discards only later provisional state;
+- if exit won first, the pending mutation is rejected;
+- late audio frames, recognition outputs, and callbacks are fenced out after termination.
+
+No normal exit notice is required. A failure may show one of the notices in section 23.13.
+
+### 23.11 Streaming-only duration and resource rules
+
+There is no project-defined maximum Voice-session duration.
+
+A Voice session may continue while:
+
+- the glasses remains foreground and authorized;
+- the microphone remains available;
+- the target remains valid;
+- the transport remains within its bounded queue;
+- the streaming recognizer remains healthy;
+- plugin resource policy permits continued recognition.
+
+No fixed duration means neither unbounded queued PCM nor retention of the whole session's raw audio. Consumed samples MUST be discarded as soon as the recognizer and unresolved fences no longer require them.
+
+A streaming model may use endpointing, punctuation, internal acoustic chunks, language detection, or bounded recurrent/cache state. Those are implementation details and MUST NOT create automatic draft commits.
+
+### 23.12 Revision and no-replay safety
+
+Every Voice commit, discard, deletion, and exit includes or is fenced by:
+
+- `voiceSessionId`;
+- monotonic Voice-session revision;
+- `operationId`;
+- exact target identity;
+- expected draft revision;
+- source-owned sample fence where applicable;
+- attachment and connection generation;
+- control generation.
+
+The plugin permits at most one unresolved nontermination Voice mutation at a time.
+
+Duplicate delivery of the same operation is idempotent. A lost acknowledgment is reconciled through the same operation identity and base revision. The glasses MUST NOT create a fresh operation and replay a Voice commit, discard, or deletion that may already have succeeded.
+
+### 23.13 Failure and forced exit
+
+These conditions terminate Voice:
+
+- audio-queue overflow;
+- malformed, discontinuous, duplicate, or wrong-session audio;
+- recognition-runtime failure;
+- irreconcilable atomic draft-commit failure;
+- microphone permission revocation;
+- microphone or audio-focus loss;
+- glasses application backgrounding or process loss;
+- target disappearance or loss of editability;
+- attachment detachment or generation change;
+- plugin process/generation replacement;
+- glasses-to-plugin connection loss;
+- DSH host loss;
+- irreconcilable draft-revision conflict.
+
+Termination:
+
+- preserves committed Voice slices;
+- discards current provisional audio and text;
+- clears transient recognition state;
+- releases the target-scoped Voice lease;
+- unlocks the target when that target still exists;
+- fences late callbacks;
+- returns to the latest authoritative UI state or reconnect flow.
+
+The glasses MAY show:
+
+```text
+Voice unavailable
+Voice overloaded
+Voice failed
+Voice interrupted
+```
+
+for a bounded transient duration. Detailed diagnostics MUST remain sanitized and MUST NOT contain raw audio or transcript text.
+
+### 23.14 Synchronization without explicit handoff
+
+There is no Dealer-style user-facing human-control handoff between `dsh-glasses` and the DSH-side session UI.
+
+Both surfaces observe one plugin-authoritative committed draft. Every committed Voice slice appears on both surfaces as soon as the authoritative draft revision advances. The current provisional slice MAY also appear on the DSH-side UI, but it MUST remain visibly provisional and nonpersistent.
+
+The first implementation MUST use an automatic target-scoped Voice lease:
+
+- entering Voice acquires exclusive mutation authority for the exact target;
+- no user-facing “take control” or handoff action is required;
+- the DSH-side UI remains fully usable for other sessions and targets;
+- the exact Voice target is temporarily read-only on other surfaces;
+- both surfaces continue receiving committed and provisional projections;
+- normal exit or forced termination releases the lease automatically.
+
+An external same-target mutation while Voice owns the lease MUST be rejected or terminate Voice according to an explicit adapter rule. It MUST NOT be merged by positional guess.
+
+Committed Voice slices live first in the plugin-owned draft. They do not become durable DSH session-history events or model-visible text until the later Send, Steer, or request-resolution action succeeds:
+
+```text
+speech
+→ provisional plugin transcript
+→ PRIMARY fence
+→ committed synchronized draft slice
+→ later Send / Steer / request resolution
+→ durable DSH user message
+→ model-visible content
+```
+
+### 23.15 Morse placeholder
+
+Morse remains a command-wheel mode with these accepted high-level invariants:
+
+- it is entered only from eligible Input targets;
+- it modifies the reviewed plugin-authoritative draft or eligible request-input target;
+- it does not directly Send, Steer, Interrupt, or resolve a request;
 - committed output uses revision-bound draft mutations;
-- uncommitted modal state is discarded on forced exit, target loss, control loss, process loss, or connection-generation change;
+- uncommitted modal state is discarded on forced exit, target loss, process loss, or connection-generation change;
 - committed draft content survives;
-- their detailed control mappings, commit/delete behavior, recognition/runtime architecture, hints, and exit semantics are TBD.
+- its detailed controls, timing, completion, commit/delete behavior, hints, and exit semantics remain TBD.
 
-The old Poker-Dealer Morse and ASR designs are reference material only and are not normative for this project.
+The old Poker-Dealer Morse design is reference material only and is not normative for this project.
 
 ---
 
@@ -1218,6 +1621,12 @@ The project MUST record real-device evidence for:
 - Send and Steer through at least one GPT-class or Qwen-class multimodal route;
 - clear blocking/rejection with a text-only DeepSeek route such as the project's DS4 deployment;
 - unknown-capability provider rejection without draft loss;
+- Voice preparation, permission gating, 16 kHz mono PCM16 capture, contiguous sample offsets, and approximately two-second bounded backpressure;
+- Voice provisional transcript coalescing, `PRIMARY` commit fences, long-`SECONDARY` discard/delete fences, normal and emergency exit, and one-winner races;
+- streaming Voice recognition on the DSH server host without requiring spare memory from the resident text-serving workload;
+- target-scoped Voice lease behavior and synchronized committed/provisional display on glasses and DSH-side UI;
+- Voice failure, reconnect, process-loss, target-loss, and unknown-operation cleanup without duplicate committed slices;
+- no persistence or replay of raw Voice audio or provisional transcript state;
 - reconnect and unknown-operation reconciliation without duplicate tokens or messages;
 - battery, memory, low-storage, and long-running stream behavior on the real glasses.
 
@@ -1300,11 +1709,23 @@ Complete when:
 - image tokens participate in draft editing;
 - mixed multimodal submission and text-only rejection pass against real DSH routes.
 
-### M5 — Voice and Morse
+### M5 — Voice
 
-Begins only after each mode receives an accepted normative interaction design.
+Complete when:
 
-### M6 — Production hardening
+- the glasses microphone streams qualified 16 kHz mono PCM16 with contiguous source-owned offsets;
+- a selected integrity-verified streaming ASR pack/profile runs locally on the DSH server host;
+- provisional transcript projection, explicit commit fences, discard/delete fences, and normal/emergency exit work;
+- the target-scoped Voice lease synchronizes glasses and DSH-side draft surfaces without a user-facing handoff;
+- committed slices survive every accepted recovery boundary while raw audio and provisional text do not;
+- queue overflow, runtime failure, target loss, connection loss, and unknown operations cannot duplicate or misapply text;
+- long-duration real-hardware resource and battery evidence passes alongside the resident DSH workload.
+
+### M6 — Morse
+
+Begins only after Morse receives an accepted normative interaction design.
+
+### M7 — Production hardening
 
 Complete when:
 
@@ -1312,6 +1733,7 @@ Complete when:
 - Funnel threat review passes;
 - long-duration power/memory/network tests pass;
 - storage and asset-reference recovery are proven;
+- Voice model/runtime integrity and resource-admission recovery are proven;
 - DSH compatibility tests guard the pinned supported revision range;
 - real-device evidence covers all production claims.
 
@@ -1319,17 +1741,18 @@ Complete when:
 
 ## 27. Open decisions
 
-The following are intentionally not frozen by revision 1:
+The following are intentionally not frozen by revision 2:
 
 1. The exact raw Android/Rokid event mapping on the target firmware; Layer-B names and intended physical gestures are frozen, but hardware qualification remains required.
 2. Whether a control that wakes a hidden HUD is consumed as wake-only or also performs its ordinary action.
 3. The initial device pairing and credential-issuance ceremony.
-4. Exact capture, upload, and draft-commit deadlines and deployment image limits.
+4. Exact Photo capture, upload, and draft-commit deadlines and deployment image limits.
 5. Whether plugin Photo staging uses DSH's attachment service directly before message acceptance or a plugin-owned staging namespace that later promotes into DSH attachments. Either implementation must preserve one original, exact ordering, and no duplicate upload from the glasses at Send/Steer.
 6. The exact DSH API path for arbitrary interleaved text/image messages at the pinned upstream revision.
-7. Complete Voice interaction design.
-8. Complete Morse interaction design.
-9. Detailed request-choice-and-input schemas for every DSH request family the product will expose.
+7. The initial streaming Voice model pack/runtime, supported-language catalog, profile schema, and resource-admission thresholds.
+8. Exact Voice audio-frame sizing, transport endpoint, fence deadlines, and transient notice durations, within the accepted PCM16 and bounded-queue contract.
+9. Complete Morse interaction design.
+10. Detailed request-choice-and-input schemas for every DSH request family the product will expose.
 
 ---
 
@@ -1337,7 +1760,7 @@ The following are intentionally not frozen by revision 1:
 
 This specification is informed by:
 
-- `code2hack/Poker-Dealer` `SPEC.md`, for interaction lifecycle, target fencing, recovery, and no-replay principles;
+- `code2hack/Poker-Dealer` `SPEC.md`, for interaction lifecycle, target fencing, recovery, no-replay principles, and the predecessor Photo/Morse/ASR designs;
 - DeepSeek Harness architecture documentation, especially its plugin model, `ctx.sessions`, live-agent APIs, durable session-log rule, and developer-preview compatibility warning;
 - DeepSeek Harness's implemented multimodal-image and durable-attachment design, including role-neutral image blocks, content-addressed attachment storage, provider capability checks, explicit text-only rejection, and historical original-image rendering.
 
