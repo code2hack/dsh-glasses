@@ -22,11 +22,15 @@ import z from "@deepseek-ai/schemastery";
 
 export const name = "dsh-glasses-plugin";
 
+// Session id and token MUST come from the runtime environment (never committed
+// config). schemastery `.default()` does not lazy-evaluate, so resolve them at
+// module scope into plain string defaults.
+const ENV_SESSION_ID = process.env.DSH_GLASSES_TB0_SESSION_ID ?? "";
+const ENV_TOKEN = process.env.DSH_GLASSES_TB0_TOKEN ?? "";
+
 export const Config = z.object({
-  sessionId: z
-    .string()
-    .default(() => process.env.DSH_GLASSES_TB0_SESSION_ID ?? ""),
-  token: z.string().default(() => process.env.DSH_GLASSES_TB0_TOKEN ?? ""),
+  sessionId: z.string().default(ENV_SESSION_ID),
+  token: z.string().default(ENV_TOKEN),
   heartbeatMs: z.number().default(15000),
   bootstrapMaxEvents: z.number().default(200),
 });
