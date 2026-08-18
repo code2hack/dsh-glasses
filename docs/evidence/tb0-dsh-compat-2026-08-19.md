@@ -139,3 +139,50 @@ No blocking incompatibilities. Recorded notes:
 - Plugin route registration is safe provided `/glasses/v1/*` doesn't collide with the web app's registered routes (probe in TB0 before freezing, per SPEC).
 
 *If TB0 implementation contradicts any normative SPEC assumption, `SPEC.md` will be updated in the same commit, per its own §1 rule.*
+
+---
+
+## TB0-H0 runtime read proof (2026-08-19) — PASSED
+
+Runtime gate executed on a **fully disposable isolated DSH instance**; the resident DSH/text-serving stack was not touched. All output below is sanitized; no session IDs are recorded (the disposable session was supplied only via `DSH_GLASSES_TB0_SESSION_ID`).
+
+### Environment
+- DSH artifact: `@deepseek-ai/dsh@0.1.0-rc.7` (same pin as §1).
+- Disposable `DSH_HOME=/tmp/dsh-tb0-home` (fresh profile: `@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app` + `dsh-glasses-plugin`), served with `dsh --profile web --port 3190`.
+- Plugin package: `plugins/dsh-glasses-plugin/` (out-of-tree, installed via pnpm `file:` link into the disposable profile).
+- Test agent provider (disposable-only): keyless local `tb0vllm` route (`http://127.0.0.1:8889/v1`, `api: openai-completions`, model `lfm2.5-vl-3b`) — no secrets, no network beyond loopback, never mounted in the resident profile.
+- Credential: one random dev bearer token, scoped only to `/glasses/v1/*`, injected via `DSH_GLASSES_TB0_TOKEN`.
+
+### Sanitized boot command
+```
+DSH_HOME=/tmp/dsh-tb0-home \
+DSH_GLASSES_TB0_SESSION_ID=<disposable-session-id> \
+DSH_GLASSES_TB0_TOKEN=<dev-bearer> \
+  dsh --profile web --port 3190
+```
+Plugin log on load: `[dsh-glasses-plugin] ready: session=<id> generation=<rotated>`.
+
+### Runtime-proven behavior
+
+| Check | Result |
+| --- | --- |
+| Config schema + env defaults | Loaded; schemastery `.default(fn)` is NOT lazy — env is resolved at module scope (fixed in-slice). |
+| Service injection | `webServer`, `sessionQuery`, `agents`, `session/event` all resolved at boot. |
+| Route registration / conflict | All `/glasses/v1/*` registrations succeeded; **no duplicate/conflict throw**; unknown subpaths → 404 via the prefix handler. |
+| Auth | No bearer → HTTP 401 on `/bootstrap`, `/stream`, stubs. |
+| Stubs | `POST /glasses/v1/draft/mutations` and `/glasses/v1/actions` → HTTP 501 `NOT_IMPLEMENTED` (bearer accepted). |
+| Bounded history (bootstrap) | Authenticated `GET /bootstrap` returned `protocolMajor: 1`, rotated `serverGeneration`, `attachment{attachmentId, sessionId, status}`, `history{asOfSeq, events[]}`; **43 events, asOfSeq 42** reconstructed from the durable store; events projected minimally (`seq`, `type`). |
+| Live agent resolver | `ctx.agents.get(sessionId)` → `AgentHandle`; `.status` observed `unavailable` (pre-turn / post-restart) and `idle` after a completed turn. |
+| Live event subscription | `ctx.on('session/event', cb)` (host cordis Context) delivered committed events with monotonic `seq`; SSE frames `id: <seq>` / `event: projection` / `data: {seq,type,generation}` — one observed `user/message` at seq 19 inside a turn (`turn/start`16 → `step/start`18 → `user/message`19 → `step/end`20 → `turn/end`21). |
+| Status transition | Pre-turn `unavailable`; during a turn the durable turn/step event sequence shows the running window; post-turn bootstrap reports `idle`. Direct bootstrap-during-running not captured (see residuals). |
+| SSE disconnect/reconnect | After closing the observer, a new prompt advanced `asOfSeq` 28→35 while offline; a reconnected stream emitted `hello` only (no replay), and after a fresh prompt resumed **contiguously at 36** (`asOfSeq+1`) with no duplicates/gaps through 42. |
+| Plugin restart reconstruction | Instance restarted with the same env: bootstrap returned **asOfSeq 42 / 43 events** again with a rotated `serverGeneration` (`ok: true`). |
+
+### Remainder / residuals
+- Host agent status is process-local: after plugin restart the session's agent is `unavailable` until a prompt wakes it (matches the agent/session registry being per-process). TB0 must define the status-resume policy for reconnect.
+- No `Last-Event-ID` wire resync is implemented; reconnection semantics are **bootstrap-first** (client re-reads `/bootstrap`, then opens `/stream`) — "no silent delta drop; a gap forces a new bootstrap" as allowed by the TB0 contract.
+- Step 10 of the prescribed test (bootstrap verification with the plugin fully stopped after reconstruction) was folded into the restart check above; the independent-surface events were produced via the host `session.prompt` RPC (`mode: queue`, text content) — a genuine client-side surface, not the plugin.
+
+### Directly proven vs inferred
+**Proven at runtime:** plugin load; route registration without conflict; bearer auth; 501 stubs; bounded history read (`session-query`); monotonic live events (`session/event`); idle/running turn shapes via durable events; SSE gapless continuation + reconnect resync; restart reconstruction of history.
+**Inferred/residual (recorded above):** exact `sessionId → AgentHandle` resolver remains `ctx.agents.get(sessionId)` (no separate named export pinned); status-resume policy; `Last-Event-ID` resync; `followup`/`steer` message shapes (deferred to the write slice).

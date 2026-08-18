@@ -147,8 +147,9 @@ export async function apply(ctx, config) {
       res.write(`data: ${JSON.stringify({ ...projectEvent(evt), generation: serverGeneration })}\n\n`);
     };
 
-    const offEvents = ctx.sessions.on("session/event", onEvent);
-    // (coarse: server emitting session/event for every live session; filtering by id above)
+    // 'session/event' is emitted on the host cordis Context (see dsh-session
+    // Context.Events); filter by the configured session id below.
+    const offEvents = ctx.on("session/event", onEvent);
 
     req.on("close", () => {
       closed = true;
