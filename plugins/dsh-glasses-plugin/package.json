@@ -1,0 +1,27 @@
+{
+  "name": "dsh-glasses-plugin",
+  "version": "0.0.1-tb0",
+  "description": "TB0 read-only DSH plugin skeleton for dsh-glasses (bootstrap + SSE projection).",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.0",
+    "@deepseek-ai/cordis": ">=4.0.0-rc <5",
+    "cordis": ">=4.0.0-rc <5"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
