@@ -252,8 +252,6 @@ interaction.
 - Base merge: `6d1e1925` (115b0a12555174ab48b73e53b9a9f7102a79757c2).
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
-- Never commit a real session ID — configure sessions only via
-  `DSH_GLASSES_TB0_SESSION_ID`.
 
 ## Hosted model services (outside TB0, user-deployed)
 
