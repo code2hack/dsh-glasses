@@ -131,7 +131,33 @@ reasoning text, tool fields, raw event data, or attachment bytes in projected
 events (the only `attachment` occurrence is the protocol resume header
 `attachment:{attachmentId, sessionId, status}`).
 
-### Remaining physical gaps
+#
+## Validation directive follow-up (Worker validation, PR #10 draft)
+
+Re-run from the exact PR head `05faafe060547f207ccf3bb1ee21f36a772706d9`:
+
+- Every host command in `docs/TRACER_BULLET_TB0_C0.md` §7: `node --check`
+  (index.js, projection.js, c0-core.js, app.js) OK; `projection.test.mjs`
+  PASS; `c0-core.test.mjs` PASS; host-write recovery suite **ALL PASS**
+  (16 scenarios). No syntax/test failure encountered.
+- Normal synthetic loop driven **through `GlassesBridge.debugSemanticControl`**
+  (native bridge, `source=SYNTHETIC_DEBUG_CONTROL`): logcat (DSHGlassesBridge,
+  pid 14652) records all five controls
+  `COMMAND_SHORT / SECONDARY_SHORT / COMMAND_LONG / DOWN / COMMAND_RELEASE`.
+  Result on the fresh session: paste rev 2->3, wheel SEND, exactly one durable
+  `user/message` for the send op `c0-send-2947a32a-070d-462b-b82…` (seq 30),
+  one `assistant/message` (seq 40, `C0 product loop passed`), accepted clear to
+  rev 4 (empty, unlocked), final mode Navigation, chat seqs 8/22/30/40 with no
+  duplicates.
+- Restart, proxy reconnect, viewport preservation, hidden-HUD wake-only,
+  wrong-session hard-fail, and actual-client lost-response recovery remain
+  verified on the same product code (see earlier sections; the exact-head
+  regression re-ran the normal loop + cursor blink on `bdc7112`).
+
+Primary evidence used: structured native (logcat DSHGlassesBridge), plugin
+(state/ops), CDP (body/DOM/chat), and complete durable-log correlation.
+
+## Remaining physical gaps
 
 No production function/touch binding is exercised or implied by C0; physical
 rows remain unqualified. The passive recorder remains armed.
