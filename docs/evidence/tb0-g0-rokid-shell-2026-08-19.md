@@ -64,9 +64,20 @@ credential native-side (app-private storage), restricts requests to
   authoritative snapshot → `recovery-complete`; no duplicates.
 - App restart (no reprovision): configuration restored from app-private prefs,
   view reconstructed (`bootstrap-applied asOfSeq:11` → `recovery-complete`).
-- Session identity: ChatGPT made identity changes synchronous (`7f5e3b8`) and
-  added a blocking session-mismatch state (`b785820`, `64aa4e8`); final rerun
-  below verifies wrong-session → explicit blocking mismatch.
+- Session identity mismatch → **hard fail, verified on device** (final APK from
+  head `80add8d` incl. `7f5e3b8`/`b785820`/`64aa4e8`/`8f94419`): with
+  `session-00000000-...` stored in app-private prefs and a fresh app process,
+  the app logged `configuration-loaded` (expected 0000...) -> `transport-stopped
+  reason=session-mismatch` -> `DSH_G0 session-mismatch {expected:0000...,
+  actual:47d0..., source:bootstrap}`; DOM showed the `identity-error` panel
+  (display:block) with expected/actual, `conn=session-mismatch`, and server
+  content hidden. Not silently displayed. (Note: in-page `location.reload()` is
+  blocked by the app's own external-nav guard, so identity changes apply via a
+  fresh app process.)
+- Final rerun (abbreviated real-device bootstrap): final APK
+  (`app-debug.apk` 815904 B, built from `80add8d`) installed Success, launched,
+  bootstrap rendered (protocol 1, gen, asOfSeq 11, status idle, writeState
+  ready), `conn: live`.
 
 ## Non-manual input facts (per TB0-I0 gate; ADB-captured, not physical presses)
 
