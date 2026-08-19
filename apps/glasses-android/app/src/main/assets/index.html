@@ -9,6 +9,16 @@
 <body>
   <header><h1>Glasses <span id="conn" class="dot off">offline</span></h1></header>
 
+  <section id="identity-error" class="card error hidden" role="alert">
+    <h2>Session identity mismatch</h2>
+    <p>The configured session does not match the session exposed by this endpoint.</p>
+    <dl>
+      <dt>Configured</dt><dd><code id="identity-expected"></code></dd>
+      <dt>Endpoint</dt><dd><code id="identity-actual"></code></dd>
+    </dl>
+    <p class="hint">Streaming is stopped. Correct the endpoint or session below; server content is not rendered while identities differ.</p>
+  </section>
+
   <section id="provision" class="card">
     <h2>Dev provisioning</h2>
     <input id="in-base" type="text" placeholder="endpoint base, e.g. http://100.92.81.33:3200"/>
