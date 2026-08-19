@@ -151,7 +151,7 @@ Funnel requirement for TB0.
 ## 11. Work and branch discipline
 
 - Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/input-qualification`).
+- One dedicated branch per active slice (current: `tb0/assistant-output`).
 - Do not rewrite another worker's branch; do not force-push main.
 - Keep commits narrow; commit documentation separately from exploratory code.
 - GitHub remote is shared truth (not an uncommitted host worktree).
@@ -246,10 +246,10 @@ interaction.
 
 ## Current slice state
 
-- TB0-G0 complete and merged in PR #3.
-- Final G0 regression evidence merged in PR #5.
-- Active slice: `tb0/input-qualification`.
-- Base merge: `6d1e1925b967cda3c19731decc570d02da2c9c6d`.
+- TB0-I0 merged in PR #7.
+- TB0-R0 merged in PR #8.
+- Active slice: `tb0/assistant-output`.
+- Base merge: `87a0968e3cf081930d19df214eaacbf8053026aa`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
