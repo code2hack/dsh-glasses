@@ -151,7 +151,7 @@ Funnel requirement for TB0.
 ## 11. Work and branch discipline
 
 - Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/product-text-loop`).
+- One dedicated branch per active slice (current: `tb0/repro-dev-runtime`).
 - Do not rewrite another worker's branch; do not force-push main.
 - Keep commits narrow; commit documentation separately from exploratory code.
 - GitHub remote is shared truth (not an uncommitted host worktree).
@@ -264,8 +264,9 @@ interaction.
 - TB0-I0 merged in PR #7.
 - TB0-R0 merged in PR #8.
 - TB0-A0 merged in PR #9.
-- Active slice: `tb0/product-text-loop` (TB0-C0).
-- Base merge: `bed16e771f6f99a1672a98e5c8f15bfb12ae0df2`.
+- TB0-C0 merged in PR #10 (one-session product text loop, accepted 2026-08-19).
+- Active slice: `tb0/repro-dev-runtime` (TB0-D0, reproducible disposable runtime).
+- Base merge: `0db1c426e2ec2b8e397d96f5f637c8c5c756cf7e`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
