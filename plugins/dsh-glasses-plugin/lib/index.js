@@ -203,7 +203,11 @@ export async function apply(ctx, config) {
   const countUserMessagesWithId = async (messageId) => {
     const snap = await ctx.sessionQuery.readSession(sessionId);
     const evts = Array.isArray(snap?.events) ? snap.events : [];
-    return evts.filter((e) => e.type === "user/message" && e?.message?.id === messageId).length;
+    // rc.7 stores the message under event.data (surfaceOp append); keep a
+    // .message fallback for older/alternate surfaces.
+    return evts.filter(
+      (e) => e.type === "user/message" && (e?.data?.id === messageId || e?.message?.id === messageId)
+    ).length;
   };
 
   const readBody = async (req) => {
