@@ -313,7 +313,7 @@ concurrent implementation on the real Rokid.
   completed within the timeout, none blocked the window.
 - The discarded earlier W2d window (start 12:27:40Z, before commit `472b436`)
   is NOT used as evidence; W2c, W2e, and W2f are the cited runs.
-- **W2g** (`20260819T13…`, DURATION=45, head `8484991` — includes the
+- **W2g** (`20260819T131518Z-w2g`, DURATION=45, head `8484991` — includes the
   `8c1a392` hardened fallbacks): identical full pass — event0/event1/live +
   logcat statuses all 124, `getevent_usage_errors=0`, 40 ×
   `focus_sample_status=0`; the current head needs no further recorder run.
