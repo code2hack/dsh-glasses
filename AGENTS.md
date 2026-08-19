@@ -181,7 +181,7 @@ Funnel requirement for TB0.
 ## 11. Work and branch discipline
 
 - Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/repro-dev-runtime`).
+- One dedicated branch per active slice (current: `tb0/adb-only-mvp-acceptance`).
 - Do not rewrite another worker's branch; do not force-push main.
 - Keep commits narrow; commit documentation separately from exploratory code.
 - GitHub remote is shared truth (not an uncommitted host worktree).
