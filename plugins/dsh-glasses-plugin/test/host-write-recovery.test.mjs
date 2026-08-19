@@ -15,7 +15,7 @@
 // cleared; cold session can Send; every crash boundary => 0 or 1 durable
 // user/message (correlated by source.rpcId === operationId).
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { rm, readFile } from "node:fs/promises";
@@ -84,16 +84,23 @@ async function promptHost(content, rpcId = randomUUID()) {
 }
 
 let proc = null;
-async function startInstance(sid = SID, extraEnv = {}) {
-  if (proc) {
-    proc.kill("SIGKILL");
-    await sleep(3000);
-    // wait until the old process actually released :PORT (EADDRINUSE guard)
-    for (let i = 0; i < 40; i++) {
-      try { await fetch(BASE + "/glasses/v1/bootstrap", { signal: AbortSignal.timeout(300) }); await sleep(200); continue; }
-      catch { break; }
+function killPortOwner() {
+  try {
+    const out = execFileSync("ss", ["-tlnp"], { encoding: "utf8" });
+    for (const line of out.split("\n")) {
+      if (!line.includes(`:${PORT} `)) continue;
+      const m = line.match(/pid=(\d+)/);
+      if (m) {
+        try { process.kill(Number(m[1]), "SIGKILL"); } catch {}
+      }
     }
-  }
+  } catch {}
+}
+
+async function startInstance(sid = SID, extraEnv = {}) {
+  if (proc) { proc.kill("SIGKILL"); await sleep(1500); }
+  killPortOwner(); // the disposable port is exclusively ours; never let a stale holder rebind
+  await sleep(500);
   SID = sid;
   proc = spawn("dsh", ["--profile", "web", "--port", String(PORT)], {
     cwd: PLUGIN_DIR,
@@ -172,6 +179,7 @@ let seq = 0;
 const opId = (tag) => `${tag}-${seq++}`;
 
 try {
+  killPortOwner();
   await startInstance();           // seed instance used to create fresh sessions
   ok("instance boot");
   await prepareSessionPool();       // pre-create all scenario sessions (settled before use)
