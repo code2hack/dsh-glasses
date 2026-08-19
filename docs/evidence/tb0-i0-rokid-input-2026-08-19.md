@@ -165,3 +165,13 @@ ordered/abort broadcast). **No** Poker records exist for KEY_DASHBOARD,
 KEYCODE_ENTER, or scan-code 28 in the searched evidence; vendored module trees
 were excluded. All extracted rows will carry `PRIOR_REFERENCE`; Poker semantic
 names/consumption are not carried over.
+
+- W1 **completed healthy**: `capture_end_utc=2026-08-19T11:27:06Z`,
+  `capture_exit_status=0`; before/after screen + UI hierarchy written;
+  logcat-live 1662 + focus-live 2640 lines. Recorder limitation stands
+  (`getevent -lt` unsupported by this toybox; `-lp` used for inventory).
+- Sensor tracer baseline (2026-08-19): two `dumpsys sensorservice` snapshots 5s
+  apart — Game Rotation Vector (QTI wake/non-wake + AOSP) and gyro present,
+  **0 active sensor connections** (app currently does not activate a sensor
+  client; a runtime sensor-value tracer is optional future work for head-pose
+  dynamic replay).
