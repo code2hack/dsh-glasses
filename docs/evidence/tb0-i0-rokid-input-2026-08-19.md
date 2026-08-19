@@ -213,3 +213,36 @@ single active I0 PR at head `9b76909`; PR #8 (TB0-R0) retargeted base →
 
 The `getevent` one-argument constraint + per-node iteration fix is flagged for
 reviewer confirmation (test-infrastructure change).
+
+## Active-head verification (PR #7, 472b436) — 2026-08-19
+
+**Active tested commit**: `472b436` (`fix: capture Rokid input nodes
+concurrently`; app code unchanged from `982e2fb`). APK debug `0.1.0-g0`
+(818872 B). The reviewer's concurrent per-node getevent capture superseded the
+earlier sequential per-node loop (`9b76909`); this section validates the
+concurrent implementation on the real Rokid.
+
+- **Abbreviated active-head sensor smoke** (`sensor-active-head.txt`, 30 s,
+  installed active APK): `sample type=15` (Game Rotation Vector QTI) and
+  `sample type=4` (icm4x6xx gyro) lines with `sensorTimestampNs=…`
+  `observedElapsedNs=…` `accuracy=3` `values=[…]`; in-window counts
+  **type15 = 313, type4 = 379**. Inventory + `register … ok=true` and the
+  pause/unregister/resume/re-register sequence were verified earlier on this
+  exact app build (`sensor-dynamic.txt`, see corrected-head section).
+  Earlier 329/548 sample counts remain as supporting runtime evidence of the
+  superseded `tb0/i0-input` implementation (that branch's `-lt` capture claim
+  is NOT relied upon).
+- **W2d corrected recorder** (`20260819T122740Z-w2d`, concurrent capture,
+  DURATION=60): `capture_exit_status=0`, `getevent_capture_mode=device-timestamp`,
+  `getevent_process_status=124`, `getevent_usage_errors=0`, `getevent_live_lines=0`
+  (no genuine low-level event; no physical press forced), `getevent-live.err`
+  empty.
+- **Passive recorder (restarted on active script)**: tmux session
+  `dsh-glasses-adb`, loop PID `170034` (`bash /tmp/passive-loop.sh`), current
+  window `20260819T124041Z-passive` (LABEL=passive, DURATION=1800),
+  `getevent_capture_mode=device-timestamp`; last health check UTC
+  `2026-08-19T12:41Z`. A window that was still running with the pre-472b436
+  script ended naturally before this restart.
+- **AGENTS**: base-merge `6d1e1925b967cda3c19731decc570d02da2c9c6d`; active
+  slice `tb0/input-qualification` (both occurrences).
+- Physical rows remain **unqualified**.
