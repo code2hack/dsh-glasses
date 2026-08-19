@@ -16,6 +16,10 @@ function showProvision(show) {
   $('provision').classList.toggle('hidden', !show);
 }
 
+function showSession(show) {
+  $('session').classList.toggle('hidden', !show);
+}
+
 function setConn(state, text) {
   const dot = $('conn');
   dot.className = 'dot ' + (state === 'open' ? 'on' : state === 'reconnecting' ? 'mid' : 'off');
@@ -103,6 +107,7 @@ function run() {
   const endpoint = window.GlassesBridge.endpoint();
   if (!endpoint) {
     showProvision(true);
+    showSession(false);
     setConn('off', 'configure');
     return;
   }
@@ -110,6 +115,7 @@ function run() {
   const snapshot = fetchSnapshot();
   if (!snapshot) return;
   showProvision(false);
+  showSession(true);
   applySnapshot(snapshot);
 
   if (!streamOpen && !streamConnecting) {
@@ -122,7 +128,10 @@ function run() {
 function fetchSnapshot() {
   const response = nativeFetch('/glasses/v1/bootstrap', '');
   if (response.status !== 200) {
-    if (response.status === 401 || response.status === 403) showProvision(true);
+    if (response.status === 401 || response.status === 403) {
+      showProvision(true);
+      showSession(false);
+    }
     scheduleReconnect(response.status === 0 ? 'unreachable' : ('HTTP ' + response.status));
     return null;
   }
@@ -133,6 +142,7 @@ function fetchSnapshot() {
     if (expectedSession && snapshot.attachment.sessionId !== expectedSession) {
       setConn('off', 'session-mismatch');
       showProvision(true);
+      showSession(false);
       return null;
     }
     return snapshot;
@@ -143,6 +153,7 @@ function fetchSnapshot() {
 }
 
 function applySnapshot(snapshot) {
+  showSession(true);
   generation = snapshot.serverGeneration || '';
   lastSeq = Number(snapshot.history && snapshot.history.asOfSeq);
   if (!Number.isFinite(lastSeq)) lastSeq = -1;
@@ -167,11 +178,12 @@ function applySnapshot(snapshot) {
 function recoverSnapshot(reason) {
   if (recovering) return;
   recovering = true;
-  setConn(streamOpen ? 'open' : 'reconnecting', streamOpen ? ('live·sync') : reason);
+  setConn(streamOpen ? 'open' : 'reconnecting', streamOpen ? 'live·sync' : reason);
   try {
     const snapshot = fetchSnapshot();
     if (snapshot) {
       showProvision(false);
+      showSession(true);
       applySnapshot(snapshot);
       if (streamOpen) setConn('open', 'live');
     }
