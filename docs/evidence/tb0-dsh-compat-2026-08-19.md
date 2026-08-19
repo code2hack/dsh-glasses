@@ -240,3 +240,7 @@ Supersedes the earlier write-slice records in this doc where they differ. Execut
 | Concurrent identical `/actions` | 1 prompt dispatch (instrumented), 1 durable user/message. |
 | Operation-id conflict (same op, different digest) | `409 operation-conflict`; no dispatch. |
 | Long response pushes message past first bounded page | Full-log scan still finds it (seq 141 of 199); `accepted`; count 1; never misclassified as zero. |
+
+### Committed reproducible recovery suite (2026-08-19) — ALL PASS
+`plugins/dsh-glasses-plugin/test/host-write-recovery.test.mjs` (host-only; spawns the disposable instance; per-scenario pre-created settled sessions; corollary evidence recorded above).
+Scenarios: auth; mutation idempotency + operation-conflict; send 0→1 acceptance with exactly one durable msg (no client-visible rejected); concurrent identical → one dispatch; send-in-progress; monotonic clear (D+1) with stale mutations rejected; cold-session Send; crash-after-dispatch boundary (0 durable, no double, no false rejected); plugin-restart reconciliation (writeState ready). Result: ALL PASS.

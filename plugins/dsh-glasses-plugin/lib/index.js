@@ -97,12 +97,24 @@ export async function apply(ctx, config) {
     if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
     try {
       const { events, asOfSeq, status } = await readSnapshot();
+      let draftProj = { revision: 0, text: "", locked: false };
+      let writeState = "ready";
+      try {
+        const st = await readStateForBootstrap();
+        draftProj = { revision: st.draft.revision, text: st.draft.text, locked: !!st.draft.lockedByOperationId };
+        const unresolved = Object.values(st.operations).some((o) => ["prepared", "dispatching", "unknown"].includes(o.state));
+        writeState = unresolved ? "reconciling" : "ready";
+      } catch {
+        /* storage not yet materialized -> defaults */
+      }
       return sendJson(res, 200, {
         ok: true,
         protocolMajor: PROTOCOL_MAJOR,
         serverGeneration,
         attachment: { attachmentId: `tb0:${sessionId}:${serverGeneration}`, sessionId, status },
         history: { asOfSeq, events: events.map(projectEvent) },
+        draft: draftProj,
+        writeState,
       });
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
@@ -238,20 +250,56 @@ export async function apply(ctx, config) {
     op.state = state;
     if (lastError) op.lastError = lastError;
     if (state === "accepted") {
-      st.draft = { revision: 0, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
+      // Monotonic clear: submitted revision D -> cleared revision D+1 so the
+      // plugin-authoritative revision never decreases and old mutations stay invalid.
+      st.draft = { revision: st.draft.revision + 1, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
     }
     await writeState(st);
   };
 
-  // In-process serialization per operationId so concurrent identical /actions
-  // yields one dispatch. Test-only fault hooks are env-gated and inert by default.
-  const opChains = new Map();
-  const chainOp = (opId, fn) => {
-    const prev = opChains.get(opId) ?? Promise.resolve();
+  // Per-session serialization: read state -> validate -> prepare -> lock ->
+  // dispatch -> settle all run one-at-a-time per configured session, so
+  // concurrent duplicate and cross-operation requests cannot double-dispatch.
+  // Test-only fault hooks are env-gated and inert by default.
+  const sessionChains = new Map();
+  const chainSession = (fn) => {
+    const prev = sessionChains.get(sessionId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    opChains.set(opId, next);
+    sessionChains.set(sessionId, next);
     return next;
   };
+
+  const readStateForBootstrap = async () => {
+    const u = await units();
+    const snap = await u.loadAll();
+    return snap.tables.state?.[sessionId] ?? emptyState();
+  };
+
+  // Startup reconcile sweep: settle unresolved operations from durable facts
+  // (never re-dispatch) before new writes are judged. Gated by the draft lock
+  // for writes; runs once per process start.
+  (async () => {
+    try {
+      const st = await readState();
+      let changed = false;
+      for (const op of Object.values(st.operations)) {
+        if (!["prepared", "dispatching", "unknown"].includes(op.state)) continue;
+        const { positive, discarded } = await reconcileOperation(op);
+        if (positive) {
+          op.state = "accepted";
+          st.draft = { revision: st.draft.revision + 1, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
+          changed = true;
+        } else if (discarded) {
+          op.state = "rejected";
+          op.lastError = "durable-discard";
+          changed = true;
+        }
+      }
+      if (changed) await writeState(st);
+    } catch (e) {
+      log("startup reconcile skipped:", String(e?.message ?? e));
+    }
+  })();
 
   const readBody = async (req) => {
     const chunks = [];
@@ -326,15 +374,23 @@ export async function apply(ctx, config) {
       if (body.kind !== "send") return sendJson(res, 400, { ok: false, error: "unknown-action", kind: body.kind ?? null });
       const opId = typeof body.operationId === "string" ? body.operationId : "";
       if (!opId) return sendJson(res, 400, { ok: false, error: "operationId-required" });
-      return await chainOp(opId, async () => await handleActionsInner(req, res, body, opId, digestOf({ kind: "send", operationId: opId, draftRevision: body.draftRevision ?? null, contentDigest: body.contentDigest ?? null })));
+      return await chainSession(() => handleActionsInner(req, res, body, opId, null));
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
     }
   };
 
-  const handleActionsInner = async (req, res, body, opId, digest) => {
+  const handleActionsInner = async (req, res, body, opId, _digest) => {
     try {
       const st = await readState();
+      const digest = digestOf({
+        kind: "send",
+        sessionId,
+        operationId: opId,
+        draftRevision: body.draftRevision ?? null,
+        contentDigest: body.contentDigest ?? null,
+        text: st.draft.text ?? "",
+      });
       const op = st.operations[opId];
       if (op) {
         if (op.requestDigest !== digest)
@@ -363,7 +419,7 @@ export async function apply(ctx, config) {
       // New dispatch path: prepare + lock (one write) → dispatching (one write)
       // → session.prompt EXACTLY ONCE with rpcId === operationId.
       if (st.draft.lockedByOperationId && st.draft.lockedByOperationId !== opId)
-        return sendJson(res, 409, { ok: false, error: "draft-locked", lockedByOperationId: st.draft.lockedByOperationId });
+        return sendJson(res, 409, { ok: false, error: "send-in-progress", lockedByOperationId: st.draft.lockedByOperationId });
       if (typeof body.draftRevision !== "number" || body.draftRevision !== st.draft.revision)
         return sendJson(res, 409, { ok: false, error: "draft-revision-mismatch", expected: st.draft.revision, got: body.draftRevision ?? null });
       if (!st.draft.text) return sendJson(res, 409, { ok: false, error: "empty-draft" });
