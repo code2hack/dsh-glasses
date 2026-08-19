@@ -6,9 +6,10 @@ const source = readFileSync(
   new URL('../app/src/main/assets/c0-core.js', import.meta.url),
   'utf8',
 );
-const context = { globalThis: {} };
+const context = {};
 vm.runInNewContext(source, context, { filename: 'c0-core.js' });
-const core = context.globalThis.C0Core;
+const core = context.C0Core;
+assert.ok(core, 'C0Core installed on the contextified global');
 
 assert.deepEqual(
   JSON.parse(JSON.stringify(core.wordRanges('  alpha  beta\n'))),
