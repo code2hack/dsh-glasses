@@ -1,0 +1,8 @@
+# Android
+*.apk
+*.aab
+apps/glasses-android/.gradle/
+apps/glasses-android/build/
+apps/glasses-android/app/build/
+apps/glasses-android/local.properties
+apps/glasses-android/gradle/wrapper/gradle-wrapper.jar
