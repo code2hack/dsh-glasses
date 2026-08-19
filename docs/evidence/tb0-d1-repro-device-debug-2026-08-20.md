@@ -13,15 +13,19 @@
 - D0 runtime head/home/provisioning source: main `6f512aa…`; fresh e2e home `/tmp/dsh-glasses-d1-e2e-…` via `dev/d0-runtime.mjs up` (DSH 127.0.0.1:3198, proxy 0.0.0.0:3203); provisioning JSON piped over SSH stdin
 - D1 helper Node version: u4090 nvm node v26.4.0 (`~/.nvm/versions/node/v26.4.0/bin`)
 
+> Runtime-tested head: `d0fc8bbd4d78b2109c33d2c259928ab2b306b338`.
+> Implementation head: `cd49498a2b812a2fdbd4fab55fb2ea1b16d3beb8`.
+> `04b24a8…` and later commits: evidence/documentation only (no code drift after the tested head).
+
 ## Host checks
 
 | Check | Result |
 | --- | --- |
-| `node --check dev/d1-rokid-debug.mjs` | pending |
-| Android `:app:assembleDebug` | pending |
-| exact debug APK installed | pending |
-| debug-only clipboard Activity present | pending |
-| release manifest does not contain clipboard Activity | pending |
+| `node --check dev/d1-rokid-debug.mjs` | **PASS** |
+| Android `:app:assembleDebug` | **PASS** (830,538 B) |
+| exact debug APK installed | **PASS** (adb install -r -t, Success) |
+| debug-only clipboard Activity present | **PASS** (src/debug DebugClipboardSeedActivity) |
+| release manifest does not contain clipboard Activity | **PASS** (grep absent in src/main/AndroidManifest.xml) |
 
 ## Provisioning
 
@@ -31,7 +35,7 @@
 - configure result: ok, device serial/package/pid 14897/model/fingerprint reported
 - process restart: app relaunched by helper (pid 14897)
 - endpoint equality: http://100.92.81.33:3203 matches provisioning endpoint
-- expected-session equality: session-cfbb4acf-8058-4379-b50e-76c638492aa9 matches provisioning session
+- expected-session equality: <disposable-session-id> matches provisioning session
 - identityFailure: null
 - streamVerified: **true** (generation mt0inar3-704226a5, lastSeq 2)
 - selected WebView target title/url: "dsh-glasses C0", url file:///android_asset/index.html (CDP port 9334)
@@ -77,7 +81,7 @@ Record:
 
 - JSON parse result: parse ok; device/endpoint/session/stream/wheel/draft/action fields present
 - device identity fields: serial 1906092617103125, package com.code2hack.glasses, pid 14897, model RG-glasses
-- endpoint/session identity: http://100.92.81.33:3203 / session-cfbb4acf-…
+- endpoint/session identity: http://100.92.81.33:3203 / <disposable-session-id>
 - mode/HUD/write/draft fields: navigation, hudVisible true, writeState ready, draft rev 0 empty unlocked, cursorWord 0
 - stream/generation/sequence fields: streamOpen true, streamVerified true, generation mt0inar3-704226a5, lastSeq 2
 - bearer absent: yes (not emitted)
