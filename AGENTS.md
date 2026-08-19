@@ -1,20 +1,41 @@
 # dsh-glasses implementation instructions
 
-> **0. WMANDATORY — WHIP first (read before anything else).** Read `WHIP.md`
-> (Worker Heartbeat Integrity Protocol) before any other section: work the
-> todo, keep the heartbeat alive, inspect state, make progress, and NEVER stop
-> while the mission is open — across rounds, across compaction, and across new
-> sessions. After any blocking ask, poll the ChatGPT thread (~30 s) until the
-> reply lands; act on the reply before anything else; a usage-limit reply is
-> retried at the next-lower thinking effort (§17). Silence is not permission
-> to stop. Re-read `WHIP.md` if this project is reopened in a fresh session.
+> **0. Worker Heartbeat Integrity Protocol (WHIP) — read and obey BEFORE
+> anything else.** These rules persist across rounds, context compaction, and
+> fresh sessions; silence is never permission to stop. If this project is
+> reopened in a new session, re-read this section first.
+>
+> 1. **W — Work the todo.** Continue the highest-priority in-progress item every
+>    round; update the todo list before and after each round.
+> 2. **H — Heartbeat, never stop.** There is no voluntary end while the mission
+>    is open. Keep a poller/recorder alive; every round re-checks the ChatGPT
+>    thread FIRST and acts on any new reply.
+> 3. **I — Inspect state.** The workspace, tool results, durable session state,
+>    the origin branch, and the ChatGPT thread are authoritative — inspect,
+>    never assume. The remote branch is the review authority.
+> 4. **P — Progress + proof.** Make concrete, verified progress each round and
+>    record evidence (exact head, logs, durable/op correlation, diagnostics)
+>    before claiming completion.
+> 5. **P — Poll the reply.** After ANY blocking ask to ChatGPT: poll ~30 s
+>    (back off to ≤60 s while doing productive nonconflicting work), never rely
+>    on event notifications alone, and act on the reply before anything else. A
+>    usage-limit / "Internal Server Error" placeholder is NOT a reply — retry at
+>    the next-lower thinking effort (Pro → xhigh → high → medium → low) per §17
+>    until it lands. Don't send duplicates unless new evidence changes the
+>    problem.
+>
+> Legitimate endings ONLY: (a) an explicit stop/pause/handoff from code2hack;
+> (b) a genuine blocker escalated once while the session and poller stay alive;
+> (c) absolute completion — the program's final acceptance is merged, no pending
+> directive, and no unreplied blocking ask. Every other round ends with a short
+> status naming the next round's first action and a living todo.
 
 Mandatory entry point for every implementation session. MVP-biased and lean: this
 file is operational, not production process.
 
 ## 1. Read order and authority
 
-Read before changing code: `WHIP.md` → `AGENTS.md` → `SPEC.md` →
+Read before changing code: `AGENTS.md` (start at §0 WHIP) → `SPEC.md` →
 `docs/TRACER_BULLET_TB0.md` (when present) → the active evidence/seam-audit doc →
 source and tests.
 
