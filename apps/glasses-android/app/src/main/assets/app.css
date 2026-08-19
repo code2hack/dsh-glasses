@@ -4,7 +4,7 @@ body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-u
 h1 { font-size:16px; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
 h2 { font-size:13px; margin:0 0 8px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
-.card.error { border-color:var(--bad); box-shadow:0 0 0 1px color-mix(in srgb, var(--bad) 35%, transparent); }
+.card.error { border-color:var(--bad); box-shadow:0 0 0 1px rgba(231,76,60,.35); }
 .card.error h2 { color:var(--bad); }
 .card.error p { margin:6px 0; }
 .card.error dl { display:grid; grid-template-columns:76px minmax(0,1fr); gap:4px 8px; margin:8px 0; }
