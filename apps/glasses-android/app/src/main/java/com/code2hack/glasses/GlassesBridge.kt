@@ -19,11 +19,12 @@ import java.util.concurrent.Future
  * credential: it stays in app-private storage and is attached natively.
  *
  * JS surface (registered as `GlassesBridge`):
- *   configure(base, token, sessionId)  debug provisioning -> private prefs
+ *   configure(base, token, sessionId)  synchronously persist debug provisioning
  *   endpoint()                         configured base, never a credential
  *   sessionId()                        expected configured DSH session
  *   fetch(path, bodyJson)              authenticated glasses/v1 path only
  *   openStream()                       one authenticated SSE connection
+ *   closeStream()                      cancel the current SSE connection
  */
 class GlassesBridge(private val context: Context) {
     companion object {
@@ -59,19 +60,34 @@ class GlassesBridge(private val context: Context) {
     @JavascriptInterface
     fun sessionId(): String = session()
 
+    /**
+     * Persist provisioning synchronously so an immediate WebView reload cannot
+     * observe the previous expected session. Returns false on invalid input or
+     * storage failure; no credential value is logged.
+     */
     @JavascriptInterface
-    fun configure(base: String, token: String, sessionId: String) {
-        val normalized = base.trim().trimEnd('/')
-        if (!(normalized.startsWith("http://") || normalized.startsWith("https://"))) {
+    fun configure(base: String, token: String, sessionId: String): Boolean {
+        val normalizedBase = base.trim().trimEnd('/')
+        val normalizedSession = sessionId.trim()
+        if (!(normalizedBase.startsWith("http://") || normalizedBase.startsWith("https://"))) {
             Log.w(TAG, "refused non-http endpoint")
-            return
+            return false
         }
-        prefs.edit()
-            .putString(KEY_BASE, normalized)
+        if (token.isEmpty() || normalizedSession.isEmpty()) {
+            Log.w(TAG, "refused incomplete provisioning")
+            return false
+        }
+
+        val committed = prefs.edit()
+            .putString(KEY_BASE, normalizedBase)
             .putString(KEY_TOKEN, token)
-            .putString(KEY_SESSION, sessionId)
-            .apply()
-        Log.i(TAG, "configured endpoint=$normalized session=${sessionId.take(12)}…")
+            .putString(KEY_SESSION, normalizedSession)
+            .commit()
+        Log.i(
+            TAG,
+            "configured committed=$committed endpoint=$normalizedBase session=${normalizedSession.take(12)}…",
+        )
+        return committed
     }
 
     @JavascriptInterface
@@ -118,19 +134,38 @@ class GlassesBridge(private val context: Context) {
     @Synchronized
     fun openStream() {
         if (closed) return
-        streamConnection?.disconnect()
-        streamTask?.cancel(true)
+        stopStreamLocked()
         streamTask = network.submit { runStream() }
+    }
+
+    /** Cancel the stream without closing the reusable bridge/executor. */
+    @JavascriptInterface
+    @Synchronized
+    fun closeStream() {
+        stopStreamLocked()
     }
 
     @Synchronized
     fun close() {
         if (closed) return
         closed = true
-        streamConnection?.disconnect()
-        streamTask?.cancel(true)
+        stopStreamLocked()
         network.shutdownNow()
         evaluate = null
+    }
+
+    /**
+     * Clear ownership before disconnecting. The old stream therefore cannot
+     * emit a late `closed`/`error` callback that restarts a deliberately blocked
+     * identity-mismatch page.
+     */
+    private fun stopStreamLocked() {
+        val connection = streamConnection
+        streamConnection = null
+        val task = streamTask
+        streamTask = null
+        connection?.disconnect()
+        task?.cancel(true)
     }
 
     private fun runStream() {
