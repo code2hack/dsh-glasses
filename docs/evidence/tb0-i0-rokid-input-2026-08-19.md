@@ -92,9 +92,14 @@ A physical binding may be frozen only when a genuine interaction proves:
 
 Synthetic replay is accepted only for validating tracer/reducer plumbing. It must never be presented as hardware qualification.
 
-## Passive capture state
+## Passive capture state (2026-08-19)
 
-Record the active u4090 tmux session, output directory, recorder PID(s), rotation policy, and last health check here. Keep the passive recorder armed after automatable work is exhausted so an incidental real interaction can be captured without interrupting `code2hack`.
+- Passive recorder: `/tmp/i0-passive.sh` on u4090 (`~/tmp/dsh-glasses-ADB/i0/`),
+  daemonized (setsid nohup); rotates `DSHGlasses` logcat (300s bounded) into
+  `passive-logcat.txt` and periodically samples `getevent -lt event1` into
+  `passive-getevent.txt`. Kept ARMED after automatable work.
+- The synchronized bounded window recorder `dev/i0-capture.sh` is run per
+  activity from the committed branch (see window W1 below).
 
 ## Remaining physical-only gap
 
@@ -106,3 +111,57 @@ Until genuine physical interactions occur, keep these explicit and open:
 - native Rokid conflict/exclusivity for each mapping.
 
 The project may continue with a debug semantic-control injection seam while these physical bindings remain unqualified.
+
+## Window W1 — first synchronized capture (2026-08-19)
+
+- Runner: `dev/i0-capture.sh` (DURATION=600), host u4090, serial 1906092617103125.
+- Dir: `~/tmp/dsh-glasses-ADB/i0/20260819T111703Z-armed/manifest.txt`.
+- Manifest confirms: provenance `UNCLASSIFIED_CAPTURE_WINDOW`, host `u4090`,
+  model `RG-glasses`, fingerprint from device; channel files written
+  (getevent-capabilities, dumpsys-input, dumpsys-sensorservice, dumpsys-package,
+  proc-bus-input-devices, screen-before.png, window-before.xml, logcat-live,
+  focus-live, synthetic-markers).
+- Limitation recorded: `getevent -lt event0 event1` produced **0 lines**; the
+  toybox `getevent` on this build rejects `-lt` (printed usage; see
+  `getevent-live.err`). `getevent -lp` (static capability dump) works. Fix
+  suggestion for `dev/i0-capture.sh` is reported to the reviewer (use plain
+  `getevent` hex or `-t` without `-l`).
+
+## Synthetic framework traces A (SYNTHETIC_ADB, labelled)
+
+App foreground (pid 18456). Each injected via `adb shell input …`; marker times
+in `synthetic-markers.txt`; every row is device-monotonic uptime (ms) from
+`logcat-live.txt`. None of these are claimed as physical mappings.
+
+| Control | keyCodeInt | scanCode | source | DISPATCH observed | Timing (uptime) |
+|---|---|---|---|---|---|
+| KEYCODE_ENTER | 66 | 0 | 0x0 (Virtual) | DOWN/UP | 195267367/195267367 |
+| KEYCODE_DPAD_UP | 19 | 0 | 0x0 | DOWN/UP | 195268439/195268439 |
+| KEYCODE_DPAD_DOWN | 20 | 0 | 0x0 | DOWN/UP | 195269492/195269492 |
+| KEYCODE_DPAD_LEFT | 21 | 0 | 0x0 | DOWN/UP | 195270541/195270541 |
+| KEYCODE_DPAD_RIGHT | 22 | 0 | 0x0 | DOWN/UP | 195271610/195271610 |
+| KEYCODE_BACK | 4 | 0 | 0x0 | DOWN/UP | 195272679/195272679 |
+| tap (240,480) | — | — | 0x1002 | ACTION_DOWN/UP, 1 pointer | 194828167/194828167 |
+| swipe (120→360,400,400ms) | — | — | 0x1002 | DOWN + MOVE×N + UP | 194828167→194828472 |
+
+Device-name for all injected key/touch events: `Virtual`; pointer rows include
+pressure 1.0→0.0, tool type 1.
+
+## Cancellation/focus probe (E, SYNTHETIC_ADB)
+
+While `com.tailscale.ipn` was the resumed Activity (glasses NOT focused), one
+`KEYCODE_DPAD_UP` + one tap were injected. Result: **zero** `DISPATCH_*` rows
+were emitted for those injections (last DISPATCH uptime 195272 = the earlier
+BACK; none at ~195313). Conclusion: the app does not fabricate a completed
+click for events it never received; focus/lifecycle correlation is preserved in
+`focus-live.txt` (topResumedActivity=glasses.MainActivity restored afterwards).
+
+## Prior same-firmware reference sweep (PRIOR_REFERENCE)
+
+Poker-Dealer (remote + all local worktrees, docs/logs only): the only physical
+input record on this firmware family is the **long-press** from 2026-08-16
+(`KEYCODE_NOTIFICATION` then `KEYCODE_PROG_BLUE down` → native `ACTION_AI_START`
+ordered/abort broadcast). **No** Poker records exist for KEY_DASHBOARD,
+KEYCODE_ENTER, or scan-code 28 in the searched evidence; vendored module trees
+were excluded. All extracted rows will carry `PRIOR_REFERENCE`; Poker semantic
+names/consumption are not carried over.
