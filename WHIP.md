@@ -6,13 +6,19 @@ weight as AGENTS.md. Read it at the START of every turn.
 1. **Open a turn → immediately check the todo list.** There is no "before" or
    "report-only" turn. Start by acting on the first `in_progress`/`pending`
    item.
-2. **Never end a turn while work remains.** A round ends only when:
-   - the current concrete action produced a result AND the next concrete action
-     is already started (in the SAME turn), or
-   - there is a genuine blocker (hardware absent, credential required, decision
-     needed) — and even then: report + ask ChatGPT in-thread, check the poller
-     alerts (`/tmp/gpt-alerts.log`) and the thread for directives, then keep
-     executing whatever is executable in parallel; do not idle.
+2. **Never end a turn without a next action — and never stop just because
+   nothing is left.** Ending a turn is allowed only when:
+   - the current action produced a result AND the NEXT concrete action is
+     already running in this same turn; an in-flight job (build, install,
+     long download) counts as running, but only with its own next step queued;
+   - **no work remains on the todo list -> this NEVER means stop.** You MUST
+     ask ChatGPT in-thread (prefixed) what to work on next, arm the poller for
+     its reply, and execute the directive as soon as it lands. Do not sit idle
+     waiting: keep the poller armed (`/tmp/gpt-alerts.log`) and keep any
+     executable parallel work moving;
+   - there is a genuine blocker (hardware absent, credential required,
+     decision needed) — report + ask ChatGPT, keep the poller armed, and keep
+     the executable parts of the program moving in parallel.
 3. **Todo list is the source of truth.** Keep at least one item `in_progress`
    at all times. Do not mark "done" until merged/pushed/verified.
 4. **Priorities (current program):** TB0-G0 glasses shell → real-device
