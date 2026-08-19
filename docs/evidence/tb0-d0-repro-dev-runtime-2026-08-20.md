@@ -4,13 +4,17 @@
 **Branch:** `tb0/repro-dev-runtime`.  
 **Base:** `0db1c426e2ec2b8e397d96f5f637c8c5c756cf7e`.
 
-> Runtime-tested implementation head: `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855`.
-> All later commits on `tb0/repro-dev-runtime` up to `8136a0d5…` are
-> evidence/documentation only (this evidence record was written on top).
+> Full D0 runtime matrix tested on `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855`.
+> The installed-mirror status-integrity delta was then tested on
+> `51c15282d5d89ed2a32d043ae7d9c192958a54bb` with the dedicated tamper
+> regression below. Intermediate commits through `8136a0d5…` are
+> evidence/documentation only; `51c1528…` is the only post-matrix runtime-code
+> change. This final reconciliation commit is documentation-only.
 
 ## Exact implementation
 
-- Tested branch/head: `tb0/repro-dev-runtime` @ `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855` (D0 files from ad2df34 + ops commits; remote branch head)
+- Full runtime-matrix tested head: `tb0/repro-dev-runtime` @ `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855`
+- Final status-integrity tested head: `51c15282d5d89ed2a32d043ae7d9c192958a54bb`
 - Repository root: `/home/code2hack/Projects/glasses/dsh-glasses`
 - `@deepseek-ai/dsh` binary/package/version: `/home/code2hack/.npm-global/bin/dsh`, `@deepseek-ai/dsh@0.1.0-rc.7` (npm global)
 - pnpm binary/version: pnpm v11.22.0 (hoisted workspace)
@@ -36,7 +40,7 @@
 - seed durable log: `<home>/sessions/…session-tb0-disposable…/session.jsonl.zstd` exists
 - fresh durable log: `<home>/sessions/…<fresh>…/session.jsonl.zstd` exists
 - generated-file/template checks: profile package.json (bundles dsh-base+dsh-web-app, schemastery, plugin file:), cordis.yml [], cordis.patch.yml plugin insert, pnpm-workspace.yaml (hoisted), settings.yaml (tb0vllm only, agent-default-model tb0vllm/lfm2.5-vl-3b, webserver 127.0.0.1:3196), a0-toolfree preset
-- plugin `projection.js` + digest equality: present in installed COPY; source==install SHA-256 verified by status
+- plugin `projection.js` + digest equality: present in installed COPY; source==install SHA-256 verified on `up`; final `status` integrity is covered by the tamper regression below
 
 ## Assistant-output smoke
 
@@ -61,8 +65,8 @@ Reply with exactly: D0 automated runtime passed
 - proxy PID/start-ticks identity: 1272616
 - direct/proxy/bootstrap statuses: direct 200, proxy 200, proxy /api 403
 - proxy `/api` status: 403
-- `repoMatches`: true (recorded fd04f8b == current fd04f8b)
-- `pluginMatches`: true (source==install digest)
+- `repoMatches`: true (recorded fd04f8b == current fd04f8b during the full matrix)
+- full-matrix source digest matched the recorded plugin digest; the final installed-mirror status check is qualified separately below
 
 ## Long-SSE survival
 
@@ -91,18 +95,9 @@ Reply with exactly: D0 automated runtime passed
 - final `ALL PASS`: printed; wrapper `ok:true`, `cleanHomeSelfSeeded:true`
 - preserved-home path: reported by wrapper (`preservedHome:true`)
 
-## Remaining gaps
+## Installed-mirror tamper detection (`status`)
 
-- clipboard seed fixture / Rokid provisioning helper: D1;
-- physical function/touch/head-wheel semantics: unqualified;
-- unexplained golden SSE death: must be absent in D0 acceptance or reported as blocker;
-- product features beyond merged C0: outside D0.
-
-
-## Installed-mirror tamper detection (status)
-
-Fresh home `d0-tamper` (DSH :3198 / proxy :3203), abbreviated gate only (no
-assistant/SSE/host-write rerun):
+Final status-integrity implementation tested at `51c15282d5d89ed2a32d043ae7d9c192958a54bb` on a fresh home (DSH :3198 / proxy :3203). This abbreviated gate intentionally did not rerun assistant/SSE/host-write behavior because the only runtime-code delta is `statusForState()` digest verification.
 
 | Check | Result |
 | --- | --- |
@@ -112,20 +107,16 @@ assistant/SSE/host-write rerun):
 | status #2 (tampered mirror) | `healthy:false`, `sourcePluginMatches:true`, `installedPluginMatches:false`, `pluginMatches:false` |
 | `down` | exit 0; second `down` exit 0 (harmless) |
 
-`status` now re-hashes BOTH the repo source `lib` and the installed mirror
-`lib`; `healthy` requires both to equal the recorded `sourceLibDigest`.
+`status` now re-hashes BOTH the repo source `lib` and the installed mirror `lib`; `healthy` requires both to equal the recorded `sourceLibDigest`.
+
+## Remaining gaps
+
+- clipboard seed fixture / Rokid provisioning helper: D1;
+- physical function/touch/head-wheel semantics: unqualified;
+- product features beyond merged C0: outside D0.
 
 ## Verdict
 
-**PASS — all D0 gates green.** The reproducible disposable runtime
-(`dev/d0-runtime.mjs`) rebuilt the C0-grade environment from an empty home and
-qualified on every frozen gate: loopback-only DSH, plugin mirrored +
-content-verified, seed + fresh a0-toolfree sessions, tb0vllm/LFM assistant
-output, exactly-one durable user/message, accepted monotonic draft clear,
-narrow-proxy bootstrap with `/api` blocked, long-SSE survival through 3
-heartbeats with NO recurrence of the golden silent-death risk, idempotent
-`down` preserving the home, and the self-seeding host-write suite 16/16.
+**PASS — all D0 gates green.** The reproducible disposable runtime (`dev/d0-runtime.mjs`) rebuilt the C0-grade environment from an empty home and qualified on every frozen gate: loopback-only DSH, plugin mirrored + content-verified, seed + fresh a0-toolfree sessions, tb0vllm/LFM assistant output, exactly-one durable user/message, accepted monotonic draft clear, narrow-proxy bootstrap with `/api` blocked, long-SSE survival through 3 heartbeats with NO recurrence of the golden silent-death risk, idempotent `down` preserving the home, the self-seeding host-write suite 16/16, and final installed-mirror tamper detection through `status`.
 
-Environment note: the D0 acceptance run found a stray worker-owned DSH daemon
-listening on 3196 (resident :3080 untouched); it was terminated before `up`
-because D0 correctly refuses to override an occupied port.
+Environment note: the D0 acceptance run found a stray worker-owned DSH daemon listening on 3196 (resident :3080 untouched); it was terminated before `up` because D0 correctly refuses to override an occupied port.
