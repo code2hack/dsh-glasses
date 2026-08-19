@@ -246,3 +246,43 @@ concurrent implementation on the real Rokid.
 - **AGENTS**: base-merge `6d1e1925b967cda3c19731decc570d02da2c9c6d`; active
   slice `tb0/input-qualification` (both occurrences).
 - Physical rows remain **unqualified**.
+## W-progression (final, reviewed phrasing)
+
+- **W1**: framework/focus/screenshot/UI-hierarchy channels passed; low-level
+  `getevent -lt` command syntax failed (usage output; `getevent-live` empty).
+- **W2**: two-device `getevent event0 event1` argument failed (this toybox
+  accepts exactly one device arg; usage + non-124 exit).
+- **W2b**: one-device syntax worked (device-side serial loop), but it observed
+  only event0 (event0 blocked until timeout); diagnostic only — not a dual-node
+  pass.
+- **W2c** (`20260819T124516Z-w2c`, concurrent independent readers on the
+  reviewer's `472b436` capture): `capture_end_utc=12:47:21Z`,
+  `capture_exit_status=0`, `getevent_capture_mode=device-timestamp`,
+  `getevent_process_status=124`, `getevent_usage_errors=0`,
+  `getevent-event0.status=124`, `getevent-event1.status=124`,
+  `getevent-live.status=124`, `getevent-event0.err`/`event1.err`/`live.err` all
+  0 bytes, `getevent_live_lines=0` (no genuine physical event; nothing forced).
+  **Low-level reader plumbing PASSED (both nodes observed concurrently).**
+
+## Accepted sensor qualification (as reviewed)
+
+- Game Rotation Vector type 15: dynamically qualified as an APK input source.
+- Gyroscope type 4: dynamically qualified as supplementary input.
+- pause → unregister proven; resume → re-register proven.
+- Head-wheel anchor/dead-zone/threshold behavior: still unqualified.
+
+## Passive recorder health (2026-08-19T12:4xZ)
+
+- tmux session `dsh-glasses-adb` (1 window), loop PID 170034
+  (`bash /tmp/passive-loop.sh`), `LABEL=passive DURATION=1800` with the
+  committed `472b436` concurrent capture.
+- Current capture directory `20260819T124041Z-passive`
+  (`getevent_capture_mode=device-timestamp`); per-node statuses of a completed
+  passive window to be confirmed on the next completed 1800s window (both nodes
+  must read 124). Last health-check UTC 2026-08-19T12:47Z.
+
+## Physical rows (still open)
+
+- function-button short / long — **unqualified**;
+- one-finger physical touch/swipe — **unqualified**;
+- two-finger physical touch/swipe — **unqualified**.
