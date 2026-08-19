@@ -85,7 +85,15 @@ async function promptHost(content, rpcId = randomUUID()) {
 
 let proc = null;
 async function startInstance(sid = SID, extraEnv = {}) {
-  if (proc) { proc.kill("SIGKILL"); await sleep(3000); }
+  if (proc) {
+    proc.kill("SIGKILL");
+    await sleep(3000);
+    // wait until the old process actually released :PORT (EADDRINUSE guard)
+    for (let i = 0; i < 40; i++) {
+      try { await fetch(BASE + "/glasses/v1/bootstrap", { signal: AbortSignal.timeout(300) }); await sleep(200); continue; }
+      catch { break; }
+    }
+  }
   SID = sid;
   proc = spawn("dsh", ["--profile", "web", "--port", String(PORT)], {
     cwd: PLUGIN_DIR,
