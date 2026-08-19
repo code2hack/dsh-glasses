@@ -87,6 +87,7 @@ class GlassesBridge(private val context: Context) {
             TAG,
             "configured committed=$committed endpoint=$normalizedBase session=${normalizedSession.take(12)}…",
         )
+        if (committed) closeStream()
         return committed
     }
 
