@@ -32,8 +32,8 @@ Product traffic remains Rokid ↔ Spark over Tailscale/private LAN. ADB is diagn
 
 For each bounded capture window, preserve:
 
-1. `/dev/input/event0` and `/dev/input/event1` through `getevent -lt`;
-2. `DSHGlasses`/`DSHGlassesBridge` framework and lifecycle logs;
+1. `/dev/input/event0` and `/dev/input/event1` through the target-compatible `getevent` mode selected by `dev/i0-capture.sh` (`-t` when supported, otherwise plain hex with host-arrival timestamps); static `getevent -lp` supplies labels/capabilities;
+2. `DSHGlasses`, `DSHGlassesBridge`, and `DSHGlassesSensor` framework/lifecycle/sensor logs;
 3. relevant `InputReader`, `InputDispatcher`, Activity/window-focus, and Rokid service logs;
 4. foreground Activity and focused-window samples;
 5. before/after screenshot and UI hierarchy when a native side effect is suspected;
@@ -54,13 +54,13 @@ Do not clear retained logs before inspecting them.
 
 | Control candidate | Current APK physical trace | Synthetic path | Prior same-firmware evidence | Native side effect | Status |
 |---|---|---|---|---|---|
-| function-button short | pending | pending/available | pending | unknown | **unqualified** |
-| function-button long | pending | pending/available | pending | unknown | **unqualified** |
-| one-finger touch | pending | pending/available | pending | unknown | **unqualified** |
-| one-finger swipe forward/backward | pending | pending/available | pending | unknown | **unqualified** |
-| two-finger touch | pending | pending/available | pending | unknown | **unqualified** |
-| two-finger swipe forward/backward | pending | pending/available | pending | unknown | **unqualified** |
-| head pose | no physical gesture required for sensor availability; dynamic replay pending | sensor/replay pending | n/a | n/a | **partially qualified** |
+| function-button short | pending | `SYNTHETIC_ADB`: framework tracer exercised with safe key events; no physical mapping inferred | no usable archived short-press record found | unknown | **unqualified** |
+| function-button long | pending | `SYNTHETIC_ADB`: delayed DOWN/UP reached framework tracer; no physical mapping inferred | Poker-Dealer long-press record (NOTIFICATION → PROG_BLUE → native `ACTION_AI_START`) | prior reference only | **unqualified** |
+| one-finger touch | pending | `SYNTHETIC_ADB`: tap reached `DISPATCH_TOUCH` | no usable archived record found | unknown | **unqualified** |
+| one-finger swipe forward/backward | pending | `SYNTHETIC_ADB`: injected swipe produced MOVE/UP pointer rows | no usable archived record found | unknown | **unqualified** |
+| two-finger touch | pending | not tested; Android `adb input` is single-pointer | no usable archived record found | unknown | **unqualified** |
+| two-finger swipe forward/backward | pending | not tested; low-level multi-touch injection deferred | no usable archived record found | unknown | **unqualified** |
+| head pose | physical button mapping not applicable to sensor availability | static inventory proved; dynamic `SensorTracer` delivery rerun pending | n/a | n/a | **partially qualified** |
 
 ## Per-interaction trace template
 
@@ -92,14 +92,9 @@ A physical binding may be frozen only when a genuine interaction proves:
 
 Synthetic replay is accepted only for validating tracer/reducer plumbing. It must never be presented as hardware qualification.
 
-## Passive capture state (2026-08-19)
+## Passive capture state
 
-- Passive recorder: `/tmp/i0-passive.sh` on u4090 (`~/tmp/dsh-glasses-ADB/i0/`),
-  daemonized (setsid nohup); rotates `DSHGlasses` logcat (300s bounded) into
-  `passive-logcat.txt` and periodically samples `getevent -lt event1` into
-  `passive-getevent.txt`. Kept ARMED after automatable work.
-- The synchronized bounded window recorder `dev/i0-capture.sh` is run per
-  activity from the committed branch (see window W1 below).
+A long-lived passive recorder remains armed on u4090 for incidental genuine interactions. The earlier `/tmp/i0-passive.sh` used the same unsupported combined `getevent -lt` spelling as W1 and must be restarted from the corrected committed `dev/i0-capture.sh` after the branch is fetched. Record the restarted recorder PID, output directory, selected getevent mode, and last health check before PR settlement.
 
 ## Remaining physical-only gap
 
@@ -110,28 +105,20 @@ Until genuine physical interactions occur, keep these explicit and open:
 - one- and two-finger touch/swipe mappings;
 - native Rokid conflict/exclusivity for each mapping.
 
-The project may continue with a debug semantic-control injection seam while these physical bindings remain unqualified.
+The project may continue with synthetic/debug control paths while these physical bindings remain unqualified.
 
-## Window W1 — first synchronized capture (2026-08-19)
+## Window W1 — synchronized framework/focus capture (2026-08-19)
 
-- Runner: `dev/i0-capture.sh` (DURATION=600), host u4090, serial 1906092617103125.
-- Dir: `~/tmp/dsh-glasses-ADB/i0/20260819T111703Z-armed/manifest.txt`.
-- Manifest confirms: provenance `UNCLASSIFIED_CAPTURE_WINDOW`, host `u4090`,
-  model `RG-glasses`, fingerprint from device; channel files written
-  (getevent-capabilities, dumpsys-input, dumpsys-sensorservice, dumpsys-package,
-  proc-bus-input-devices, screen-before.png, window-before.xml, logcat-live,
-  focus-live, synthetic-markers).
-- Limitation recorded: `getevent -lt event0 event1` produced **0 lines**; the
-  toybox `getevent` on this build rejects `-lt` (printed usage; see
-  `getevent-live.err`). `getevent -lp` (static capability dump) works. Fix
-  suggestion for `dev/i0-capture.sh` is reported to the reviewer (use plain
-  `getevent` hex or `-t` without `-l`).
+- Runner: pre-fix `dev/i0-capture.sh` (`DURATION=600`), host u4090, serial `1906092617103125`.
+- Directory: `~/tmp/dsh-glasses-ADB/i0/20260819T111703Z-armed/`.
+- Manifest confirms provenance `UNCLASSIFIED_CAPTURE_WINDOW`, host/device/fingerprint, `capture_end_utc=2026-08-19T11:27:06Z`, and `capture_exit_status=0`.
+- Before/after screenshot and UI hierarchy were written; `logcat-live.txt` has 1662 lines and `focus-live.txt` has 2640 lines.
+- **Low-level input channel did not qualify:** this target's toybox rejected combined `getevent -lt`, emitted usage, and produced zero live event lines. Therefore W1 proves the capture lifecycle, framework log, focus, screenshot, and hierarchy channels only; it is not a healthy synchronized low-level input capture.
+- Corrective implementation landed after W1: `dev/i0-capture.sh` now probes `getevent -t`, falls back to plain hex with host-arrival timestamps, records the selected mode/probe status/line count/usage count in the manifest, and includes `DSHGlassesSensor` logs. A W2 rerun is required.
 
-## Synthetic framework traces A (SYNTHETIC_ADB, labelled)
+## Synthetic framework traces A (`SYNTHETIC_ADB`)
 
-App foreground (pid 18456). Each injected via `adb shell input …`; marker times
-in `synthetic-markers.txt`; every row is device-monotonic uptime (ms) from
-`logcat-live.txt`. None of these are claimed as physical mappings.
+App foreground (pid 18456). Each was injected via `adb shell input`; marker times are in `synthetic-markers.txt`; every row uses device-monotonic uptime from `logcat-live.txt`. None is claimed as a physical mapping.
 
 | Control | keyCodeInt | scanCode | source | DISPATCH observed | Timing (uptime) |
 |---|---|---|---|---|---|
@@ -144,34 +131,29 @@ in `synthetic-markers.txt`; every row is device-monotonic uptime (ms) from
 | tap (240,480) | — | — | 0x1002 | ACTION_DOWN/UP, 1 pointer | 194828167/194828167 |
 | swipe (120→360,400,400ms) | — | — | 0x1002 | DOWN + MOVE×N + UP | 194828167→194828472 |
 
-Device-name for all injected key/touch events: `Virtual`; pointer rows include
-pressure 1.0→0.0, tool type 1.
+Device name for all injected key/touch events was `Virtual`; pointer rows include pressure 1.0→0.0 and tool type 1.
 
-## Cancellation/focus probe (E, SYNTHETIC_ADB)
+## Cancellation/focus probe E (`SYNTHETIC_ADB`)
 
-While `com.tailscale.ipn` was the resumed Activity (glasses NOT focused), one
-`KEYCODE_DPAD_UP` + one tap were injected. Result: **zero** `DISPATCH_*` rows
-were emitted for those injections (last DISPATCH uptime 195272 = the earlier
-BACK; none at ~195313). Conclusion: the app does not fabricate a completed
-click for events it never received; focus/lifecycle correlation is preserved in
-`focus-live.txt` (topResumedActivity=glasses.MainActivity restored afterwards).
+While `com.tailscale.ipn` was the resumed Activity and the glasses app was not focused, one `KEYCODE_DPAD_UP` and one tap were injected. Result: zero `DISPATCH_*` rows for those injections. The app did not fabricate a click for events it never received, and focus/lifecycle correlation was preserved. This does not yet test cancellation of a physically begun interaction interrupted mid-hold.
 
-## Prior same-firmware reference sweep (PRIOR_REFERENCE)
+## Prior same-firmware reference sweep (`PRIOR_REFERENCE`)
 
-Poker-Dealer (remote + all local worktrees, docs/logs only): the only physical
-input record on this firmware family is the **long-press** from 2026-08-16
-(`KEYCODE_NOTIFICATION` then `KEYCODE_PROG_BLUE down` → native `ACTION_AI_START`
-ordered/abort broadcast). **No** Poker records exist for KEY_DASHBOARD,
-KEYCODE_ENTER, or scan-code 28 in the searched evidence; vendored module trees
-were excluded. All extracted rows will carry `PRIOR_REFERENCE`; Poker semantic
-names/consumption are not carried over.
+Poker-Dealer remote plus local worktrees were searched with vendored module trees excluded. The only usable physical input record found on this firmware family is the 2026-08-16 long press:
 
-- W1 **completed healthy**: `capture_end_utc=2026-08-19T11:27:06Z`,
-  `capture_exit_status=0`; before/after screen + UI hierarchy written;
-  logcat-live 1662 + focus-live 2640 lines. Recorder limitation stands
-  (`getevent -lt` unsupported by this toybox; `-lp` used for inventory).
-- Sensor tracer baseline (2026-08-19): two `dumpsys sensorservice` snapshots 5s
-  apart — Game Rotation Vector (QTI wake/non-wake + AOSP) and gyro present,
-  **0 active sensor connections** (app currently does not activate a sensor
-  client; a runtime sensor-value tracer is optional future work for head-pose
-  dynamic replay).
+- `KEYCODE_NOTIFICATION` down at `17:33:47.524`;
+- `KEYCODE_NOTIFICATION` up at `17:33:47.547`;
+- `KEYCODE_PROG_BLUE` down at `17:33:48.024`;
+- native `launchRokidAI`; ordered `ACTION_AI_START` with abort.
+
+No archived evidence rows were found for `KEY_DASHBOARD`, `KEYCODE_ENTER`, or scan code 28. This prior record informs hypotheses only; Poker semantic names and consumption behavior are not carried over.
+
+## Dynamic head-pose instrumentation
+
+The branch now contains debug-only `SensorTracer` instrumentation that registers `TYPE_GAME_ROTATION_VECTOR` and the gyroscope while the Activity is resumed, caps logs at approximately 20 Hz, records sensor and observed monotonic timestamps plus values/accuracy/metadata, and unregisters on pause/destroy. It performs no semantic action.
+
+The earlier `dumpsys sensorservice` baseline showed the relevant sensors but zero active app connections because that APK did not contain/start the tracer. Build/install and real-device sample/unregister/re-register proof from the current branch remain required before PR #7 is ready.
+
+## Debug semantic-control claim
+
+The current remote `tb0/input-qualification` branch does not yet contain a debug semantic-control bridge method. Any local/unpushed seam is not part of PR #7 and must not be claimed in its body or evidence. The upcoming text round-trip can use the existing DEBUG WebView CDP access and path-restricted `GlassesBridge.fetch()` directly; no semantic-control seam is required for that proof.
