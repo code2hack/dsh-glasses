@@ -222,13 +222,21 @@ PIDS+=("$!")
 ) &
 PIDS+=("$!")
 
+FOCUS_SAMPLE_TIMEOUT="${FOCUS_SAMPLE_TIMEOUT:-5}"
+
 # Foreground/focus samples correlated by host and device monotonic clocks.
+# Each ADB probe is bounded by FOCUS_SAMPLE_TIMEOUT so a transient ADB/dumpsys
+# stall cannot indefinitely stop the bounded window or the passive rotation.
 (
   end=$((SECONDS + DURATION))
   while (( SECONDS < end )); do
     printf '\n=== host_utc=%s host_epoch_ms=%s ===\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$(date +%s%3N)"
-    "$ADB" -s "$SERIAL" shell 'printf "device_uptime="; cat /proc/uptime; dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp|mObscuringWindow"; dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -n 8' 2>&1 || true
+    focus_status=0
+    timeout "$FOCUS_SAMPLE_TIMEOUT" \
+      "$ADB" -s "$SERIAL" shell 'printf "device_uptime="; cat /proc/uptime; dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp|mObscuringWindow"; dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -n 8' \
+      2>&1 || focus_status=$?
+    printf '\nfocus_sample_status=%s\n' "$focus_status"
     sleep "$SAMPLE_INTERVAL"
   done
 ) > "$RUN_DIR/focus-live.txt" 2>&1 &
