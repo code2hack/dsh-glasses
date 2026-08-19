@@ -123,7 +123,7 @@ exact-head clean regression above re-verifies).
 
 {"seq":13,"type":"assistant/chunk","turn":1,"step":1,"chunk":{"type":"block-start","index":0,"blockType":"text"}}
 (… text-delta …) {"chunk":{"type":"text-delta","index":0,"text":"C0 product "}}
-(… block-end …)  {"chunk":{"type":"block-end","index":0,"block":{"type":"text","text":"C0 product loop passed"}}}
+(… block-end …)  {"chunk":{"type":"block-end","index":0,"text":"C0 product loop passed"}}
 ```
 
 A scan of the served bootstrap/stream found NO credentials, `replayState`,
@@ -156,6 +156,24 @@ Re-run from the exact PR head `05faafe060547f207ccf3bb1ee21f36a772706d9`:
 
 Primary evidence used: structured native (logcat DSHGlassesBridge), plugin
 (state/ops), CDP (body/DOM/chat), and complete durable-log correlation.
+
+
+## Exact-head whole-word cursor animation (.cursor-word)
+
+Driven on the installed exact-head APK (bdc7112 code): INPUT (COMMAND_SHORT),
+paste (SECONDARY_SHORT), word-left (LEFT). CDP samples (300 ms apart):
+
+```
+{"exists":true,"text":"passed","background":"rgb(238, 243, 247)","color":"rgb(8, 10, 13)","animationName":"cursor-word-blink"}
+{"exists":true,"text":"passed","background":"rgba(0, 0, 0, 0)","color":"rgb(238, 243, 247)","animationName":"cursor-word-blink"}
+(… alternates … multiple ~1 s cycles …)
+```
+
+The `.cursor-word` element wraps the word `passed`, `animationName` is
+`cursor-word-blink`, and the computed background/color alternate between the
+highlighted (inverted) and ordinary states over at least one complete 1 s cycle
+(repeated 8 samples). This is the bdc7112-introduced animation; the earlier
+`.cursor-end` measurement was the pre-existing end sentinel.
 
 ## Remaining physical gaps
 
