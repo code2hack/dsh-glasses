@@ -258,8 +258,8 @@ restarts, and evidence recording.
 
 Do not ask code2hack to tap controls, read or describe the display, run terminal
 commands, collect logs, restart services, toggle Tailscale, reinstall the APK, or
-perform another device/server action while any verified ADB route to the Rokid
-is available. Use u4090 USB ADB first, then the documented fallback routes.
+perform another device/server action while any verified ADB route to the Rokid is
+available. Use u4090 USB ADB first, then the documented fallback routes.
 
 The only ordinary escalation threshold is that the Rokid is unavailable through
 all verified ADB routes after the recovery procedure in this file. If ADB is
