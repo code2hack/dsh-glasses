@@ -1,76 +1,103 @@
 # TB0-I0 Rokid physical input qualification — evidence
 
-**Outcome:** qualification matrix below; physical-only rows remain **unqualified**
-(genuine physical presses are required and are NOT automated over ADB). Supporting
-facts (device nodes, synthetic paths, prior same-firmware records) are recorded
-here as reference, explicitly NOT as new dsh-glasses physical traces.
-**Branch:** `tb0/i0-input`, base `main` merge `96da64e` (TB0-G0).
-**Date:** 2026-08-19.
+**Outcome:** automatable input plumbing is under qualification; all physical-only bindings remain **unqualified** until genuine hardware traces are captured.  
+**Branch:** `tb0/i0-input`.  
+**Base:** `6d1e1925b967cda3c19731decc570d02da2c9c6d` (`main`, including final G0 regression evidence).  
+**Date:** 2026-08-19.  
+**Target:** serial `1906092617103125`; fingerprint `Rokid/glasses/glasses:12/SKQ1.240613.001/1.23.009-20260725-150201:user/release-keys`.
+
+## Evidence provenance labels
+
+Every interaction claim MUST use exactly one label:
+
+- `PHYSICAL` — a genuine Rokid hardware interaction captured by the current APK and synchronized low-level/framework tracers;
+- `SYNTHETIC_ADB` — Android framework-level injection such as `adb shell input`;
+- `SYNTHETIC_SENDEVENT` — Linux input injection through a debug-only path;
+- `PRIOR_REFERENCE` — official Rokid or Poker-Dealer evidence from the same firmware/device family.
+
+Only `PHYSICAL` evidence can close a physical-control row.
 
 ## Qualification matrix
 
 | Control candidate | Current APK physical trace | Synthetic path | Prior same-firmware evidence | Status |
 | --- | --- | --- | --- | --- |
-| function short | pending | tested (KEYCODE_PROG1 via `adb input keyevent 188`; captured by tracer) | not available in Poker-Dealer records found | unqualified |
-| function long | pending | tested (key DOWN + delayed UP path; tracer rows) | **available** — Poker-Dealer long-press 2026-08-16: `KEYCODE_NOTIFICATION down/up` then `KEYCODE_PROG_BLUE down` → native `launchRokidAI` ordered broadcast `ACTION_AI_START ordered=true abort=true` | unqualified |
-| one-finger touch/swipes | pending | tested (injected swipe; `DISPATCH_TOUCH` MOVE/UP pointer rows captured) | not available in Poker-Dealer records found | unqualified |
-| two-finger touch/swipes | pending | not tested (adb `input` is single-pointer; multi-touch `sendevent` deferred) | not available in Poker-Dealer records found | unqualified |
-| head pose | sensor-qualified (Game Rotation Vector QTI wake+non-wake, gyroscope `icm4x6xx`, accelerometer; see G0 evidence) | replay not tested | n/a (no prior head-pose record) | partially qualified |
+| function short | pending | `SYNTHETIC_ADB`: KEYCODE_PROG1 (`adb input keyevent 188`) reached the non-invasive tracer | no usable Poker-Dealer short-press record found | **unqualified** |
+| function long | pending | `SYNTHETIC_ADB`: key DOWN plus delayed UP reached the tracer | `PRIOR_REFERENCE`: Poker-Dealer physical long press produced NOTIFICATION then PROG_BLUE and native `ACTION_AI_START` | **unqualified** |
+| one-finger touch/swipes | pending | `SYNTHETIC_ADB`: injected swipe produced `DISPATCH_TOUCH` MOVE/UP rows | no usable Poker-Dealer record found | **unqualified** |
+| two-finger touch/swipes | pending | not tested; Android `adb input` is single-pointer and low-level multi-touch injection is deferred | no usable Poker-Dealer record found | **unqualified** |
+| head pose | physical input binding not applicable to availability; dynamic delivery test pending on this branch | `SYNTHETIC_ADB` inventory: Game Rotation Vector + gyro available; replay pending | n/a | **partially qualified** |
 
-## Prior same-firmware reference (Poker-Dealer, citation only)
+## Prior same-firmware reference (`PRIOR_REFERENCE` only)
 
-- Record: `Poker-Dealer/.worktrees/issue-64/docs/evidence/rg-m4-pairing-long-press-2026-08-16.md`
-  (spark path `/home/code2hack/Projects/glasses/Poker-Dealer/.worktrees/issue-64/docs/evidence/rg-m4-pairing-long-press-2026-08-16.md`).
-- Tested production package: `com.code2hack.poker`, commit `b4b303b…`.
-- Device: Android 12 / API 32, build `SKQ1.240613.001` `release-keys` (same platform
-  family as the dsh-glasses target firmware `SKQ1.240613.001/1.23.009-20260725-150201`).
-- Physical long-press sequence (verbatim): `KEYCODE_NOTIFICATION down 17:33:47.524`;
-  `KEYCODE_NOTIFICATION up 17:33:47.547`; `KEYCODE_PROG_BLUE down 17:33:48.024`;
-  `launchRokidAI true; ordered broadcast sent`; `PokerAiLongPress exact
-  ACTION_AI_START ordered=true abort=true`.
-- Extracted facts: key identity (NOTIFICATION, PROG_BLUE), native side effect
-  (Rokid AI ordered broadcast with abort), rough timing (down/up deltas), device
-  nodes used (documented in Poker-Dealer record). **Cited as prior reference only —
-  never as a trace produced by the new dsh-glasses APK.**
+- Source record: `Poker-Dealer/.worktrees/issue-64/docs/evidence/rg-m4-pairing-long-press-2026-08-16.md`.
+- Tested package: `com.code2hack.poker`, commit `b4b303b…`.
+- Device family: Android 12/API 32, build `SKQ1.240613.001 release-keys`, matching the dsh-glasses platform family.
+- Recorded physical long-press sequence:
+  - `KEYCODE_NOTIFICATION` down `17:33:47.524`;
+  - `KEYCODE_NOTIFICATION` up `17:33:47.547`;
+  - `KEYCODE_PROG_BLUE` down `17:33:48.024`;
+  - native `launchRokidAI`; ordered `ACTION_AI_START` with abort.
 
-## Supporting non-physical facts (not a substitute for physical traces)
+This record informs hypotheses about key identity, timing, and native conflict. It is never represented as a trace produced by the current `dsh-glasses` APK.
 
-- Device nodes (from TB0-G0 evidence): `event1 ROKID,PSOC-TP-R` capabilities
-  KEY_ENTER/UP/LEFT/RIGHT/DOWN, KEY_PROG1/2/3, KEY_BACK, KEY_F13/F14,
-  KEY_DASHBOARD; `event0 qpnp_pon` KEY_VOLUMEDOWN/KEY_MENU. Full getevent -lp in
-  G0 evidence (documented in `docs/evidence/tb0-g0-rokid-shell-2026-08-19.md`).
-- `dumpsys input` (3 devices), `dumpsys sensorservice` (Game Rotation Vector +
-  gyro), Rokid package inventory — recorded in G0 evidence.
-- Tracer foundation is non-invasive: delegates events after logging; captures
-  action/key/scan/source/device/pointer/pressure/tool and monotonic up/down/observed
-  uptimes; `nativeEffect=unknown` until separately correlated.
+## Supporting non-physical facts
 
-## Passive capture (armed)
+- `/dev/input/event1`: `ROKID,PSOC-TP-R`; capabilities include ENTER, directional keys, PROG1/2/3, F13/F14, BACK, DASHBOARD.
+- `/dev/input/event0`: `qpnp_pon`; capabilities include VOLUMEDOWN and MENU.
+- `dumpsys input`: three input devices; PSOC touch/key source present.
+- `dumpsys sensorservice`: Game Rotation Vector, gyroscope, accelerometer, and linear acceleration are available.
+- The current `InputTracer` delegates events after logging and records action, key/scan/source/device, pointer/pressure/tool, monotonic down/event/observed times, lifecycle, and focus. `nativeEffect` remains `unknown` until separately correlated.
 
-A long-lived passive recorder is running on u4090 to catch an **incidental** real
-physical interaction without interrupting the user:
+## Reproducible synchronized capture
 
-- rotates `logcat -v threadtime DSHGlasses:I` into
-  `~/tmp/dsh-glasses-ADB/i0/passive-logcat.txt`;
-- periodically samples `getevent -lt /dev/input/event1` into
-  `~/tmp/dsh-glasses-ADB/i0/passive-getevent.txt`.
+`dev/i0-capture.sh` records one bounded window on u4090 using the verified USB ADB route. It captures:
 
-Once a genuine physical short/long press or two-finger touch occurs, the tracer
-rows + raw device deltas will be correlated with lifecycle/focus/system logs and
-the matrix rows above will be promoted from "pending" to recorded, then
-re-qualified.
+- `getevent -lt` for event0 and event1;
+- `DSHGlasses`, `DSHGlassesBridge`, and `DSHGlassesSensor` logs plus relevant system input/lifecycle logs;
+- focused-window and resumed-Activity samples;
+- input/sensor/package inventories;
+- before/after screenshot and UI hierarchy;
+- a manifest containing commit, device, firmware, host, and timing.
 
-## Explicit boundary
+Each resulting interaction must be classified after capture; a capture window begins as `UNCLASSIFIED_CAPTURE_WINDOW` and is not physical evidence merely because the recorder was armed.
 
-Physical-only controls are **NOT claimed passed**. Synthetic ADB events,
-`/dev/input` capability listings, prior Poker-Dealer records, and sensor
-inventories are supporting evidence only and cannot close the hardware gate.
+A long-lived passive recorder is also armed on u4090 to catch an incidental real interaction without interrupting the user. Its current PIDs/output directory and last health check must be recorded before PR settlement.
 
-## Debug semantic-control injection seam (next-slice continuation)
+## Dynamic head-pose tracer
 
-A **debug-only** semantic-control injection seam was added (same branch) so future
-work can exercise semantic controls without hardware: `GlassesBridge.debugSemanticControl(name)`
-(no-op unless DEBUG; logs `debug-semantic-control <name>` and delivers
-`window.glassesOnSemanticControl(name)` → traced `semantic-control-injected
-{source:"debug-seam",name,time}`). It deliberately does NOT touch physical
-bindings; TB0-I0 physical rows remain unqualified.
+This branch adds debug-only `SensorTracer` instrumentation:
+
+- registers `TYPE_GAME_ROTATION_VECTOR` and gyroscope while the Activity is resumed;
+- logs sensor name/vendor/version, wake-up/reporting properties, sensor timestamp, observed `elapsedRealtimeNanos`, accuracy, and values;
+- caps output at approximately 20 Hz;
+- unregisters on pause/destroy;
+- performs no scrolling, tab switching, anchoring, thresholding, or semantic action.
+
+A real-device build/run must prove dynamic sample delivery before the head-pose row advances beyond inventory-only status.
+
+## Debug semantic trace-injection seam
+
+`GlassesBridge.debugSemanticControl(name)` is DEBUG-gated and delivers a bounded name to `window.glassesOnSemanticControl(name)`. In the current I0 branch the JavaScript handler records only a `semantic-control-injected` trace.
+
+This proves bridge/JS notification plumbing only. It does **not** yet invoke a product reducer, mutate a draft, Send, or qualify a physical binding. Any later behavior driven through it must be labeled `SYNTHETIC_DEBUG_CONTROL`.
+
+## Acceptance rule for physical rows
+
+A physical binding may be frozen only after at least three consistent genuine trials prove:
+
+- complete BEGIN/UPDATE-or-HOLD/END-or-CANCEL lifecycle;
+- stable Linux event identity and Android mapping;
+- short/long/double timing where relevant;
+- focus/background cancellation behavior;
+- whether a conflicting Rokid-native operation also fires;
+- no unexplained divergence.
+
+## Remaining gates
+
+Before PR #6 is ready:
+
+1. build/install the branch APK on u4090 and prove `DSHGlassesSensor` dynamic samples;
+2. run `dev/i0-capture.sh` and record its healthy output directory/line counts;
+3. update `AGENTS.md` to the active I0 branch/base;
+4. retain the physical rows as unqualified unless genuine incidental interactions are captured;
+5. record the exact tested commit/APK and all synthetic commands/results.
