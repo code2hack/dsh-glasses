@@ -6,8 +6,10 @@ import android.os.Process
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
 import android.webkit.JsResult
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -28,6 +30,7 @@ class MainActivity : Activity() {
         InputTracer.lifecycle("onCreate", "pid=${Process.myPid()}")
 
         bridge = GlassesBridge(applicationContext)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         webView = WebView(this)
         setContentView(webView)
 
@@ -40,6 +43,18 @@ class MainActivity : Activity() {
         }
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+            ) {
+                InputTracer.lifecycle(
+                    "webError",
+                    "main=${request.isForMainFrame} code=${error.errorCode} description=${error.description}",
+                )
+                super.onReceivedError(view, request, error)
+            }
         }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(
@@ -50,6 +65,14 @@ class MainActivity : Activity() {
             ): Boolean {
                 InputTracer.lifecycle("jsAlert", "message=${message ?: ""}")
                 result?.confirm()
+                return true
+            }
+
+            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                InputTracer.lifecycle(
+                    "jsConsole",
+                    "level=${message.messageLevel()} line=${message.lineNumber()} source=${message.sourceId()} message=${message.message()}",
+                )
                 return true
             }
         }
