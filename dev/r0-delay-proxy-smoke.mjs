@@ -25,7 +25,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitUntil(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await sleep(25);
   }
   throw new Error(`timed out waiting for ${label}`);
