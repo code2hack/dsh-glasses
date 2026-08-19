@@ -465,6 +465,12 @@ export async function apply(ctx, config) {
       newOp.state = "dispatching";
       await writeState(st); // dispatching (one durable write)
 
+      if (process.env.DSH_GLASSES_TEST_FAIL_DISPATCH === "1") {
+        console.log("[dsh-glasses-plugin] [test] simulated pre-dispatch failure (op=" + opId + ")");
+        await settle(st, opId, "rejected", "test-dispatch-failure");
+        return sendJson(res, 200, { ok: true, operationId: opId, state: "rejected", reason: "dispatch-failure" });
+      }
+
       let admitted;
       try {
         admitted = await ctx.apiProxy.sessions.prompt({
@@ -485,7 +491,11 @@ export async function apply(ctx, config) {
         console.log("[dsh-glasses-plugin] [test] crash after dispatch (op=" + opId + ")");
         process.exit(1);
       }
-      const { count } = await reconcileOperation(newOp);
+      let { count } = await reconcileOperation(newOp);
+      if (process.env.DSH_GLASSES_TEST_INVARIANT === "1" && count === 1) {
+        console.log("[dsh-glasses-plugin] [test] forced identity-invariant count (op=" + opId + ")");
+        count = 2;
+      }
       if (count > 1) {
         newOp.invariantFailure = true;
         await writeState(st);
