@@ -295,8 +295,9 @@ interaction.
 - TB0-R0 merged in PR #8.
 - TB0-A0 merged in PR #9.
 - TB0-C0 merged in PR #10 (one-session product text loop, accepted 2026-08-19).
-- Active slice: `tb0/repro-dev-runtime` (TB0-D0, reproducible disposable runtime).
-- Base merge: `0db1c426e2ec2b8e397d96f5f637c8c5c756cf7e`.
+- TB0-D0 merged in PR #11 (reproducible disposable runtime, accepted 2026-08-19).
+- Active slice: `tb0/repro-device-debug` (TB0-D1, reproducible Rokid debug provisioning).
+- Base merge: `6f512aa39c9b1b496b89cd24c305a518997b0c26`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
