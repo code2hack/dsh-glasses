@@ -127,13 +127,16 @@ EOF
 (
   getevent_status=0
   if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
-    timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent "${GETEVENT_ARGS[@]}" \
-      /dev/input/event0 /dev/input/event1 \
+    # This toybox getevent accepts exactly ONE device argument; iterate the
+    # power/touch nodes device-side instead of passing both at once.
+    timeout "$DURATION" "$ADB" -s "$SERIAL" shell \
+      "for d in /dev/input/event0 /dev/input/event1; do getevent ${GETEVENT_ARGS[*]} \"\$d\" || true; done" \
       > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" \
       || getevent_status=$?
   else
-    timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
-      /dev/input/event0 /dev/input/event1 2> "$RUN_DIR/getevent-live.err" \
+    timeout "$DURATION" "$ADB" -s "$SERIAL" shell \
+      "for d in /dev/input/event0 /dev/input/event1; do getevent \"\$d\" || true; done" \
+      2> "$RUN_DIR/getevent-live.err" \
       | awk '{ print "host_epoch_s=" systime(), $0; fflush(); }' \
       > "$RUN_DIR/getevent-live.txt" \
       || getevent_status=$?
