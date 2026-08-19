@@ -36,19 +36,24 @@ function responseHeaders(incoming) {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://proxy.invalid");
-  if (!shouldProxy(url.pathname)) {
+  const incomingUrl = new URL(req.url ?? "/", "http://proxy.invalid");
+  if (!shouldProxy(incomingUrl.pathname)) {
     res.writeHead(403, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: false, error: "forbidden-by-dev-proxy" }));
     return;
   }
+  // Build the upstream address ONLY from the validated path + query. Never
+  // re-resolve raw req.url against UPSTREAM: absolute-form/authority-form
+  // request targets (//other-host/... or http://other-host/...) must never
+  // select another host even though their pathname passes the allowlist.
+  const upstreamUrl = new URL(incomingUrl.pathname + incomingUrl.search, UPSTREAM);
 
   const controller = new AbortController();
   const abortUpstream = () => controller.abort(new Error("downstream-closed"));
   res.once("close", abortUpstream);
 
   try {
-    const upstreamResponse = await fetch(new URL(req.url ?? "/", UPSTREAM), {
+    const upstreamResponse = await fetch(upstreamUrl, {
       method: req.method,
       headers: requestHeaders(req.headers),
       body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : req,
