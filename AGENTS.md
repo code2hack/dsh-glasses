@@ -175,12 +175,15 @@ evidence for TB0/MVP.
 
 - TB0 contract + seam audit + AGENTS.md merged to `main` (PR #1, merge
   `be9ad3d`); TB0-H0 runtime read proof merged (commit `bc29515`).
-- **Current slice:** `tb0/host-write` — amended at-most-once Send contract
-  implemented + fault-proven: admission via `ctx.apiProxy.sessions.prompt`
-  (operationId == rpcId == durable `source.rpcId`), single atomic KvUnit state
-  doc, states prepared|dispatching|accepted|rejected|unknown, exactly-once by
-  never prompting twice per op, no-draft-clear until exact durable positive.
-  PR #2 ready (`dc8f47d` contract · `4699ad2` feat · `3208576` test).
+- **Current slice:** `tb0/host-write` — review-corrected at-most-once Send:
+  admission via `ctx.apiProxy.sessions.prompt` (operationId == rpcId == durable
+  `source.rpcId`), one atomic KvUnit state doc (draft + operations + append-only
+  mutations), session-wide mutex over mutations/Send/bootstrap, count-based
+  reconcile (0→unknown, 1→accepted, >1→invariant failure, never clears), frozen
+  text binding, rejection releases lock, bootstrap exposes draft+writeState and
+  reconciles unresolved ops. Committed host-only suite `host-write-recovery
+  .test.mjs` ALL PASS 16/16. PR #2 ready (head `2ea9c5f`, drafts `dc8f47d`·
+  `4699ad2`·`3208576`).
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
