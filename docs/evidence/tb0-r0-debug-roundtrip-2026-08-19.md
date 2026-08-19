@@ -40,7 +40,39 @@ IDs used:
 No duplicated durable message; no client-visible rejection; no text/timestamp
 matching used (verification is rpcId-exact over the full log).
 
-## Response-loss leg
+## Response-loss leg (passed)
 
-(To be appended after the downstream-response-delay wrapper run on a separate
-private port.)
+A test-only downstream-response delay wrapper ran on spark **private port 3201**
+(`/tmp/r0-delay-proxy.mjs`, ESM, forwards `/glasses/v1/*` to the plugin
+`127.0.0.1:3190`; for `/actions` it awaited the full upstream response, wrote a
+local marker `/tmp/r0-delay-marker.log` (operationId only — no credentials), then
+delayed the downstream response ≥15 s). The app was temporarily pointed at
+`http://100.92.81.33:3201`.
+
+IDs: `mutationId = r0-rl-mut-mt01wsbq-wxz5lcyl`, `sendId = r0-rl-send-mt01wsbq-wxz5lcyl`,
+text identical.
+
+- baseline `draft.revision=4` (note: two stray mutation-only calls from an
+  operator diagnostic re-run bumped 2→3→4; same text, never Sent, no durable
+  effect; recorded for honesty); mutation → `revision=5`.
+- Send fired (not awaited). Upstream completed + dispatched durably
+  (`user/message` **seq 23**, `source.rpcId=r0-rl-send-…`), op entered `unknown`
+  (dispatch admitted, settlement pending), draft locked. App was force-stopped
+  before receiving any response (downstream lost).
+- Restart: bootstrap reconcile found the durable message (count 1) →
+  `draft {revision:6, text:"", locked:false}`, `writeState ready` — accepted
+  history reconstructed with **no re-Send**.
+- Retry with the **same sendId + same request body** through the delay wrapper:
+  HTTP 200 `{ok, operationId:r0-rl-send-…, state:"accepted", reconciled:true}` —
+  stored accepted, no new prompt.
+- Exactly-one durable: full log has exactly **1** `user/message` with
+  `source.rpcId == r0-rl-send-…` after restart + retry. Plugin operations:
+  `r0-send-…` and `r0-rl-send-…` both `accepted`.
+
+## Operator note
+
+Two `r0-rl-mut-*` mutation-only entries (revisions 3,4) were created while
+diagnosing the first B1 script run (same R0 text, never Sent, no durable
+message); they demonstrate idempotent no-op mutations but are excluded from the
+round-trip claims above. The delay wrapper is test-only (`/tmp`), holds no
+credentials, and remains bound to private port 3201.
