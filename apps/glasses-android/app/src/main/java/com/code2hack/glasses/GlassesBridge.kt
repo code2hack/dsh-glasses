@@ -22,7 +22,7 @@ import java.util.concurrent.Future
  *   configure(base, token, sessionId)  debug provisioning -> private prefs
  *   endpoint()                         configured base, never a credential
  *   sessionId()                        expected configured DSH session
- *   fetch(path, bodyJson)              authenticated /glasses/v1/* request
+ *   fetch(path, bodyJson)              authenticated glasses/v1 path only
  *   openStream()                       one authenticated SSE connection
  */
 class GlassesBridge(private val context: Context) {
