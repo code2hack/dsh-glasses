@@ -75,9 +75,11 @@ credential native-side (app-private storage), restricts requests to
   blocked by the app's own external-nav guard, so identity changes apply via a
   fresh app process.)
 - Final rerun (abbreviated real-device bootstrap): final APK
-  (`app-debug.apk` 815904 B, built from `80add8d`) installed Success, launched,
-  bootstrap rendered (protocol 1, gen, asOfSeq 11, status idle, writeState
-  ready), `conn: live`.
+  (`app-debug.apk` 815912 B, built from head `19019e3`, incl. `1f0b4cc`
+  stop-stale-stream + `1f41561` mismatch styling compat) installed Success,
+  launched, bootstrap rendered (protocol 1, gen, asOfSeq 11, status idle,
+  writeState ready), `conn: live`. Session-mismatch hard-fail re-verified on
+  this exact build (see above).
 
 ## Non-manual input facts (per TB0-I0 gate; ADB-captured, not physical presses)
 
