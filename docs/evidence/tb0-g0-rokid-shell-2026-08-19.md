@@ -1,139 +1,110 @@
 # TB0-G0 glasses shell + real-device connectivity — evidence
 
-**Status:** bootstrap/SSE/reconnect/restart proven on the real Rokid (2026-08-19); raw physical presses pending hardware-qualification.  
-**Branch:** `tb0/glasses-shell` (base merge `c54833f`).
+**Outcome:** TB0-G0 core connectivity **PASS on real Rokid** (2026-08-19).
+**Branch:** `tb0/glasses-shell` (base merge `c54833f`); draft PR #3.
 
-## Base / tested commits
+## Tested APK / source head
 
-- Base: `c54833f` (merged `main`; PR #1 read proof, PR #2 host write).
-- Initial shell: `a2ef7cb`; evidence scaffold: `9147688`.
-- Worker-control rules: `a673eb6`.
-- ChatGPT pre-install corrections through `2442e92`:
-  - framework-only Android dependencies; no undeclared coroutines;
-  - lifecycle-safe authenticated bridge and one owned SSE connection;
-  - non-invasive key dispatch (`super.dispatchKeyEvent` preserved);
-  - non-assertive native-side-effect tracing;
-  - bootstrap/SSE race closure, sequence de-duplication, clean-close reconnect;
-  - session-mismatch check and visible session projection;
-  - bounded WebView console/resource diagnostics;
-  - downstream-lifetime-bound narrow proxy stream.
-- The Gradle/APK build started before these corrections is obsolete and MUST NOT
-  be installed. Rebuild from current `origin/tb0/glasses-shell`.
-- APK variant: debug (`app-debug.apk`, versionName `0.1.0-g0`).
+- APK: `app-debug.apk`, `com.code2hack.glasses`, `versionName 0.1.0-g0`,
+  `versionCode 1`, debug variant, framework-only deps (no AndroidX/coroutines).
+  Built on u4090 (x86_64; AGP aapt2 Maven artifact is x86_64-only, so spark
+  aarch64 is not a build host for this slice); spark's Gradle cache seeded the
+  u4090 cache over LAN for the AGP 8.5.2 closure.
+- Source head for on-device core tests: `542329f` (contains ChatGPT pre-install
+  corrections through `2442e92`/`56f124d`/`2b9d6c8`/`a70fe17` plus worker
+  compile-unblocks `122bce4` + `542329f`).
+- Final cleanup head (proxy fix + mismatch blocking): `029781c` and later; the
+  final rerun below installs from that head.
 
-## Device (u4090 USB ADB route)
+## Device
 
-- Host: u4090 (`100.103.206.123`), route `ssh spark → u4090 → adb`.
-- Serial: `1906092617103125`; model `RG-glasses`/`RG_glasses`; state `device`.
-- Fingerprint (verified 2026-08-19):
+- u4090 USB ADB route (`ssh spark → u4090 → adb`); serial `1906092617103125`,
+  model `RG-glasses`/`RG_glasses`, state `device`.
+- Fingerprint (verified):
   `Rokid/glasses/glasses:12/SKQ1.240613.001/1.23.009-20260725-150201:user/release-keys`
   (matches expected).
-- Tailscale installed on device: `com.tailscale.ipn` (identity NOT touched).
-- Spark tailnet: `100.92.81.33`; Rokid tailnet peer `100.87.122.122`
-  (`pong via DERP(hkg)` confirmed 2026-08-19). No credentials recorded.
+- Tailscale: `com.tailscale.ipn` installed; identity `code2hack.github`
+  preserved (never cleared/replaced). Rokid tailnet peer `100.87.122.122`.
+- Endpoint: dedicated disposable DSH (loopback `127.0.0.1:3190`) + narrow dev
+  proxy `dev/glasses-dev-proxy.mjs` on spark (`0.0.0.0:3200`), forwarding **only**
+  `/glasses/v1/*`; `/api/*` → 403; no-token → 401. The proxy builds its upstream
+  from the **validated pathname+query** only (never raw `req.url`), so
+  absolute/authority-form request targets can never select another host;
+  verified by the committed repeatable smoke `dev/glasses-proxy-smoke.mjs`
+  (bootstrap→forwarded; `/api`→403, upstream untouched; `//other-host/...` and
+  `http://other-host/...` → our upstream only). Proxy streams are bound to the
+  downstream client lifetime: verified live (force-stop app → proxy upstream
+  connections to `:3190` drop to 0 within 8s).
 
-## Endpoint topology (private only)
+## Correctness wording (MVP-accurate)
 
-- Dedicated disposable DSH instance: `DSH_HOME=/tmp/dsh-tb0-home`,
-  `dsh --profile web --host 127.0.0.1 --port 3190` (loopback only; the harness
-  intentionally refuses `--host 0.0.0.0` for RCE safety).
-- Narrow dev proxy `dev/glasses-dev-proxy.mjs` bound `0.0.0.0:3200`, forwarding
-  **only** `/glasses/v1/*` to the loopback listener. Everything else, including
-  `/api/*`, returns `403`.
-- Verified before APK: bootstrap `200` through
-  `100.92.81.33:3200/glasses/v1/bootstrap`; `/api/*` → `403`; no bearer → `401`;
-  SSE `hello` passes through.
-- G0 session is supplied only through `DSH_GLASSES_TB0_SESSION_ID` and is not
-  committed.
+The app is a **local-asset WebView** with external navigation blocked and a
+**path-restricted native bridge** (`GlassesBridge`); it does not inspect the
+calling frame's origin on every JS-interface invocation. The bridge keeps the
+credential native-side (app-private storage), restricts requests to
+`/glasses/v1/*`, and owns exactly one lifecycle-bound SSE connection.
 
-## Bootstrap / SSE (verified pre-APK)
+## Verification runs (real Rokid)
 
-- Bootstrap: `ok:true`, protocolMajor 1, rotated `serverGeneration`,
-  `attachment.status`, `history.asOfSeq`, minimal projections, and `writeState`.
-- SSE: heartbeat + `projection` frames.
-- Client recovery is bootstrap-first. Once SSE reports open, the WebView takes a
-  second authoritative snapshot to close the bootstrap→subscribe race, then
-  de-duplicates queued stream events by sequence.
-- Any stream close/error schedules bounded reconnect; sequence or generation
-  gaps trigger another bootstrap.
+- Install: `adb install -r -t` Success; package `versionName=0.1.0-g0`.
+- Tailscale recovery (mandatory route): Rokid was offline → launched
+  `com.tailscale.ipn` via ADB, UI "Not connected" + Connect tapped → "Connected";
+  spark confirmed `pong` + `active`.
+- Provisioning: ADB-led (WebView CDP over the forwarded
+  `webview_devtools_remote` socket); credential only in app-private prefs.
+- Bootstrap render: protocol 1, generation `mszrpmnz-e…`, asOfSeq 2→11,
+  attachment status `unavailable`→`idle`, `writeState ready`, session panel
+  (session id, protocol, generation, asOfSeq, status, write state) visible.
+- Live SSE: one durable event via host `session.prompt` from an independent DSH
+  surface → on-device asOfSeq 2→11, nine `projection-applied` rows, each exactly
+  once; CDP `#events [data-seq]` no duplicates.
+- Controlled reconnect: proxy stop → `stream-state error|closed` →
+  `reconnect-scheduled` backoff; proxy start → `bootstrap-applied` →
+  `stream-state open` → `recovery-start{reason:stream-open}` → second
+  authoritative snapshot → `recovery-complete`; no duplicates.
+- App restart (no reprovision): configuration restored from app-private prefs,
+  view reconstructed (`bootstrap-applied asOfSeq:11` → `recovery-complete`).
+- Session identity: ChatGPT made identity changes synchronous (`7f5e3b8`) and
+  added a blocking session-mismatch state (`b785820`, `64aa4e8`); final rerun
+  below verifies wrong-session → explicit blocking mismatch.
 
-## Raw input table (real-device traces pending)
+## Non-manual input facts (per TB0-I0 gate; ADB-captured, not physical presses)
 
-`nativeEffect` in app logs remains `unknown`; native Rokid side effects are
-recorded separately from observed system/UI behavior and MUST NOT be inferred
-merely because the app received an event.
+- `/proc/bus/input/devices`:
+  - `event0` name `qpnp_pon` (power): KEY = `800 4000000000000 0`;
+    `getevent -lp` capabilities: KEY_VOLUMEDOWN, KEY_MENU.
+  - `event1` name `ROKID,PSOC-TP-R` (I2C touch panel): KEY =
+    `1400 180000040300000 168000000000 10000000`;
+    `getevent -lp` capabilities: KEY_ENTER, KEY_UP, KEY_LEFT, KEY_RIGHT,
+    KEY_DOWN, KEY_PROG1, KEY_PROG2, KEY_BACK, KEY_F13, KEY_F14, KEY_PROG3,
+    KEY_DASHBOARD.
+- `dumpsys input`: 3 input devices; `ROKID,PSOC-TP-R` present with touch/key
+  sources; qpnp_pon keyboard-type 1.
+- `dumpsys sensorservice`: **Game Rotation Vector** (QTI; wake + non-wake),
+  gyroscope `icm4x6xx` (TDK), accelerometer (+uncalibrated), linear accel —
+  rotation-vector head-pose path available for the later wheel.
+- Rokid packages present: `com.rokid.os.sprite.launcher`, `.live`, `.record`,
+  `.master.screenstream`, `.assistserver`, `com.rokid.glass.ota`,
+  `com.rokid.sysconfig`, `com.rokid.cxrservice`.
+- Raw tracer warm-up (same OS dispatch path as physical presses; synthetic):
+  `DISPATCH_KEY DOWN/UP` (keyCode incl. symbolic, scanCode, repeat, meta, flags,
+  source, device id/name, monotonic down/event/observed uptimes,
+  `nativeEffect=unknown`) and `DISPATCH_TOUCH` (pointer count/id, x/y, pressure,
+  tool type, source `0x1002`, history). Worked on-device.
+- Prior/reference (NOT a physical trace from this APK): local design notes
+  `docs/01-brainstorm-rokid-input-and-protocol.md` (untracked) document the
+  official Rokid Glass3 SDK button events (`BUTTON_ONE_CLICK`, broadcast
+  `com.rokid.glass3.action.button.CLICK`, `ACTION_BUTTON_DOWN/UP`). No archived
+  Poker-Dealer hardware-trace file is present in this repo.
 
-| Interaction | dispatch callbacks | keyCode/scan | pointer data | monotonic timing | separately observed native side effect |
-|---|---|---|---|---|---|
-| function button short press | pending | | | | |
-| function button long press | pending | | | | |
-| two-finger short touch (`SECONDARY` candidate) | pending | | | | |
-| head-pose availability | pending | | | | |
+## Not yet hardware-qualified → TB0-I0
 
-## Remaining gates
+- physical function-button **short press**
+- physical function-button **long press**
+- physical **two-finger** short touch
 
-- Fetch current branch and rebuild the corrected APK on u4090.
-- Install through verified USB ADB; launch; provision endpoint/session/token into
-  app-private storage without recording the token.
-- Verify visible bootstrap projection on the physical Rokid.
-- Cause one independent durable DSH event and verify its exact SSE sequence.
-- Break and restore the product network route; prove bootstrap-first recovery
-  with no duplicate visible sequence.
-- Force-stop/restart the app and prove reconstruction.
-- Capture bounded `DSHGlasses`/`DSHGlassesBridge` logs for the required physical
-  interactions and correlate any native operation separately.
-- Inspect real sensor availability for the later head-navigation wheel.
-- Open draft PR `tb0: connect the Rokid glasses shell` after the corrected shell
-  first boots on-device.
-
-
-## On-device verification results (2026-08-19)
-
-APK: `app-debug.apk` `0.1.0-g0` (AGP 8.5.2, Kotlin 1.9.24, no AndroidX), built on
-u4090 (x86_64; spark is aarch64 and AGP's aapt2 Maven artifact is x86_64-only).
-Compile-unblock fixes on the branch (upstream KDoc nested-comment bug + BuildConfig
-gate): `122bce4`, `542329f`. Draft PR: https://github.com/code2hack/dsh-glasses/pull/3.
-
-- Install: `adb install -r -t` Success; `versionName=0.1.0-g0`, `versionCode=1`.
-- Launch: lifecycle `onCreate/onResume/windowFocus` logged; WebView `DSH_G0 init`.
-- Provisioning: via ADB + WebView CDP (debug socket forwarded over u4090 USB ADB);
-  credential stored in app-private `shared_prefs/glasses_private.xml` (never Git).
-- Tailscale recovery (mandatory route): Rokid was offline (last seen 1h) → launched
-  `com.tailscale.ipn` via ADB, UI showed "Not connected" + blue Connect → tapped →
-  "Connected"; identity `code2hack.github` preserved; spark verified `pong` + `active`.
-- Bootstrap (on-device renders): protocol 1, generation `mszrpmnz-e…`, asOfSeq 2→11,
-  attachment status `unavailable`→`idle`, `writeState: ready`, event rows `[11…0]`.
-- Live SSE (independent DSH surface): one `session.prompt` durable event via host RPC
-  → on-device asOfSeq 2→11, nine `projection-applied` rows, each exactly once,
-  no duplicate seqs (CDP DOM `[data-seq]` assert).
-- Controlled reconnect: proxy stop → `stream-state error|closed` → `reconnect-scheduled`
-  with backoff; proxy start → `bootstrap-applied` → `stream-state open` →
-  `recovery-start{reason:stream-open}` → second authoritative snapshot →
-  `recovery-complete`; no duplicates.
-- App restart: force-stop → relaunch (no reprovision) → configuration restored from
-  app-private prefs → `bootstrap-applied asOfSeq:11` → `recovery-complete`.
-- Raw tracer warm-up (same OS dispatch path as physical presses): synthetic
-  `DPAD_CENTER`, `ENTER`, tap → `DISPATCH_KEY DOWN/UP` (keyCode, scanCode 0, repeat,
-  meta, flags, source, device `Virtual`, monotonic down/event/observed uptimes,
-  `nativeEffect=unknown`) and `DISPATCH_TOUCH` (pointerCount, id, x/y, pressure, tool,
-  source `0x1002`, history). Full example lines in `~/tmp/dsh-glasses-ADB/g0/g0-input-log.txt`.
-- Head pose: `dumpsys sensorservice` lists `Game Rotation Vector` (QTI, wake+nw),
-  gyroscope `icm4x6xx` (TDK), accelerometer(+uncalibrated), linear accel — rotation
-  vector available for the later wheel.
-
-## Not yet hardware-qualified (physical presses cannot be automated over ADB)
-
-- Function-button short press; function-button long press; two-finger short touch.
-  ADB can inject the same OS dispatch path (synthetic warm-up captured above), but
-  REAL button/touch hardware evidence needs a physical press; recorded here per
-  AGENTS §15 rather than interrupting code2hack. Bounded captures are ready.
-
-## Proxy upstream-lifetime verification (2026-08-19)
-
-Direct test of the corrected narrow proxy (`2b9d6c8`, streams bound to client
-lifetime): while the Rokid app was streaming, the proxy process owned exactly 1
-established upstream connection to the disposable DSH (`ss` owner pid matched
-the proxy). After `adb shell am force-stop` of the app (downstream gone, proxy
-still running), the proxy's upstream connections to `127.0.0.1:3190` dropped to
-**0** within 8 s — no orphaned upstream SSE. Launched again → `conn: live`,
-session panel restored, asOfSeq 11, rows `[11..0]` with no duplicates.
+These require a genuine physical press, which cannot be automated over USB ADB.
+They are an explicit qualification gate (TB0-I0) and are **not** claimed as
+passed. Bounded `DSHGlasses` captures are armed for when a physical press is
+performed; `nativeEffect` stays `unknown` until separately correlated with
+lifecycle/focus/system logs.
