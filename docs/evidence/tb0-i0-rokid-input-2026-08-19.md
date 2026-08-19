@@ -232,17 +232,24 @@ concurrent implementation on the real Rokid.
   Earlier 329/548 sample counts remain as supporting runtime evidence of the
   superseded `tb0/i0-input` implementation (that branch's `-lt` capture claim
   is NOT relied upon).
-- **W2d corrected recorder** (`20260819T122740Z-w2d`, concurrent capture,
-  DURATION=60): `capture_exit_status=0`, `getevent_capture_mode=device-timestamp`,
-  `getevent_process_status=124`, `getevent_usage_errors=0`, `getevent_live_lines=0`
-  (no genuine low-level event; no physical press forced), `getevent-live.err`
-  empty.
-- **Passive recorder (restarted on active script)**: tmux session
-  `dsh-glasses-adb`, loop PID `170034` (`bash /tmp/passive-loop.sh`), current
-  window `20260819T124041Z-passive` (LABEL=passive, DURATION=1800),
-  `getevent_capture_mode=device-timestamp`; last health check UTC
-  `2026-08-19T12:41Z`. A window that was still running with the pre-472b436
-  script ended naturally before this restart.
+- **W2c** concurrent dual-node pass (`20260819T124516Z-w2c`):
+  `getevent-event0.status=124`, `event1=124`, `getevent-live.status=124`,
+  `capture_exit_status=0`, mode `device-timestamp`, `getevent_usage_errors=0`,
+  err files empty.
+- **W2e** current-head run (`20260819T125137Z-w2e`): all four statuses
+  `event0/event1/live` + `logcat-live.status` = 124, usage 0, errs empty.
+- **W2f** harness-fix run (`20260819T130220Z-w2f`, bounded focus sampler,
+  DURATION=45, head `99b6ab5`): `capture_exit_status=0`, event0/event1/live and
+  logcat statuses all 124, `getevent_usage_errors=0`, and **40 consecutive
+  `focus_sample_status=0` rows** (no focus probe exceeded the 5 s
+  `FOCUS_SAMPLE_TIMEOUT`). (Details below.)
+- **Note**: an earlier W2d window is NOT cited as proof; its 12:27:40Z start
+  timestamp predates commit `472b436`, so that run is discarded from evidence.
+- **Passive recorder (corrected script)**: tmux session `dsh-glasses-adb`,
+  loop PID `170034` (`bash /tmp/passive-loop.sh`), current window
+  `20260819T124041Z-passive` (LABEL=passive, DURATION=1800); the loop reads
+  `dev/i0-capture.sh` from the u4090 worktree each iteration so it now runs the
+  bounded-focus + concurrent-reader script (`99b6ab5`).
 - **AGENTS**: base-merge `6d1e1925b967cda3c19731decc570d02da2c9c6d`; active
   slice `tb0/input-qualification` (both occurrences).
 - Physical rows remain **unqualified**.
@@ -287,17 +294,18 @@ concurrent implementation on the real Rokid.
 - one-finger physical touch/swipe — **unqualified**;
 - two-finger physical touch/swipe — **unqualified**.
 
-## W2d/W2e provenance note (P1 review resolution)
+## W2f — bounded focus sampler proof (P1 review resolution)
 
-- **W2d** (`20260819T123718Z-w2d`): its own manifest records
-  `repo_head=472b436203d0cea5bfd53bb957330a5d4adfdcc0` — the concurrent
-  two-reader capture was the worktree HEAD at launch (deployed via bundle
-  fetch + `git reset --hard`); per-node statuses event0=124, event1=124,
-  live=124, usage_errors=0.
-- **W2e** (`20260819T125137Z-w2e`): current-head definitive run,
-  `repo_head=4a85735…` (the final I0 evidence head). `capture_exit_status=0`,
-  `getevent_capture_mode=device-timestamp`, `getevent_process_status=124`,
-  `logcat_process_status=124` (logcat-health surface), `event0/event1/live`
-  statuses all 124, `getevent_usage_errors=0`, all err files empty,
-  `getevent_live_lines=0` (no genuine event; nothing forced). This is the
-  provenance-clean dual-node + logcat reader pass to cite for PR #7.
+- **Fix** (`99b6ab5`): `dev/i0-capture.sh` now defaults
+  `FOCUS_SAMPLE_TIMEOUT=5` and wraps each per-sample
+  `dumpsys window/activity` probe with host `timeout`, appending
+  `focus_sample_status=<rc>` after every sample so stalls cannot block the
+  bounded window or the passive rotation indefinitely.
+- **W2f** (`20260819T130220Z-w2f`, DURATION=45, head `99b6ab5`):
+  `capture_exit_status=0`; `getevent-event0.status=124`,
+  `getevent-event1.status=124`, `getevent-live.status=124`,
+  `logcat-live.status=124`; `getevent_usage_errors=0`; `getevent_live_lines=0`;
+  **40 focus-sample rows, 40 × `focus_sample_status=0`** — every focus probe
+  completed within the timeout, none blocked the window.
+- The discarded earlier W2d window (start 12:27:40Z, before commit `472b436`)
+  is NOT used as evidence; W2c, W2e, and W2f are the cited runs.
