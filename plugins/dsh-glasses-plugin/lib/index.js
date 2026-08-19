@@ -159,16 +159,11 @@ export async function apply(ctx, config) {
     });
   };
 
-  const handleStub = (route) => (req, res) => {
-    if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
-    return sendJson(res, 501, { ok: false, error: "NOT_IMPLEMENTED", route });
-  };
-
   // ---- TB0 host-write slice ---------------------------------------------
   // Durable draft + operation ledger via dsh-storage `json` backend KvUnit,
   // plus the exactly-zero-or-one user-message acceptance reconciliation.
   // See docs/TRACER_BULLET_TB0_WRITE.md.
-  const UNIT = { name: "glasses-plugin", version: 1, tables: ["drafts", "ledger"], hasGlobal: false };
+  const UNIT = { name: "glasses_plugin", version: 1, tables: ["drafts", "ledger"], hasGlobal: false };
   let _kvUnit = null;
   const units = async () => {
     if (_kvUnit) return _kvUnit;
@@ -280,7 +275,12 @@ export async function apply(ctx, config) {
         // Reconciled resubmit: never re-create a message id already proven.
         const count = await countUserMessagesWithId(existing.messageId);
         if (count > 1) return sendJson(res, 500, { ok: false, error: "identity-violation", messageId: existing.messageId, count });
-        return sendJson(res, 200, { ok: true, reconciled: true, operationId: opId, messageId: existing.messageId, state: count === 1 ? "accepted" : "rejected" });
+        if (count === 1) {
+          await writeLedger(opId, { ...existing, state: "accepted" });
+          await writeDraft(sessionId, { revision: 0, content: "", committedSeq: await currentSeq(), status: "cleared" });
+          return sendJson(res, 200, { ok: true, reconciled: true, operationId: opId, messageId: existing.messageId, state: "accepted" });
+        }
+        return sendJson(res, 200, { ok: true, reconciled: true, operationId: opId, messageId: existing.messageId, state: "rejected" });
       }
 
       const draft = await readDraft(sessionId);

@@ -31,7 +31,7 @@ Evidence base: `docs/evidence/tb0-dsh-compat-2026-08-19.md` (incl. §TB0-H0 read
 
 ## 3. Durable draft + ledger schema (dsh-storage KvUnit)
 
-Plugin units under one storage unit name (matches `UNIT_NAME_RE`), versioned `1`:
+Plugin units under one storage unit name `glasses_plugin` (must match `UNIT_NAME_RE` = `/^[a-z][a-z0-9_]*$/`, so no hyphens/dots), versioned `1`:
 
 **`drafts`** — one record per attachment/session (`key = sessionId`):
 ```
