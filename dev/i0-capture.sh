@@ -10,6 +10,7 @@ DURATION="${DURATION:-600}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-1}"
 LABEL="${LABEL:-armed}"
 OUT_ROOT="${OUT_ROOT:-$HOME/tmp/dsh-glasses-ADB/i0}"
+GETEVENT_MODE="${GETEVENT_MODE:-auto}" # auto | timestamp | plain
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$OUT_ROOT/${STAMP}-${LABEL}"
 mkdir -p "$RUN_DIR"
@@ -28,9 +29,20 @@ cleanup() {
   done
   wait "${PIDS[@]:-}" 2>/dev/null || true
 
+  local getevent_lines=0
+  local getevent_usage_errors=0
+  if [[ -f "$RUN_DIR/getevent-live.txt" ]]; then
+    getevent_lines="$(wc -l < "$RUN_DIR/getevent-live.txt" | tr -d ' ')"
+  fi
+  if [[ -f "$RUN_DIR/getevent-live.err" ]]; then
+    getevent_usage_errors="$(grep -Eic 'usage:|unknown option|invalid option|bad option|unrecognized option' "$RUN_DIR/getevent-live.err" || true)"
+  fi
+
   {
     echo "capture_end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "capture_exit_status=$status"
+    echo "getevent_live_lines=$getevent_lines"
+    echo "getevent_usage_errors=$getevent_usage_errors"
   } >> "$RUN_DIR/manifest.txt"
 
   "$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
@@ -45,6 +57,36 @@ REPO_HEAD="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 FINGERPRINT="$($ADB -s "$SERIAL" shell getprop ro.build.fingerprint | tr -d '\r')"
 MODEL="$($ADB -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')"
 
+# This firmware's toybox getevent rejects the combined `-lt` spelling. Probe
+# `-t` alone; if it is unavailable, fall back to plain hexadecimal events and
+# prefix each received line with a host-arrival timestamp. Static `-lp` output
+# below supplies the symbolic code inventory in either mode.
+GETEVENT_ARGS=()
+GETEVENT_CAPTURE_MODE="plain-host-arrival-time"
+GETEVENT_PROBE_STATUS=0
+case "$GETEVENT_MODE" in
+  auto)
+    timeout 1 "$ADB" -s "$SERIAL" shell getevent -t /dev/input/event1 \
+      > /dev/null 2> "$RUN_DIR/getevent-probe.err" || GETEVENT_PROBE_STATUS=$?
+    if ! grep -Eqi 'usage:|unknown option|invalid option|bad option|unrecognized option' "$RUN_DIR/getevent-probe.err"; then
+      GETEVENT_ARGS=(-t)
+      GETEVENT_CAPTURE_MODE="device-timestamp"
+    fi
+    ;;
+  timestamp)
+    GETEVENT_ARGS=(-t)
+    GETEVENT_CAPTURE_MODE="device-timestamp-forced"
+    : > "$RUN_DIR/getevent-probe.err"
+    ;;
+  plain)
+    : > "$RUN_DIR/getevent-probe.err"
+    ;;
+  *)
+    echo "Invalid GETEVENT_MODE=$GETEVENT_MODE (expected auto, timestamp, or plain)" >&2
+    exit 2
+    ;;
+esac
+
 cat > "$RUN_DIR/manifest.txt" <<EOF
 provenance=UNCLASSIFIED_CAPTURE_WINDOW
 note=Classify each resulting interaction as PHYSICAL, SYNTHETIC_ADB, SYNTHETIC_SENDEVENT, or PRIOR_REFERENCE in the evidence document.
@@ -58,6 +100,9 @@ fingerprint=$FINGERPRINT
 duration_seconds=$DURATION
 sample_interval_seconds=$SAMPLE_INTERVAL
 label=$LABEL
+getevent_mode_requested=$GETEVENT_MODE
+getevent_capture_mode=$GETEVENT_CAPTURE_MODE
+getevent_probe_status=$GETEVENT_PROBE_STATUS
 EOF
 
 # Static inventory snapshots.
@@ -72,16 +117,25 @@ EOF
 
 # Low-level Linux input events from the currently identified power/touch nodes.
 (
-  timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent -lt /dev/input/event0 /dev/input/event1 \
-    > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" || true
+  if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
+    timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent "${GETEVENT_ARGS[@]}" \
+      /dev/input/event0 /dev/input/event1 \
+      > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" || true
+  else
+    timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
+      /dev/input/event0 /dev/input/event1 2> "$RUN_DIR/getevent-live.err" \
+      | awk '{ print "host_epoch_s=" systime(), $0; fflush(); }' \
+      > "$RUN_DIR/getevent-live.txt" || true
+  fi
 ) &
 PIDS+=("$!")
 
 # Framework/app/system logs. Do not clear logcat before this capture.
 (
   timeout "$DURATION" "$ADB" -s "$SERIAL" logcat -v monotonic \
-    DSHGlasses:V DSHGlassesBridge:V ActivityTaskManager:I ActivityManager:I \
-    WindowManager:I InputReader:I InputDispatcher:I ViewRootImpl:I '*:S' \
+    DSHGlasses:V DSHGlassesBridge:V DSHGlassesSensor:V \
+    ActivityTaskManager:I ActivityManager:I WindowManager:I InputReader:I \
+    InputDispatcher:I ViewRootImpl:I '*:S' \
     > "$RUN_DIR/logcat-live.txt" 2> "$RUN_DIR/logcat-live.err" || true
 ) &
 PIDS+=("$!")
