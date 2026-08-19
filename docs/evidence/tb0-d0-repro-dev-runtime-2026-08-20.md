@@ -4,6 +4,10 @@
 **Branch:** `tb0/repro-dev-runtime`.  
 **Base:** `0db1c426e2ec2b8e397d96f5f637c8c5c756cf7e`.
 
+> Runtime-tested implementation head: `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855`.
+> All later commits on `tb0/repro-dev-runtime` up to `8136a0d5…` are
+> evidence/documentation only (this evidence record was written on top).
+
 ## Exact implementation
 
 - Tested branch/head: `tb0/repro-dev-runtime` @ `fd04f8b58ff2f399c8b8c28f0a9cd4756a85e855` (D0 files from ad2df34 + ops commits; remote branch head)
@@ -11,7 +15,7 @@
 - `@deepseek-ai/dsh` binary/package/version: `/home/code2hack/.npm-global/bin/dsh`, `@deepseek-ai/dsh@0.1.0-rc.7` (npm global)
 - pnpm binary/version: pnpm v11.22.0 (hoisted workspace)
 - Disposable home: `/tmp/dsh-glasses-d0-e2e-20260819T191317Z` (fresh empty at up; never reused)
-- Workspace path/id: `3ab95311-31be-4d59-9817-3784a7fc7589` (auto absolute-path workspace.create)
+- Workspace path/id: `<disposable-workspace-id>` (auto absolute-path workspace.create; exact id kept out of Git)
 - Fresh session: `<disposable-session-id>` (auto-created, a0-toolfree; exact id kept out of Git)
 - Seed session: `session-tb0-disposable` (auto-seeded)
 - DSH/proxy ports: 127.0.0.1:3196 / 0.0.0.0:3202
@@ -51,7 +55,7 @@ Reply with exactly: D0 automated runtime passed
 
 ## `status`
 
-- command: `node dev/d0-runtime.mjs down --home <home>` (run twice) `node dev/d0-runtime.mjs status --home <home>`
+- command: `node dev/d0-runtime.mjs status --home <home>`
 - `ok`: true, `healthy`: true
 - DSH PID/start-ticks identity: 1272604 (unchanged through the whole acceptance run)
 - proxy PID/start-ticks identity: 1272616
@@ -71,7 +75,7 @@ Reply with exactly: D0 automated runtime passed
 
 ## `down`
 
-- command: `node dev/d0-runtime.mjs down --home <home>` (run twice) `node dev/d0-runtime.mjs status --home <home>`
+- command: `node dev/d0-runtime.mjs down --home <home>` (twice; second must be harmless)
 - DSH termination action: ownership-safe terminate (exit 0)
 - proxy termination action: terminate (exit 0)
 - ports closed: 3196 and 3202 freed (ss confirmed)
@@ -80,7 +84,7 @@ Reply with exactly: D0 automated runtime passed
 
 ## Clean-home host-write suite
 
-- command: `node dev/d0-runtime.mjs down --home <home>` (run twice) `node dev/d0-runtime.mjs status --home <home>` `node dev/d0-host-write-recovery.mjs`
+- command: `node dev/d0-host-write-recovery.mjs`
 - wrapper-created home: fresh empty `<tmp>/dsh-glasses-d0-host-write-<rand>` (e.g. …-dXyxz8)
 - seed session automatic: yes (`session-tb0-disposable` created by the wrapper)
 - suite scenarios passed: **16/16**
@@ -93,6 +97,23 @@ Reply with exactly: D0 automated runtime passed
 - physical function/touch/head-wheel semantics: unqualified;
 - unexplained golden SSE death: must be absent in D0 acceptance or reported as blocker;
 - product features beyond merged C0: outside D0.
+
+
+## Installed-mirror tamper detection (status)
+
+Fresh home `d0-tamper` (DSH :3198 / proxy :3203), abbreviated gate only (no
+assistant/SSE/host-write rerun):
+
+| Check | Result |
+| --- | --- |
+| `up` | ok |
+| status #1 (untampered) | `healthy:true`, `sourcePluginMatches:true`, `installedPluginMatches:true`, `pluginMatches:true` |
+| append `// tamper-detection marker` to installed `lib/projection.js` | done |
+| status #2 (tampered mirror) | `healthy:false`, `sourcePluginMatches:true`, `installedPluginMatches:false`, `pluginMatches:false` |
+| `down` | exit 0; second `down` exit 0 (harmless) |
+
+`status` now re-hashes BOTH the repo source `lib` and the installed mirror
+`lib`; `healthy` requires both to equal the recorded `sourceLibDigest`.
 
 ## Verdict
 

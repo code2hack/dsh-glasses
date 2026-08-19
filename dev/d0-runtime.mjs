@@ -496,14 +496,19 @@ async function statusForState(state) {
   }
 
   let currentRepoHead = null;
-  let currentPluginDigest = null;
+  let currentSourcePluginDigest = null;
+  let currentInstalledPluginDigest = null;
   try { currentRepoHead = await gitHead(); } catch {}
-  try { currentPluginDigest = (await treeDigest(join(PLUGIN_SOURCE, 'lib'))).digest; } catch {}
+  try { currentSourcePluginDigest = (await treeDigest(join(PLUGIN_SOURCE, 'lib'))).digest; } catch {}
+  try { currentInstalledPluginDigest = (await treeDigest(join(state.plugin?.installedPath, 'lib'))).digest; } catch {}
   const bootstrapSession = proxyBootstrap?.body?.attachment?.sessionId;
+  const sourcePluginMatches = currentSourcePluginDigest === state.plugin?.sourceLibDigest;
+  const installedPluginMatches = currentInstalledPluginDigest === state.plugin?.sourceLibDigest;
+  const pluginMatches = sourcePluginMatches && installedPluginMatches;
   const healthy = Boolean(
     dshAlive && proxyAlive && dshBootstrap?.status === 200 && proxyBootstrap?.status === 200 &&
     proxyApiBlocked?.status === 403 && bootstrapSession === state.provisioning.sessionId &&
-    currentRepoHead === state.repoHead && currentPluginDigest === state.plugin.sourceLibDigest
+    currentRepoHead === state.repoHead && pluginMatches
   );
   return {
     healthy,
@@ -521,9 +526,12 @@ async function statusForState(state) {
       recordedRepoHead: state.repoHead,
       currentRepoHead,
       repoMatches: currentRepoHead === state.repoHead,
-      recordedPluginDigest: state.plugin.sourceLibDigest,
-      currentPluginDigest,
-      pluginMatches: currentPluginDigest === state.plugin.sourceLibDigest,
+      recordedPluginDigest: state.plugin?.sourceLibDigest,
+      currentSourcePluginDigest,
+      currentInstalledPluginDigest,
+      sourcePluginMatches,
+      installedPluginMatches,
+      pluginMatches,
     },
   };
 }
