@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0 — one-session text round trip
 
-**Status:** TB0 contract frozen; runtime plugin read proof **pending** (TB0-H0).
+**Status:** H0, host-write, G0, I0, and R0 complete. Active gate: durable assistant output and message-content projection.
 **Date:** 2026-08-19
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/compat-contract`
 **Normative source:** `SPEC.md` (revision 3). When TB0 implementation contradicts a normative SPEC assumption, `SPEC.md` is updated in the same commit.
