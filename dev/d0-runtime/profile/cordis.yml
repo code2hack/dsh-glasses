@@ -1,0 +1,3 @@
+# D0 profile root. Bundles from package.json are composed first, then this
+# profile patch inserts the out-of-tree glasses plugin.
+[]
