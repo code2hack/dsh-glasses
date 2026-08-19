@@ -1,9 +1,9 @@
-# TB0-R0 — debug user-message admission round trip (real glasses)
+# TB0-R0 — debug user-message admission and recovery round trip (real glasses)
 
 **Status:** normal leg PASS and response-loss leg PASS on the real Rokid.
 **Outcome:** no durable `assistant/message` exists in the disposable DSH log
 (0 events; minimal/ idle agent produced no text reply), so the claim is scoped as
-**debug user-message admission round trip**; the zero-or-one Send/recovery proof
+**debug user-message admission and recovery round trip**; the zero-or-one Send/recovery proof
 stands. A stronger "complete text round trip" claim is NOT made.
 **Branch:** `tb0/r0-debug-roundtrip` (stacked on `tb0/input-qualification`
 `472b436`; retarget to `main` after PR #7 settles).
