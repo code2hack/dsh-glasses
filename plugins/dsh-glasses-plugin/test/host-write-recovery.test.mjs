@@ -292,6 +292,91 @@ try {
     ok("restart reconciliation -> ready");
   });
 
+  await scenario("two Send IDs race one draft -> one dispatch only", async () => {
+    const id = opId("r");
+    await freshSession();
+    await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "race text" } });
+    const a = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    const b = await actions({ kind: "send", operationId: opId("r2"), draftRevision: 1 });
+    if (b.status !== 409 || b.json.error !== "send-in-progress") throw new Error(`expected send-in-progress got ${b.status} ${JSON.stringify(b.json)}`);
+    for (let i = 0; i < 60 && (await actions({ kind: "send", operationId: id, draftRevision: 1 })).json.state !== "accepted"; i++) await sleep(1000);
+    if (await countDurable(id) !== 1) throw new Error(`count=${await countDurable(id)}`);
+    ok("two Send IDs race one draft -> one dispatch");
+  });
+
+  await scenario("two replace IDs race one revision -> one applied, one conflicts", async () => {
+    const id1 = opId("rr1"); const id2 = opId("rr2");
+    await freshSession();
+    const r1 = mutation({ operationId: id1, expectedRevision: 0, mutation: { kind: "replace", text: "first" } }).catch(() => ({ status: 0, json: {} }));
+    const r2 = mutation({ operationId: id2, expectedRevision: 0, mutation: { kind: "replace", text: "second" } }).catch(() => ({ status: 0, json: {} }));
+    const [a, b] = await Promise.all([r1, r2]);
+    const applied = [a, b].filter((x) => x.status === 200);
+    const conflicted = [a, b].filter((x) => x.status === 409);
+    if (applied.length !== 1 || conflicted.length !== 1) throw new Error(`applied=${applied.length} conflicted=${conflicted.length}`);
+    const after = (await bootstrap()).json.draft;
+    if (after.revision !== 1) throw new Error(`revision ${after.revision}`);
+    ok("two replace IDs race one revision -> one applied, one conflicts");
+  });
+
+  await scenario("replace races Send -> no lost state", async () => {
+    const id = opId("rs");
+    await freshSession();
+    await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "orig" } });
+    await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    const r = await mutation({ operationId: opId("rs-m2"), expectedRevision: 1, mutation: { kind: "replace", text: "newer" } });
+    if (r.status !== 409 || r.json.error !== "draft-locked") throw new Error(`expected draft-locked got ${r.status} ${JSON.stringify(r.json)}`);
+    const st = JSON.parse(await (await import("node:fs/promises")).readFile("/tmp/dsh-tb0-home/storages/glasses_plugin.json", "utf8"));
+    const rec = Object.values(st.tables.state)[0];
+    if (rec.draft.text !== "orig") throw new Error("lost state: draft text changed");
+    ok("replace races Send -> draft-locked, no lost state");
+  });
+
+  await scenario("known rejection -> text retained, draft unlocked; fresh op proceeds", async () => {
+    const id = opId("k");
+    await freshSession();
+    await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "rej text" } });
+    // simulate pre-dispatch failure via an in-process restart with the hook
+    proc.kill("SIGKILL"); await sleep(3000);
+    await startInstance(SID, { DSH_GLASSES_TEST_FAIL_DISPATCH: "1" });
+    const r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    if (r.json.state !== "rejected") throw new Error(`expected rejected got ${JSON.stringify(r.json)}`);
+    proc.kill("SIGKILL"); await sleep(3000);
+    await startInstance(SID);
+    const b = await bootstrap();
+    if (b.json.draft.text !== "rej text") throw new Error("text not retained");
+    if (b.json.draft.locked !== false) throw new Error("draft still locked after rejection");
+    if (b.json.draft.revision !== 1) throw new Error(`revision ${b.json.draft.revision}`);
+    ok("known rejection -> text retained, draft unlocked");
+  });
+
+  await scenario(">1 matching source.rpcId -> invariant failure, draft never cleared", async () => {
+    const id = opId("inv");
+    await freshSession();
+    await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "inv text" } });
+    proc.kill("SIGKILL"); await sleep(3000);
+    await startInstance(SID, { DSH_GLASSES_TEST_INVARIANT: "1" });
+    const r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    if (r.status !== 500 || r.json.error !== "identity-invariant-failure") throw new Error(`got ${r.status} ${JSON.stringify(r.json)}`);
+    const b = await bootstrap();
+    if (b.json.draft.text !== "inv text" || b.json.draft.locked !== true) throw new Error("draft cleared/lost on invariant!");
+    proc.kill("SIGKILL"); await sleep(3000);
+    await startInstance(SID);
+    ok(">1 rpcId matches -> invariant failure, draft retained+locked");
+  });
+
+  await scenario("accepted op retried after noise -> stored accepted, still one durable", async () => {
+    const id = opId("retry");
+    await freshSession();
+    await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "retry text" } });
+    await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    for (let i = 0; i < 60 && (await actions({ kind: "send", operationId: id, draftRevision: 1 })).json.state !== "accepted"; i++) await sleep(1000);
+    for (let i = 0; i < 5; i++) await promptHost("noise " + i).catch(() => {});
+    const r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    if (r.json.state !== "accepted") throw new Error(`expected accepted got ${JSON.stringify(r.json)}`);
+    if (await countDurable(id) !== 1) throw new Error(`count=${await countDurable(id)}`);
+    ok("accepted retried + long log -> stored accepted, exactly one durable");
+  });
+
   console.log("\n=== SUMMARY ===");
   for (const [n, r] of results) console.log(`${r} ${n}`);
   const failed = results.filter(([, r]) => r === "FAIL");
