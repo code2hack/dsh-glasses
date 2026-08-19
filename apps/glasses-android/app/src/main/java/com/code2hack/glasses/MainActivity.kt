@@ -23,6 +23,7 @@ import org.json.JSONObject
 class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var bridge: GlassesBridge
+    private lateinit var sensorTracer: SensorTracer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,6 +31,7 @@ class MainActivity : Activity() {
         InputTracer.lifecycle("onCreate", "pid=${Process.myPid()}")
 
         bridge = GlassesBridge(applicationContext)
+        sensorTracer = SensorTracer(applicationContext)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         webView = WebView(this)
         setContentView(webView)
@@ -94,9 +96,11 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         InputTracer.lifecycle("onResume")
+        if (::sensorTracer.isInitialized) sensorTracer.start()
     }
 
     override fun onPause() {
+        if (::sensorTracer.isInitialized) sensorTracer.stop()
         InputTracer.lifecycle("onPause")
         super.onPause()
     }
@@ -119,6 +123,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         InputTracer.lifecycle("onDestroy")
         InputTracer.onEvent = null
+        if (::sensorTracer.isInitialized) sensorTracer.stop()
         if (::bridge.isInitialized) bridge.close()
         if (::webView.isInitialized) {
             webView.stopLoading()
