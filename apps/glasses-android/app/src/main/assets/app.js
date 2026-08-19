@@ -12,6 +12,10 @@ let generation = '';
 let lastSeq = -1;
 const seenSeqs = new Set();
 
+function trace(name, fields) {
+  console.info('DSH_G0 ' + name + ' ' + JSON.stringify(fields || {}));
+}
+
 function showProvision(show) {
   $('provision').classList.toggle('hidden', !show);
 }
@@ -35,9 +39,11 @@ function nativeFetch(path, body) {
 }
 
 function init() {
+  trace('init');
   $('save').addEventListener('click', () => {
     window.GlassesBridge.configure($('in-base').value, $('in-token').value, $('in-session').value);
     $('in-token').value = '';
+    trace('configured', { endpoint: window.GlassesBridge.endpoint(), session: window.GlassesBridge.sessionId() });
     run();
   });
 
@@ -46,12 +52,14 @@ function init() {
     try { decoded = JSON.parse(data); } catch (_) {}
 
     if (event === 'hello') {
+      trace('sse-hello', { generation: decoded && decoded.serverGeneration });
       if (decoded && decoded.serverGeneration && generation && decoded.serverGeneration !== generation) {
         recoverSnapshot('generation-change');
       }
       return;
     }
     if (event === 'gap') {
+      trace('sse-gap', decoded);
       recoverSnapshot('server-gap');
       return;
     }
@@ -61,17 +69,23 @@ function init() {
     }
 
     if (decoded.generation && generation && decoded.generation !== generation) {
+      trace('projection-generation-mismatch', { expected: generation, actual: decoded.generation, seq: decoded.seq });
       recoverSnapshot('projection-generation-change');
       return;
     }
 
     const seq = Number(decoded.seq);
     if (!Number.isFinite(seq)) {
+      trace('projection-invalid-seq', { id: id, data: decoded });
       renderRaw(event, decoded, id);
       return;
     }
-    if (seq <= lastSeq || seenSeqs.has(seq)) return;
+    if (seq <= lastSeq || seenSeqs.has(seq)) {
+      trace('projection-deduplicated', { seq: seq, lastSeq: lastSeq });
+      return;
+    }
     if (lastSeq >= 0 && seq !== lastSeq + 1) {
+      trace('projection-client-gap', { lastSeq: lastSeq, nextSeq: seq });
       recoverSnapshot('client-sequence-gap');
       return;
     }
@@ -79,6 +93,7 @@ function init() {
   };
 
   window.glassesOnStream = (state, detail) => {
+    trace('stream-state', { state: state, detail: detail || null, lastSeq: lastSeq });
     if (state === 'open') {
       streamOpen = true;
       streamConnecting = false;
@@ -109,6 +124,7 @@ function run() {
     showProvision(true);
     showSession(false);
     setConn('off', 'configure');
+    trace('not-configured');
     return;
   }
 
@@ -121,6 +137,7 @@ function run() {
   if (!streamOpen && !streamConnecting) {
     streamConnecting = true;
     setConn('reconnecting', 'connecting');
+    trace('stream-opening', { lastSeq: lastSeq });
     window.GlassesBridge.openStream();
   }
 }
@@ -128,6 +145,7 @@ function run() {
 function fetchSnapshot() {
   const response = nativeFetch('/glasses/v1/bootstrap', '');
   if (response.status !== 200) {
+    trace('bootstrap-failed', { status: response.status });
     if (response.status === 401 || response.status === 403) {
       showProvision(true);
       showSession(false);
@@ -140,6 +158,7 @@ function fetchSnapshot() {
     const snapshot = JSON.parse(response.body);
     const expectedSession = window.GlassesBridge.sessionId();
     if (expectedSession && snapshot.attachment.sessionId !== expectedSession) {
+      trace('session-mismatch', { expected: expectedSession, actual: snapshot.attachment.sessionId });
       setConn('off', 'session-mismatch');
       showProvision(true);
       showSession(false);
@@ -147,6 +166,7 @@ function fetchSnapshot() {
     }
     return snapshot;
   } catch (error) {
+    trace('bootstrap-invalid-json', { message: String(error) });
     scheduleReconnect('bad-bootstrap');
     return null;
   }
@@ -173,11 +193,22 @@ function applySnapshot(snapshot) {
     if (Number.isFinite(seq)) seenSeqs.add(seq);
     addEventRow(event);
   });
+  trace('bootstrap-applied', {
+    generation: generation,
+    asOfSeq: lastSeq,
+    eventCount: events.length,
+    status: snapshot.attachment.status,
+    writeState: snapshot.writeState || null,
+  });
 }
 
 function recoverSnapshot(reason) {
-  if (recovering) return;
+  if (recovering) {
+    trace('recovery-coalesced', { reason: reason });
+    return;
+  }
   recovering = true;
+  trace('recovery-start', { reason: reason, streamOpen: streamOpen, lastSeq: lastSeq });
   setConn(streamOpen ? 'open' : 'reconnecting', streamOpen ? 'live·sync' : reason);
   try {
     const snapshot = fetchSnapshot();
@@ -186,6 +217,7 @@ function recoverSnapshot(reason) {
       showSession(true);
       applySnapshot(snapshot);
       if (streamOpen) setConn('open', 'live');
+      trace('recovery-complete', { reason: reason, lastSeq: lastSeq });
     }
   } finally {
     recovering = false;
@@ -198,6 +230,7 @@ function renderProjection(event) {
   lastSeq = Math.max(lastSeq, seq);
   $('asof').textContent = lastSeq;
   addEventRow(event);
+  trace('projection-applied', { seq: seq, type: event.type || '' });
 }
 
 function addEventRow(event) {
@@ -215,12 +248,14 @@ function renderRaw(event, data, id) {
   li.className = 'ev raw';
   li.textContent = event + (id ? ' #' + id : '') + ' ' + JSON.stringify(data);
   $('events').prepend(li);
+  trace('sse-raw', { event: event, id: id || null });
 }
 
 function scheduleReconnect(label) {
   setConn('reconnecting', label);
   if (reconnectTimer !== null) return;
   const delay = Math.min(10_000, 1_000 * Math.pow(2, reconnectAttempt++));
+  trace('reconnect-scheduled', { label: label, delayMs: delay, attempt: reconnectAttempt });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     run();
