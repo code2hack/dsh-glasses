@@ -165,7 +165,80 @@ serial/model/fingerprint, host used, command or physical interaction, relevant
 bounded logs, observed result, known limitation. No approval matrices or release
 evidence for TB0/MVP.
 
-## 13. Communication identity
+## 13. ChatGPT and worker responsibility split
+
+ChatGPT is the primary owner of project planning, implementation design,
+production-code changes, code review, and merge decisions. The worker is the
+primary executor for builds, tests, server/device operation, evidence capture,
+and debugging.
+
+The worker MAY make small, evidence-driven debug fixes and temporary
+instrumentation needed to isolate or verify a defect, but MUST NOT independently
+redesign the architecture, change accepted product behavior, or expand scope.
+Nontrivial implementation changes must be sent to ChatGPT for planning/coding or
+review before merge.
+
+If the worker cannot confidently fix a bug, it MUST send ChatGPT a compact bug
+report containing:
+
+- exact branch and commit;
+- host, device, build variant, and relevant runtime versions;
+- minimal reproduction steps;
+- expected and actual behavior;
+- bounded tracer/log evidence and the exact timestamps involved;
+- current hypothesis and attempted fixes;
+- the smallest concrete question or patch request.
+
+The primary debugging methods are dedicated tracers, structured instrumentation,
+and logs. A screenshot is supporting evidence, not a substitute for traces or
+logs. For a visual defect, collect the screenshot together with UI hierarchy,
+lifecycle/input logs, network state, and other relevant machine-observable facts.
+
+## 14. Mandatory ChatGPT polling and non-stop rule
+
+Whenever a worker sends ChatGPT a question, bug report, code-review request, or
+other blocking request, it MUST start a timer-driven polling heartbeat for the
+reply. Event-driven notification MAY supplement polling but MUST NOT be the only
+mechanism.
+
+Default behavior:
+
+- poll approximately every 30 seconds while blocked;
+- polling MAY back off to at most 60 seconds while productive nonconflicting work
+  continues;
+- continue all independent tests, evidence collection, and diagnosis between
+  polls;
+- after a reply arrives, acknowledge it and apply or test it promptly;
+- do not send duplicate questions unless new evidence materially changes the
+  problem.
+
+Silence, a lost event, a tool timeout, or an unavailable reply is not permission
+to stop. Without an explicit instruction from **code2hack** to stop, pause, or
+hand off, the worker MUST NOT voluntarily end the task or terminate its working
+session. If fully blocked, keep the session alive, preserve state, continue the
+heartbeat, and investigate alternate evidence paths.
+
+## 15. Autonomous server and real-hardware operation
+
+The worker MUST fully operate server and real-Rokid testing/debugging itself.
+This includes SSH, builds, installs, launches, process control, permissions,
+network/Tailscale recovery, ADB input, logcat, system-state collection,
+UIAutomator dumps, screenshots, service health checks, disposable-service
+restarts, and evidence recording.
+
+Do not ask code2hack to tap controls, read or describe the display, run terminal
+commands, collect logs, restart services, toggle Tailscale, reinstall the APK, or
+perform another device/server action while any verified ADB route to the Rokid
+is available. Use u4090 USB ADB first, then the documented fallback routes.
+
+The only ordinary escalation threshold is that the Rokid is unavailable through
+all verified ADB routes after the recovery procedure in this file. If ADB is
+healthy but an exact physical interaction cannot be automated, record that item
+as not yet hardware-qualified and continue every other available test; do not
+interrupt code2hack unless code2hack explicitly requests or offers a manual
+interaction.
+
+## 16. Communication identity
 
 - Messages from a DSH worker begin with `[spark:dsh:<exact-session-id>]`.
 - Other coding workers: `[<host>:<worker-kind>:<session-or-thread-id>]`.
