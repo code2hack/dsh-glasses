@@ -32,6 +32,8 @@ cleanup() {
   local getevent_lines=0
   local getevent_usage_errors=0
   local getevent_process_status="missing"
+  local getevent_event0_status="missing"
+  local getevent_event1_status="missing"
   if [[ -f "$RUN_DIR/getevent-live.txt" ]]; then
     getevent_lines="$(wc -l < "$RUN_DIR/getevent-live.txt" | tr -d ' ')"
   fi
@@ -41,6 +43,12 @@ cleanup() {
   if [[ -f "$RUN_DIR/getevent-live.status" ]]; then
     getevent_process_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-live.status")"
   fi
+  if [[ -f "$RUN_DIR/getevent-event0.status" ]]; then
+    getevent_event0_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event0.status")"
+  fi
+  if [[ -f "$RUN_DIR/getevent-event1.status" ]]; then
+    getevent_event1_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event1.status")"
+  fi
 
   {
     echo "capture_end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -48,6 +56,8 @@ cleanup() {
     echo "getevent_live_lines=$getevent_lines"
     echo "getevent_usage_errors=$getevent_usage_errors"
     echo "getevent_process_status=$getevent_process_status"
+    echo "getevent_event0_status=$getevent_event0_status"
+    echo "getevent_event1_status=$getevent_event1_status"
   } >> "$RUN_DIR/manifest.txt"
 
   "$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
@@ -121,27 +131,63 @@ EOF
 "$ADB" -s "$SERIAL" pull /sdcard/dsh-i0-window.xml "$RUN_DIR/window-before.xml" > "$RUN_DIR/uiautomator-before-pull.txt" 2>&1 || true
 
 # Low-level Linux input events from the currently identified power/touch nodes.
-# A normal bounded run exits through host `timeout` with status 124. Zero lines
-# means no low-level event occurred; it is not a reader failure when status=124,
-# usage_errors=0, and stderr contains no permission/device error.
+# This target accepts exactly one device argument, so event0 and event1 MUST be
+# read by separate concurrent adb/getevent processes. A serial loop would block
+# on event0 for the whole window and never observe event1.
+#
+# A normal bounded reader exits through host `timeout` with status 124. Zero
+# lines means no low-level event occurred; it is not a reader failure when BOTH
+# node statuses are 124, usage_errors=0, and stderr has no permission/device
+# error.
 (
-  getevent_status=0
-  if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
-    # This toybox getevent accepts exactly ONE device argument; iterate the
-    # power/touch nodes device-side instead of passing both at once.
-    timeout "$DURATION" "$ADB" -s "$SERIAL" shell \
-      "for d in /dev/input/event0 /dev/input/event1; do getevent ${GETEVENT_ARGS[*]} \"\$d\" || true; done" \
-      > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" \
-      || getevent_status=$?
+  : > "$RUN_DIR/getevent-live.txt"
+  : > "$RUN_DIR/getevent-live.err"
+  node_pids=()
+
+  for node in event0 event1; do
+    (
+      node_status=0
+      node_path="/dev/input/$node"
+      node_out="$RUN_DIR/getevent-$node.txt"
+      node_err="$RUN_DIR/getevent-$node.err"
+
+      if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
+        timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
+          "${GETEVENT_ARGS[@]}" "$node_path" 2> "$node_err" \
+          | awk -v device="$node" '{ print "device=" device, $0; fflush(); }' \
+          > "$node_out" \
+          || node_status=$?
+      else
+        timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
+          "$node_path" 2> "$node_err" \
+          | awk -v device="$node" '{ print "host_epoch_s=" systime(), "device=" device, $0; fflush(); }' \
+          > "$node_out" \
+          || node_status=$?
+      fi
+
+      printf '%s\n' "$node_status" > "$RUN_DIR/getevent-$node.status"
+    ) &
+    node_pids+=("$!")
+  done
+
+  for pid in "${node_pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  for node in event0 event1; do
+    cat "$RUN_DIR/getevent-$node.txt" >> "$RUN_DIR/getevent-live.txt" 2>/dev/null || true
+    if [[ -s "$RUN_DIR/getevent-$node.err" ]]; then
+      sed "s/^/device=$node /" "$RUN_DIR/getevent-$node.err" >> "$RUN_DIR/getevent-live.err"
+    fi
+  done
+
+  status0="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event0.status" 2>/dev/null || echo missing)"
+  status1="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event1.status" 2>/dev/null || echo missing)"
+  if [[ "$status0" == "124" && "$status1" == "124" ]]; then
+    printf '124\n' > "$RUN_DIR/getevent-live.status"
   else
-    timeout "$DURATION" "$ADB" -s "$SERIAL" shell \
-      "for d in /dev/input/event0 /dev/input/event1; do getevent \"\$d\" || true; done" \
-      2> "$RUN_DIR/getevent-live.err" \
-      | awk '{ print "host_epoch_s=" systime(), $0; fflush(); }' \
-      > "$RUN_DIR/getevent-live.txt" \
-      || getevent_status=$?
+    printf 'event0=%s,event1=%s\n' "$status0" "$status1" > "$RUN_DIR/getevent-live.status"
   fi
-  printf '%s\n' "$getevent_status" > "$RUN_DIR/getevent-live.status"
 ) &
 PIDS+=("$!")
 
