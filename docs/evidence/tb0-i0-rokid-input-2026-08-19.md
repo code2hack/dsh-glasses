@@ -286,3 +286,18 @@ concurrent implementation on the real Rokid.
 - function-button short / long — **unqualified**;
 - one-finger physical touch/swipe — **unqualified**;
 - two-finger physical touch/swipe — **unqualified**.
+
+## W2d/W2e provenance note (P1 review resolution)
+
+- **W2d** (`20260819T123718Z-w2d`): its own manifest records
+  `repo_head=472b436203d0cea5bfd53bb957330a5d4adfdcc0` — the concurrent
+  two-reader capture was the worktree HEAD at launch (deployed via bundle
+  fetch + `git reset --hard`); per-node statuses event0=124, event1=124,
+  live=124, usage_errors=0.
+- **W2e** (`20260819T125137Z-w2e`): current-head definitive run,
+  `repo_head=4a85735…` (the final I0 evidence head). `capture_exit_status=0`,
+  `getevent_capture_mode=device-timestamp`, `getevent_process_status=124`,
+  `logcat_process_status=124` (logcat-health surface), `event0/event1/live`
+  statuses all 124, `getevent_usage_errors=0`, all err files empty,
+  `getevent_live_lines=0` (no genuine event; nothing forced). This is the
+  provenance-clean dual-node + logcat reader pass to cite for PR #7.
