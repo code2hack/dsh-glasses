@@ -244,6 +244,21 @@ interaction.
 - Other coding workers: `[<host>:<worker-kind>:<session-or-thread-id>]`.
 - Messages without a valid prefix are treated as coming directly from the user.
 
+## 17. ChatGPT thinking-effort policy
+
+- **Usage-limit fallback (mandatory):** when a ChatGPT reply is blocked by a
+  usage limit at a given thinking effort (e.g. "You've hit your limit"), do NOT
+  keep polling/re-sending at that same limited effort. Retry the same pending
+  request at the next-lower thinking effort (Pro → xhigh → high → medium → low)
+  until the thread accepts it.
+- **Effort by request type:**
+  - Implementation requests (and any runtime/execution ask) → always use
+    **xhigh**, whether or not "Pro" is available.
+  - Planning and fixing hard bugs → **Pro** is acceptable, and is the only case
+    where Pro should be chosen.
+- These rules also govern which thinking-effort state the worker selects in the
+  thread before sending, and which effort it retries at after a limit.
+
 ## Current slice state
 
 - TB0-I0 merged in PR #7.
