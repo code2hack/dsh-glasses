@@ -71,7 +71,7 @@ Record:
 
 - native `DSHGlassesBridge` log rows: `debug-semantic-control name=COMMAND_SHORT / RIGHT / LEFT source=SYNTHETIC_DEBUG_CONTROL` (pid 14897, three rows)
 - provenance exactly `SYNTHETIC_DEBUG_CONTROL`: PASS (all three rows)
-- before state: endpoint 3203, expectedSession cfbb4acf…, streamOpen true, streamVerified true, mode navigation, hudVisible true, sessionStatus idle, draft rev 0 empty unlocked
+- before state: endpoint 3203, expectedSession <disposable-session-id>, streamOpen true, streamVerified true, mode navigation, hudVisible true, sessionStatus idle, draft rev 0 empty unlocked
 - after COMMAND_SHORT: mode input, native trace row captured
 - after RIGHT: word/char motion applied, native trace row captured
 - after LEFT: motion applied, native trace row captured
