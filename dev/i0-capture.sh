@@ -31,11 +31,15 @@ cleanup() {
 
   local getevent_lines=0
   local getevent_usage_errors=0
+  local getevent_process_status="missing"
   if [[ -f "$RUN_DIR/getevent-live.txt" ]]; then
     getevent_lines="$(wc -l < "$RUN_DIR/getevent-live.txt" | tr -d ' ')"
   fi
   if [[ -f "$RUN_DIR/getevent-live.err" ]]; then
     getevent_usage_errors="$(grep -Eic 'usage:|unknown option|invalid option|bad option|unrecognized option' "$RUN_DIR/getevent-live.err" || true)"
+  fi
+  if [[ -f "$RUN_DIR/getevent-live.status" ]]; then
+    getevent_process_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-live.status")"
   fi
 
   {
@@ -43,6 +47,7 @@ cleanup() {
     echo "capture_exit_status=$status"
     echo "getevent_live_lines=$getevent_lines"
     echo "getevent_usage_errors=$getevent_usage_errors"
+    echo "getevent_process_status=$getevent_process_status"
   } >> "$RUN_DIR/manifest.txt"
 
   "$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
@@ -116,17 +121,24 @@ EOF
 "$ADB" -s "$SERIAL" pull /sdcard/dsh-i0-window.xml "$RUN_DIR/window-before.xml" > "$RUN_DIR/uiautomator-before-pull.txt" 2>&1 || true
 
 # Low-level Linux input events from the currently identified power/touch nodes.
+# A normal bounded run exits through host `timeout` with status 124. Zero lines
+# means no low-level event occurred; it is not a reader failure when status=124,
+# usage_errors=0, and stderr contains no permission/device error.
 (
+  getevent_status=0
   if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
     timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent "${GETEVENT_ARGS[@]}" \
       /dev/input/event0 /dev/input/event1 \
-      > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" || true
+      > "$RUN_DIR/getevent-live.txt" 2> "$RUN_DIR/getevent-live.err" \
+      || getevent_status=$?
   else
     timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
       /dev/input/event0 /dev/input/event1 2> "$RUN_DIR/getevent-live.err" \
       | awk '{ print "host_epoch_s=" systime(), $0; fflush(); }' \
-      > "$RUN_DIR/getevent-live.txt" || true
+      > "$RUN_DIR/getevent-live.txt" \
+      || getevent_status=$?
   fi
+  printf '%s\n' "$getevent_status" > "$RUN_DIR/getevent-live.status"
 ) &
 PIDS+=("$!")
 
