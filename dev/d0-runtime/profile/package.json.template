@@ -1,0 +1,16 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "dsh-glasses-plugin": "__PLUGIN_FILE_SPEC__"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

@@ -1,11 +1,41 @@
 # dsh-glasses implementation instructions
 
+> **0. Worker Heartbeat Integrity Protocol (WHIP) — read and obey BEFORE
+> anything else.** These rules persist across rounds, context compaction, and
+> fresh sessions; silence is never permission to stop. If this project is
+> reopened in a new session, re-read this section first.
+>
+> 1. **W — Work the todo.** Continue the highest-priority in-progress item every
+>    round; update the todo list before and after each round.
+> 2. **H — Heartbeat, never stop.** There is no voluntary end while the mission
+>    is open. Keep a poller/recorder alive; every round re-checks the ChatGPT
+>    thread FIRST and acts on any new reply.
+> 3. **I — Inspect state.** The workspace, tool results, durable session state,
+>    the origin branch, and the ChatGPT thread are authoritative — inspect,
+>    never assume. The remote branch is the review authority.
+> 4. **P — Progress + proof.** Make concrete, verified progress each round and
+>    record evidence (exact head, logs, durable/op correlation, diagnostics)
+>    before claiming completion.
+> 5. **P — Poll the reply.** After ANY blocking ask to ChatGPT: poll ~30 s
+>    (back off to ≤60 s while doing productive nonconflicting work), never rely
+>    on event notifications alone, and act on the reply before anything else. A
+>    usage-limit / "Internal Server Error" placeholder is NOT a reply — retry at
+>    the next-lower thinking effort (Pro → xhigh → high → medium → low) per §17
+>    until it lands. Don't send duplicates unless new evidence changes the
+>    problem.
+>
+> Legitimate endings ONLY: (a) an explicit stop/pause/handoff from code2hack;
+> (b) a genuine blocker escalated once while the session and poller stay alive;
+> (c) absolute completion — the program's final acceptance is merged, no pending
+> directive, and no unreplied blocking ask. Every other round ends with a short
+> status naming the next round's first action and a living todo.
+
 Mandatory entry point for every implementation session. MVP-biased and lean: this
 file is operational, not production process.
 
 ## 1. Read order and authority
 
-Read before changing code: `AGENTS.md` → `SPEC.md` →
+Read before changing code: `AGENTS.md` (start at §0 WHIP) → `SPEC.md` →
 `docs/TRACER_BULLET_TB0.md` (when present) → the active evidence/seam-audit doc →
 source and tests.
 
@@ -151,7 +181,7 @@ Funnel requirement for TB0.
 ## 11. Work and branch discipline
 
 - Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/product-text-loop`).
+- One dedicated branch per active slice (current: `tb0/repro-dev-runtime`).
 - Do not rewrite another worker's branch; do not force-push main.
 - Keep commits narrow; commit documentation separately from exploratory code.
 - GitHub remote is shared truth (not an uncommitted host worktree).
@@ -228,8 +258,8 @@ restarts, and evidence recording.
 
 Do not ask code2hack to tap controls, read or describe the display, run terminal
 commands, collect logs, restart services, toggle Tailscale, reinstall the APK, or
-perform another device/server action while any verified ADB route to the Rokid
-is available. Use u4090 USB ADB first, then the documented fallback routes.
+perform another device/server action while any verified ADB route to the Rokid is
+available. Use u4090 USB ADB first, then the documented fallback routes.
 
 The only ordinary escalation threshold is that the Rokid is unavailable through
 all verified ADB routes after the recovery procedure in this file. If ADB is
@@ -264,8 +294,9 @@ interaction.
 - TB0-I0 merged in PR #7.
 - TB0-R0 merged in PR #8.
 - TB0-A0 merged in PR #9.
-- Active slice: `tb0/product-text-loop` (TB0-C0).
-- Base merge: `bed16e771f6f99a1672a98e5c8f15bfb12ae0df2`.
+- TB0-C0 merged in PR #10 (one-session product text loop, accepted 2026-08-19).
+- Active slice: `tb0/repro-dev-runtime` (TB0-D0, reproducible disposable runtime).
+- Base merge: `0db1c426e2ec2b8e397d96f5f637c8c5c756cf7e`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
