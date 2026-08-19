@@ -65,3 +65,12 @@ re-qualified.
 Physical-only controls are **NOT claimed passed**. Synthetic ADB events,
 `/dev/input` capability listings, prior Poker-Dealer records, and sensor
 inventories are supporting evidence only and cannot close the hardware gate.
+
+## Debug semantic-control injection seam (next-slice continuation)
+
+A **debug-only** semantic-control injection seam was added (same branch) so future
+work can exercise semantic controls without hardware: `GlassesBridge.debugSemanticControl(name)`
+(no-op unless DEBUG; logs `debug-semantic-control <name>` and delivers
+`window.glassesOnSemanticControl(name)` → traced `semantic-control-injected
+{source:"debug-seam",name,time}`). It deliberately does NOT touch physical
+bindings; TB0-I0 physical rows remain unqualified.

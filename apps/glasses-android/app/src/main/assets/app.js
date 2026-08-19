@@ -146,6 +146,10 @@ function init() {
     run();
   });
 
+  window.glassesOnSemanticControl = (name) => {
+    trace('semantic-control-injected', { source: 'debug-seam', name: String(name || '').slice(0, 48), time: Date.now() });
+  };
+
   window.glassesOnLine = (event, data, id) => {
     if (identityFailure) {
       trace('sse-ignored-identity-failure', { event: event || null, id: id || null });

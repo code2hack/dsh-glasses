@@ -146,6 +146,20 @@ class GlassesBridge(private val context: Context) {
         stopStreamLocked()
     }
 
+    /**
+     * TB0 debug-only semantic-control injection seam. Delivers a named semantic
+     * control event to the JS layer WITHOUT touching physical bindings or the
+     * real input path. Never used by production flows; a no-op unless DEBUG.
+     * Physical bindings remain explicitly unqualified (TB0-I0).
+     */
+    @JavascriptInterface
+    fun debugSemanticControl(name: String) {
+        if (!BuildConfig.DEBUG) return
+        val sanitized = name.take(48)
+        Log.i(TAG, "debug-semantic-control $sanitized")
+        jsEval("window.glassesOnSemanticControl&&window.glassesOnSemanticControl(" + jsQ(sanitized) + ")")
+    }
+
     @Synchronized
     fun close() {
         if (closed) return
