@@ -1,66 +1,74 @@
 package com.code2hack.glasses
 
+import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.os.SystemClock
 
 /**
- * G0 raw input tracer: records bounded, monotonic, timestamped traces for the
- * native Rokid interactions (function button, key/touch, motion). Every trace is
- * emitted under the project tag DSHGlasses and forwarded to the JS layer via
- * [onEvent] for on-screen evidence.
- *
- * Fields captured per assignment: action, key code, scan code, repeat count,
- * flags, source, device id/name, pointer count, coordinates, pressure/tool
- * type, monotonic timestamps, plus a `nativeVisible` flag when the device also
- * reacted natively (drives empiric "operator visible" classification).
+ * G0 raw input tracer. It observes but never consumes an event. Native Rokid
+ * side effects cannot be inferred from app delivery, so traces record them as
+ * `unknown`; evidence correlates them separately with system logs/UI state.
  */
 object InputTracer {
     private const val TAG = "DSHGlasses"
+
     var onEvent: ((String) -> Unit)? = null
 
-    fun key(kind: String, event: KeyEvent, nativeVisible: Boolean): Boolean {
+    fun key(kind: String, event: KeyEvent, nativeEffect: String = "unknown") {
         emit(buildString {
-            append(kind); append(' ')
-            append("action=").append(actionName(event.action))
+            append(kind).append(' ')
+            append("action=").append(keyActionName(event.action))
             append(" keyCode=").append(KeyEvent.keyCodeToString(event.keyCode))
+            append(" keyCodeInt=").append(event.keyCode)
             append(" scanCode=").append(event.scanCode)
             append(" repeat=").append(event.repeatCount)
+            append(" meta=0x").append(event.metaState.toString(16))
             append(" flags=0x").append(event.flags.toString(16))
-            append(" source=").append(event.source.toString(16))
-            append(" device=").append(event.device?.id).append(':').append(event.device?.name)
+            append(" source=0x").append(event.source.toString(16))
+            append(" deviceId=").append(event.deviceId)
+            append(" deviceName=").append(event.device?.name ?: "null")
+            append(" downUptime=").append(event.downTime)
             append(" eventUptime=").append(event.eventTime)
-            append(" uptime=").append(SystemClock.uptimeMillis())
-            append(" nativeVisible=").append(nativeVisible)
+            append(" observedUptime=").append(SystemClock.uptimeMillis())
+            append(" nativeEffect=").append(nativeEffect)
         })
-        return false
     }
 
-    fun motion(kind: String, event: MotionEvent, nativeVisible: Boolean): Boolean {
-        val history = event.historySize
+    fun motion(kind: String, event: MotionEvent, nativeEffect: String = "unknown") {
         emit(buildString {
-            append(kind); append(' ')
-            append("action=").append(event.actionMasked)
+            append(kind).append(' ')
+            append("action=").append(MotionEvent.actionToString(event.action))
+            append(" actionMasked=").append(event.actionMasked)
+            append(" actionIndex=").append(event.actionIndex)
             append(" pointerCount=").append(event.pointerCount)
-            append(" x=").append(event.x).append(" y=").append(event.y)
-            append(" pressure=").append(event.pressure)
-            append(" toolType=").append(event.getToolType(0))
-            append(" source=").append(event.source.toString(16))
-            append(" device=").append(event.device?.id).append(':').append(event.device?.name)
-            append(" history=").append(history)
+            for (index in 0 until event.pointerCount) {
+                append(" p").append(index).append("Id=").append(event.getPointerId(index))
+                append(" p").append(index).append("X=").append(event.getX(index))
+                append(" p").append(index).append("Y=").append(event.getY(index))
+                append(" p").append(index).append("Pressure=").append(event.getPressure(index))
+                append(" p").append(index).append("Tool=").append(event.getToolType(index))
+            }
+            append(" source=0x").append(event.source.toString(16))
+            append(" deviceId=").append(event.deviceId)
+            append(" deviceName=").append(event.device?.name ?: "null")
+            append(" history=").append(event.historySize)
+            append(" downUptime=").append(event.downTime)
             append(" eventUptime=").append(event.eventTime)
-            append(" uptime=").append(SystemClock.uptimeMillis())
-            append(" nativeVisible=").append(nativeVisible)
+            append(" observedUptime=").append(SystemClock.uptimeMillis())
+            append(" nativeEffect=").append(nativeEffect)
         })
-        return false
     }
 
-    private fun actionName(a: Int) = when (a) {
+    fun lifecycle(event: String, details: String = "") {
+        emit("LIFECYCLE event=$event uptime=${SystemClock.uptimeMillis()}${if (details.isEmpty()) "" else " $details"}")
+    }
+
+    private fun keyActionName(action: Int): String = when (action) {
         KeyEvent.ACTION_DOWN -> "DOWN"
         KeyEvent.ACTION_UP -> "UP"
         KeyEvent.ACTION_MULTIPLE -> "MULTIPLE"
-        else -> a.toString()
+        else -> action.toString()
     }
 
     private fun emit(line: String) {
