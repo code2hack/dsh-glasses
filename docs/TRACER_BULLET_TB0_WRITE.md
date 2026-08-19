@@ -1,100 +1,129 @@
 # TRACER_BULLET_TB0 — host write slice (tb0/host-write)
 
-**Status:** design + implementation contract for the TB0 write slice (post-TB0-H0).
+**Status:** amended contract (per review); implementation + fault tests to follow.
 **Date:** 2026-08-19
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/host-write`
 **Normative:** `SPEC.md` rev3 + `docs/TRACER_BULLET_TB0.md` (Send-only actions; Steer → TB0.1).
 
-Evidence base: `docs/evidence/tb0-dsh-compat-2026-08-19.md` (incl. §TB0-H0 read proof), which proved forward/backward identity seams against installed `@deepseek-ai/dsh@0.1.0-rc.7`.
+Evidence base: `docs/evidence/tb0-dsh-compat-2026-08-19.md` (incl. §TB0-H0 read proof and earlier write-slice records, which are superseded where this document differs).
 
-## 1. Pinned write seams (from installed rc.7 sources)
+## 0. Guiding guarantees (reviewed amendments)
 
-| Seam | Source | Signature / shape |
+The zero-or-one user-message guarantee comes from TWO plugin-side facts, not from a global DSH uniqueness assumption:
+
+1. The plugin durably records dispatch state per operation id and **never calls `session.prompt` more than once for one operation id**.
+2. Acceptance is settled only from **exact durable positive evidence** (`user/message.source.rpcId === operationId`); absence in one bounded read is never classified as rejection.
+
+## 1. Pinned write seams (from installed rc.7 sources, runtime-verified)
+
+| Seam | Source | Verified |
 | --- | --- | --- |
-| User message shape | `dsh-llm/lib/types/message.d.ts` | `Message { id: MessageId; role; content: ContentBlock[]; source: MessageSource }`; `UserMessage extends Message { role:'user' }` |
-| Stable message identity | `dsh-llm/lib/types/brand.d.ts` | `MessageId = Branded<'MessageId'>`; `MessageId(id)` |
-| Message creation | `dsh-llm/lib/types/message.d.ts` | `createUserMessage({ content, source })` mints + freezes a **fresh stable `id`** (never caller-supplied) |
-| Text block | `dsh-llm` `ContentBlock` | `{ type: 'text', text: string }` (text-only TB0) |
-| Idle Send / Steer | `dsh-agent-loop/lib/types/agent.d.ts` | `send(message: UserMessage, target: InboxTarget, wakeup: true)`; `followup(input)`; `steer(input)`; live agent via `ctx.agents.get(sessionId)` |
-| Inbox admission | `dsh-agent/lib/types/inbox.d.ts` | `insert(target, message)` durably records; `inserted(message)`/`claimed(message, turn)` notifications; duplicate identity throws |
-| Durable log read | `dsh-session-query` / `dsh-session` | `readSession(sessionId).events`; `user/message` events carry `message` with the stable `id` |
-| Durable plugin storage | `dsh-storage` / `KvUnit` | version-stamped units; atomic durable per-call writes; `UNIT_NAME_RE` |
+| In-process admission | `ctx.apiProxy.sessions.prompt({ rpcId, payload: { sessionId, mode: 'queue', content } })` (`ApiProxy` provided as `ctx.apiProxy` by `@deepseek-ai/dsh-host-apiproxy`) | Yes |
+| Prompt → durable correlation | `session.prompt` rpcId lands in the durable `user/message` as `message.source.rpcId` (`source: { kind: 'user', rpcId }`) | Yes (observed `rpc-corr-test-abc123`) |
+| Operation identity | glasses `operationId` == DSH prompt `rpcId` == durable `user/message.source.rpcId` | Yes |
+| Full-log reconciliation | `ctx.sessionQuery.readSession(sessionId)` returns the complete raw event log (scan from recorded pre-dispatch seq to tail) | Yes |
+| Durable discard evidence | `agent/inbox/spliced` with `outcome: 'canceled'` carrying the inserted message | Inspect at runtime |
+| Durable plugin storage | dsh-storage `json` backend KvUnit; unit/table names must match `UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/` | Yes (hyphens rejected) |
 
-## 2. Message identity + no-replay model
+`MessageId` is **not** the external correlation identity. `createUserMessage` mints a fresh random id internally; it is used only incidentally and is not claimed as client-generated.
 
-- The **glasses generates an opaque `operationId`** per submit (UUID), kept client-side for retry/reconciliation.
-- At **Send admission the plugin calls `createUserMessage`** → gets the stable `MessageId`. This id is the durable, client-generated identity downstream.
-- The plugin **records the operation ledger row before touching the agent**:
-  `{ operationId, messageId, sessionId, state:'pending', draftRevision, asOfSeqAtSend }` (KvUnit `ledger`).
-- Then **idle Send**: `ctx.agents.get(sessionId)?.send(userMessage, target, true)`.
-- **Only one live user-message can carry a given `MessageId`** (identity uniqueness enforced by dsh message creation + inbox duplicate-throw), so **two published user/message events with the same id is structurally impossible** — the zero-or-one property comes from DSH's identity model, and our job is to *verify* it, not only assert it.
+## 2. Single atomic state document
 
-## 3. Durable draft + ledger schema (dsh-storage KvUnit)
+One KvUnit record per session (table `state`, key = sessionId), one durable write per transition:
 
-Plugin units under one storage unit name `glasses_plugin` (must match `UNIT_NAME_RE` = `/^[a-z][a-z0-9_]*$/`, so no hyphens/dots), versioned `1`:
+```ts
+interface Tb0WriteStateV1 {
+  schemaVersion: 1;
+  sessionId: string;
+  draft: {
+    revision: number;
+    text: string;
+    lockedByOperationId?: string;   // set on prepare, cleared on accepted
+    lastMutationDigest?: string;    // for mutation idempotency (same op+same req)
+  };
+  operations: Record<string, Tb0Operation>;
+}
 
-**`drafts`** — one record per attachment/session (`key = sessionId`):
-```
-{ revision: number          // monotonic, plugin-authoritative
-  content: string           // current frozen draft text (text-only TB0)
-  committedSeq: number      // session asOfSeq at last plugin acknowledgment
-  status: 'editing' | 'submitted' | 'cleared'
-  lastOperationId?: string }
-```
-Mutations bump `revision`; the glass acknowledges `revision` exactly (no stale ack accepted).
+type SendState = 'prepared' | 'dispatching' | 'accepted' | 'rejected' | 'unknown';
 
-**`ledger`** — one row per submit (`key = operationId`):
-```
-{ operationId: string
-  messageId: MessageId
-  sessionId: SessionId
-  state: 'pending' | 'accepted' | 'rejected'
-  draftRevision: number
-  asOfSeqAtSend: number }
+interface Tb0Operation {
+  operationId: string;
+  state: SendState;
+  requestDigest: string;      // exact request body digest
+  draftRevisionAtPrepare: number;
+  preDispatchSeq: number;     // session asOfSeq recorded before dispatch
+  lastError?: string;
+}
 ```
 
-## 4. Route semantics (auth'd, /glasses/v1/*)
+Transitions are each **one** `putRecord` (atomic, durable):
 
-- `POST /glasses/v1/draft/mutations` — body `{ kind:'setText'|'ack', revision, text? }`:
-  - `setText`: validate `revision === current+1` → bump, durable write, ack `D+1`.
-  - `ack`: mark plugin acknowledged revision (idempotent for already-acked).
-- `POST /glasses/v1/actions` — **Send only for TB0**:
-  - body `{ kind:'send', operationId, draftRevision }`.
-  - Reconciled submit: if ledger already has `operationId` with a durable `messageId`, **do not re-create the message** — go straight to acceptance check (exactly-one).
-  - Else create the user message, write the ledger row (`pending`), and `send(…, wakeup: true)`; respond `202 { operationId, messageId, draftRevision }`.
+- prepare (Send) and lock draft;
+- settle `accepted` and clear draft (single write);
+- settle `rejected` and retain draft;
+- settle/preserve `unknown` and keep draft locked.
 
-## 5. Acceptance boundary (ambiguous-outcome reconciliation)
+## 3. Admission (Send) — exact sequence
 
-After a submit (or reconnect after a severed submit):
+`POST /glasses/v1/actions` body:
 
-1. Read the session log via `sessionQuery.readSession(sessionId)`.
-2. Find `user/message` events whose `message.id === messageId`.
-3. Outcomes:
-   - **exactly 1** → DSH accepted: ledger → `accepted`, draft → `cleared` (after authoritative admission is durable; asOfSeq covers the event).
-   - **exactly 0** → not accepted: ledger → `rejected`, draft **retained** at the submitted revision; glass is told to keep/show the draft.
-   - **≥ 2** → automatic failure (see §2: structurally impossible; guard raises a surfaced error + evidence capture).
+```json
+{ "kind": "send", "operationId": "uuid", "draftRevision": 3, "contentDigest": "sha256-of-request" }
+```
 
-The plugin must never re-send a `MessageId` it has already seen durable; re-sending is only ever a NEW `createUserMessage` when a fresh submit is explicitly intended.
+1. Validate draft; if `draft.lockedByOperationId` is set and differs → `409 draft-locked`.
+2. Load `operations[operationId]`:
+   - exists with state `prepared | dispatching | accepted | unknown` → **do not call DSH again**; return the stored result (optionally re-running reconciliation for `prepared/dispatching/unknown` first).
+   - exists with a different `requestDigest` → `409 operation-conflict`.
+   - exists `rejected` → return stored rejected (no re-dispatch for TB0).
+3. Persist `prepared` + draft lock (one write).
+4. Persist `dispatching` (one write; records `preDispatchSeq`).
+5. Call `ctx.apiProxy.sessions.prompt({ rpcId: operationId, payload: { sessionId, mode: 'queue', content: [{ type: 'text', text }] } })` **exactly once**.
+   - Prompt error (pre-dispatch failure) → settle `rejected` (one write, draft retained).
+   - `accepted: true` → **no draft clear yet**; operation stays `dispatching`.
+6. Reconcile durable facts; settle atomically.
 
-## 6. Host-only zero-or-one test (disposable instance, as TB0 requires)
+## 4. Reconciliation — never classify absence as rejection
 
-Reuse the TB0-H0 disposable harness (DSH_HOME under `/tmp`, port 3190, keyless test provider). Procedure:
+Scan the complete session log from `preDispatchSeq` to the current tail; for each `user/message` event check exact `source.kind === 'user' && source.rpcId === operationId`.
 
-1. Create a disposable session (host `session.create` RPC).
-2. Authenticated `/bootstrap` → state + draft empty.
-3. `setText` mutation → `/actions send {operationId:A, revision}` → **deliberately sever the glasses connection immediately after transport acceptance** (before observing the turn).
-4. Reconnect → `/bootstrap` → reconcile `ledger[A]` against the session log:
-   - assert user/message events carrying `messageId[A]` ∈ {0, 1};
-   - if 1 → draft cleared, exactly one durable user message; if 0 → draft retained, zero user messages.
-   - assert **never 2**.
-5. Plugin restart → reconstruction: draft + ledger survive (KvUnit), bootstrap history identical.
+- **positive durable user/message** → settle `accepted`; clear draft (release lock) — one write.
+- **durable discard evidence** (`agent/inbox/spliced` with `outcome: 'canceled'` for the rpcId) → settle `rejected` — one write.
+- **pre-dispatch failure** (prompt threw) → settle `rejected` — one write.
+- **anything else (still queued, agent running, event beyond window, absent)** → keep `unknown` (or `prepared`/`dispatching`), draft retained + locked.
 
-Merge gate for `tb0/host-write`: the automated zero-or-one reconciliation test above passes (and the two-directional 0/1 branches are both exercised).
+## 5. Draft mutation — simplified
+
+`POST /glasses/v1/draft/mutations` body:
+
+```json
+{ "operationId": "uuid", "expectedRevision": 3, "mutation": { "kind": "replace", "text": "..." } }
+```
+
+Plugin increments to revision `expectedRevision + 1` (i.e. `expectedRevision` is the revision the client believes is current; plugin writes `current + 1`). No client ack mutation — the successful HTTP response plus later bootstrap snapshot acknowledge the authoritative revision.
+
+Idempotency:
+
+- same operationId + same request → return stored result;
+- same operationId + different request → `409 operation-conflict`;
+- stale `expectedRevision` → `409 revision-conflict` plus the authoritative draft in the body;
+- unresolved Send lock (from `prepared/dispatching/unknown`) → `409 draft-locked`.
+
+## 6. Fault tests to preserve (before PR ready)
+
+1. **Crash after `prepared`, before dispatch** → zero DSH user/messages; draft retained; repeated `/actions` never re-dispatches.
+2. **Crash after DSH admission, before settlement** → reconciliation finds exact `source.rpcId`; exactly one durable user/message; draft clears once.
+3. **Response lost after durable settlement** → same operationId returns stored `accepted`; no new prompt.
+4. **Concurrent identical `/actions`** → one prompt dispatch and one durable user/message.
+5. **Operation-id conflict** → `409 operation-conflict`; no dispatch.
+6. **Long response pushes the user/message outside the first bounded page** → reconciliation (full-log scan from preDispatchSeq) still finds it and never misclassifies as zero/rejected.
 
 ## 7. Out of scope for this slice
 
-`steer` (TB0.1), `interrupt`/cancel of a turned agent, image/photo blocks, Voice/Morse, multiple tabs, production pairing/Funnel, `Last-Event-ID` wire resync (bootstrap-first), glass-side UI.
+`steer` (TB0.1), interrupt/cancel, image/photo blocks, Voice/Morse, multiple tabs, production pairing/Funnel, `Last-Event-ID` wire resync (bootstrap-first), glass-side UI. Agent live-ness for admission is handled by the host `session.prompt` path (matches H0 residual; no `agent-unavailable` special case needed).
 
-## 8. Delivery
+## 8. Delivery order
 
-Commit the write implementation + this contract + evidence, on `tb0/host-write`; report exact commit, test results (both 0 and 1 branches), and residuals to the thread before merging.
+1. `docs: correct TB0 at-most-once Send contract` — this document.
+2. `feat: add durable TB0 draft and Send` — Rework of `plugins/dsh-glasses-plugin` to the amended design.
+3. `test: prove TB0 zero-or-one admission` — fault-injection tests on the disposable instance; evidence appended to `docs/evidence/tb0-dsh-compat-2026-08-19.md`; report exact commit + results before marking PR ready.
