@@ -296,8 +296,10 @@ interaction.
 - TB0-A0 merged in PR #9.
 - TB0-C0 merged in PR #10 (one-session product text loop, accepted 2026-08-19).
 - TB0-D0 merged in PR #11 (reproducible disposable runtime, accepted 2026-08-19).
-- Active slice: `tb0/repro-device-debug` (TB0-D1, reproducible Rokid debug provisioning).
-- Base merge: `6f512aa39c9b1b496b89cd24c305a518997b0c26`.
+- TB0-D1 merged in PR #12 (reproducible Rokid debug provisioning, accepted 2026-08-19).
+- TB0-P0 physical qualification ELIMINATED from the MVP per code2hack (2026-08-19).
+- Active slice: `tb0/adb-only-mvp-acceptance` (TB0-M0, ADB-only MVP acceptance).
+- Base merge: `97dbec9f759efd4581dbb19c355aa5328f45793b`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
