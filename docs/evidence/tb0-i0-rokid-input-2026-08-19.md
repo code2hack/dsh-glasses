@@ -157,3 +157,59 @@ The earlier `dumpsys sensorservice` baseline showed the relevant sensors but zer
 ## Debug semantic-control claim
 
 The current remote `tb0/input-qualification` branch does not yet contain a debug semantic-control bridge method. Any local/unpushed seam is not part of PR #7 and must not be claimed in its body or evidence. The upcoming text round-trip can use the existing DEBUG WebView CDP access and path-restricted `GlassesBridge.fetch()` directly; no semantic-control seam is required for that proof.
+
+## Corrected-head runtime evidence (PR #7, 2026-08-19)
+
+**Build/device**: `tb0/input-qualification`, tested source head `982e2fb`
+(app-code commit; branch head now `9b76909` — docs+recorder fix only, APK
+unchanged), APK debug `0.1.0-g0` / `versionCode 1` (`app-debug.apk` 818872 B),
+host u4090 USB ADB, serial `1906092617103125`, model `RG-glasses`, fingerprint
+`Rokid/glasses/glasses:12/SKQ1.240613.001/1.23.009-20260725-150201:user/release-keys`.
+
+**Dynamic sensor proof** (`~/tmp/dsh-glasses-ADB/i0/sensor-dynamic.txt`, 45s
+bounded `logcat -v monotonic DSHGlassesSensor:V`; note the file also contains
+retained-buffer history from prior processes):
+- `inventory role=game-rotation-vector available=true type=15 QTI`; `inventory
+  role=gyroscope available=true type=4 icm4x6xx TDK-Invensense`;
+- `register type=15 … ok=true` and `register type=4 … ok=true` on resume, again
+  after relaunch;
+- `sample type=15` and `sample type=4` rows with
+  `sensorTimestampNs=… observedElapsedNs=… accuracy=3 values=[…]`;
+- lifecycle: `DSHGlasses LIFECYCLE event=onPause` + `DSHGlassesSensor:
+  unregistered`; relaunch → `event=onResume` + both `register … ok=true`;
+- clean 20 s in-window counts (sensor-20s-clean.txt, current install):
+  **type15 = 210 samples, type4 = 252 samples**;
+- no NEW semantic-control/scroll/tab/network side effects in-window.
+
+**W2 vs W2b — corrected recorder** (`dev/i0-capture.sh`, DURATION=120):
+- W2 (`20260819T122218Z-w2`, original two-device `getevent` invocation):
+  low-level channel FAILED — `getevent_usage_errors=1`,
+  `getevent_process_status=1`, `getevent-live.err` = `Usage: getevent …`.
+  Root cause: this toybox `getevent` accepts exactly ONE device argument; the
+  probe (`-t event1`, one device) passed but the capture passed `event0 event1`
+  (two devices) → usage + non-124 exit.
+- Fix commit `9b76909` `fix: iterate Rokid input nodes one at a time for toybox
+  getevent` — iterates `event0/event1` device-side one argument at a time.
+- W2b (`20260819T122740Z-w2b`, fixed script): PASS per the reviewer criteria —
+  `capture_exit_status=0`, `getevent_capture_mode=device-timestamp`,
+  `getevent_process_status=124`, `getevent_usage_errors=0`, `getevent-live.err`
+  empty (no usage/device/permission error), `getevent_live_lines=0` (no genuine
+  low-level event occurred; no physical press was forced). logcat-live 23589 +
+  focus-live 530 lines.
+
+**Passive recorder (replaced, armed)**: tmux session `dsh-glasses-adb` on u4090,
+loop PID 163042 running `/tmp/passive-loop.sh` →
+`LABEL=passive DURATION=1800 bash dev/i0-capture.sh` (committed recorder; adopts
+the fixed script each iteration). First window `20260819T122427Z-passive`.
+Old `-lt` daemon replaced (its raw-input half was unhealthy, as the reviewer
+noted). Last health check UTC 2026-08-19T12:35Z.
+
+**AGENTS**: base-merge corrected to full SHA `6d1e1925b967cda3c19731decc570d02da2c9c6d`
+(`982e2fb`); active slice `tb0/input-qualification` (both occurrences).
+
+**PR topology**: PR #6 closed as the duplicate I0 branch; PR #7 (draft) is the
+single active I0 PR at head `9b76909`; PR #8 (TB0-R0) retargeted base →
+`tb0/input-qualification`.
+
+The `getevent` one-argument constraint + per-node iteration fix is flagged for
+reviewer confirmation (test-infrastructure change).
