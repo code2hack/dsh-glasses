@@ -151,7 +151,7 @@ Funnel requirement for TB0.
 ## 11. Work and branch discipline
 
 - Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/glasses-shell`).
+- One dedicated branch per active slice (current: `tb0/i0-input`).
 - Do not rewrite another worker's branch; do not force-push main.
 - Keep commits narrow; commit documentation separately from exploratory code.
 - GitHub remote is shared truth (not an uncommitted host worktree).
@@ -246,9 +246,10 @@ interaction.
 
 ## Current slice state
 
-- TB0-H0 and TB0 host-write are complete and merged.
-- Active slice: `tb0/glasses-shell`.
-- Base merge: `c54833f` (PR #1 read proof `be9ad3d`; PR #2 host write `c54833f`).
+- TB0-G0 complete and merged in PR #3.
+- Final G0 mismatch evidence merged in PR #5.
+- Active slice: `tb0/i0-input`.
+- Base merge: `6d1e1925b967cda3c19731decc570d02da2c9c6d`.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
