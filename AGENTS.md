@@ -173,14 +173,12 @@ evidence for TB0/MVP.
 
 ## Current slice state
 
-- TB0 frozen on `tb0/compat-contract` (draft PR #1 `tb0: freeze contract and
-  prove DSH read compatibility`) — contract + seam audit + AGENTS.md landed.
-- TB0-H0 runtime read proof in progress (plugin loads in a disposable isolated
-  DSH instance; endpoints/auth/stubs proven; bounded-history/SSE/reconnect gates
-  pending against a disposable session).
-- Never commit a real session ID — configure sessions only via
-  `DSH_GLASSES_TB0_SESSION_ID`.
-
+- TB0 contract + seam audit + AGENTS.md merged to `main` (PR #1, merge
+  `be9ad3d`); TB0-H0 runtime read proof merged (commit `bc29515`).
+- **Current slice:** `tb0/host-write` — pin `UserMessage` shape, client-generated
+  durable message identity, KvUnit draft schema + monotonic revision, operation
+  ledger, `/draft/mutations`, idle-session Send, acceptance boundary,
+  ambiguous-outcome reconciliation, host-only zero-or-one test.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
