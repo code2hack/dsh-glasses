@@ -127,3 +127,13 @@ gate): `122bce4`, `542329f`. Draft PR: https://github.com/code2hack/dsh-glasses/
   ADB can inject the same OS dispatch path (synthetic warm-up captured above), but
   REAL button/touch hardware evidence needs a physical press; recorded here per
   AGENTS §15 rather than interrupting code2hack. Bounded captures are ready.
+
+## Proxy upstream-lifetime verification (2026-08-19)
+
+Direct test of the corrected narrow proxy (`2b9d6c8`, streams bound to client
+lifetime): while the Rokid app was streaming, the proxy process owned exactly 1
+established upstream connection to the disposable DSH (`ss` owner pid matched
+the proxy). After `adb shell am force-stop` of the app (downstream gone, proxy
+still running), the proxy's upstream connections to `127.0.0.1:3190` dropped to
+**0** within 8 s — no orphaned upstream SSE. Launched again → `conn: live`,
+session panel restored, asOfSeq 11, rows `[11..0]` with no duplicates.
