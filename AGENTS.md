@@ -175,10 +175,12 @@ evidence for TB0/MVP.
 
 - TB0 contract + seam audit + AGENTS.md merged to `main` (PR #1, merge
   `be9ad3d`); TB0-H0 runtime read proof merged (commit `bc29515`).
-- **Current slice:** `tb0/host-write` — pin `UserMessage` shape, client-generated
-  durable message identity, KvUnit draft schema + monotonic revision, operation
-  ledger, `/draft/mutations`, idle-session Send, acceptance boundary,
-  ambiguous-outcome reconciliation, host-only zero-or-one test.
+- **Current slice:** `tb0/host-write` — amended at-most-once Send contract
+  implemented + fault-proven: admission via `ctx.apiProxy.sessions.prompt`
+  (operationId == rpcId == durable `source.rpcId`), single atomic KvUnit state
+  doc, states prepared|dispatching|accepted|rejected|unknown, exactly-once by
+  never prompting twice per op, no-draft-clear until exact durable positive.
+  PR #2 ready (`dc8f47d` contract · `4699ad2` feat · `3208576` test).
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
