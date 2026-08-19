@@ -1,83 +1,143 @@
-# TB0-R0 — debug user-message admission and recovery round trip (real glasses)
+# TB0-R0 — debug user-message admission and recovery round trip
 
-**Status:** normal leg PASS and response-loss leg PASS on the real Rokid.
-**Outcome:** no durable `assistant/message` exists in the disposable DSH log
-(0 events; minimal/ idle agent produced no text reply), so the claim is scoped as
-**debug user-message admission and recovery round trip**; the zero-or-one Send/recovery proof
-stands. A stronger "complete text round trip" claim is NOT made.
-**Branch:** `tb0/r0-debug-roundtrip` (stacked on `tb0/input-qualification`
-`472b436`; retarget to `main` after PR #7 settles).
-**Host/device:** spark worker + u4090 USB ADB; Rokid serial `1906092617103125`,
-firmware `Rokid/glasses/glasses:12/SKQ1.240613.001/1.23.009-20260725-150201:user/release-keys`.
-**Product route:** Rokid → spark `100.92.81.33:3200` narrow `/glasses/v1/*` proxy
-→ disposable DSH `127.0.0.1:3190` (session
-`<disposable-session-id>`).
+**Status:** normal leg PASS and response-loss leg PASS on the real Rokid.  
+**Outcome:** the complete disposable DSH log contains zero durable
+`assistant/message` events, so this result is deliberately scoped as a **debug
+user-message admission and recovery round trip**. It proves the zero-or-one
+Send/recovery path, not an assistant-text reply.  
+**Branch:** `tb0/r0-debug-roundtrip`, rebased onto merged `main`
+`9316f7f9c2df9f18ffb56a180b380fbfd90d0dce` after TB0-I0 PR #7.  
+**Host/device:** Spark worker + u4090 USB ADB; Rokid serial
+`1906092617103125`; firmware
+`Rokid/glasses/glasses:12/SKQ1.240613.001/1.23.009-20260725-150201:user/release-keys`.  
+**Product route:** Rokid → Spark `100.92.81.33:3200` narrow
+`/glasses/v1/*` proxy → disposable DSH `127.0.0.1:3190`, session
+`<disposable-session-id>`.
 
 ## Provenance
 
-**SYNTHETIC_DEBUG_CONTROL**: every injected round-trip action was initiated by
-the operator through WebView CDP and the path-restricted native
-`GlassesBridge.fetch()` interface. `debugSemanticControl()` supplied optional
-BEGIN/END trace markers only; it never invoked a product reducer, mutated the
-draft, or submitted a message. All durable-write behavior was driven through the
-real `/glasses/v1/draft/mutations` + `/glasses/v1/actions` endpoints with
-explicit operation IDs.
+**SYNTHETIC_DEBUG_CONTROL:** the operator initiated each round-trip action
+through WebView CDP and the path-restricted native `GlassesBridge.fetch()`
+interface. Optional `debugSemanticControl()` calls supplied BEGIN/END trace
+markers only; they did not invoke a product reducer, mutate the draft, or perform
+Send. Durable writes used the real `/glasses/v1/draft/mutations` and
+`/glasses/v1/actions` endpoints with explicit operation IDs.
 
-## Normal round trip (passed)
+No physical binding is qualified by this evidence.
 
-IDs used:
+## Normal admission/recovery leg — PASS
+
+IDs:
+
 - `mutationId = r0-mut-mt01qwbj-5wltl17f`
-- `sendId    = r0-send-mt01qwbj-5wltl17f`
+- `sendId = r0-send-mt01qwbj-5wltl17f`
 - text: `Reply with exactly: glasses tracer passed`
 
 | Check | Result |
 | --- | --- |
-| before bootstrap | 200; `draft.revision=0`; `writeState=ready`; 12 history events |
-| mutation first | 200 `{ok:true, revision:1}` (expect `rev0+1`) |
-| mutation retry (same op+body) | 200 `{ok:true, revision:1}` → stored/idempotent |
-| send retry poll | `send1` 202 `state=unknown` (dispatch in flight) → `send2` 200 `state=accepted`, same `operationId` for every poll |
-| SSE through glasses stream | history via app bootstrap shows `turn/start, agent/inbox/spliced, step/start, user/message, step/end, turn/end` (asOf 12→18) — delivered through the glasses SSE/projection path. No `assistant/message` event was produced by the idle agent (0 durable assistant messages) |
-| final bootstrap | `draft.revision=2 == acknowledged mutation revision 1 + 1`; `text=""`; `locked=false`; `writeState=ready` |
-| **exactly-one durable** | from the COMPLETE disposable DSH log (`<disposable-home>/sessions/<workspace>/<disposable-session-id>/session.jsonl.zstd`): exactly **1** `user/message` with `source.kind=user` `source.rpcId=r0-send-mt01qwbj-5wltl17f` (seq 16). The only other file match is a positional `agent/inbox/spliced` (seq 12) with no rpcId — not a second message. |
-| plugin operation state | `operations[r0-send-…] = {state:"accepted", frozenText:"Reply with exactly: glasses tracer passed"}`; `draft {revision:2, text:""}` |
-| restart reconstruct | force-stop + relaunch → bootstrap 200, `draft{revision:2,text:"",locked:false}`, `writeState=ready`, no re-Send; durable count for the sendId still **1** |
+| Before bootstrap | HTTP 200; `draft.revision=0`; `writeState=ready`; 12 retained events |
+| First mutation | HTTP 200; `{ok:true, revision:1}` |
+| Identical mutation retry | HTTP 200 with the same stored revision 1; no second mutation |
+| Send polling | First response HTTP 202 `state=unknown`, then HTTP 200 `state=accepted`; every poll used the same `sendId` |
+| Glasses projection | Turn lifecycle advanced `asOfSeq` 12→18 and showed `turn/start`, `agent/inbox/spliced`, `step/start`, `user/message`, `step/end`, `turn/end` |
+| Accepted clear | Final draft revision 2, exactly mutation revision 1 + 1; text empty; unlocked; `writeState=ready` |
+| Durable correlation | Complete session log contains exactly one `user/message` with `source.kind=user` and `source.rpcId=r0-send-mt01qwbj-5wltl17f`, at sequence 16 |
+| Other byte match | One positional `agent/inbox/spliced` record at sequence 12 contains no `rpcId`; it is not a second user message |
+| Plugin state | Send operation is `accepted` and retains the exact `frozenText`; authoritative draft is revision 2 and empty |
+| Restart | Force-stop and relaunch reconstructed revision 2, empty/unlocked draft, accepted history, and no re-Send; durable count remained one |
 
-No duplicated durable message; no client-visible rejection; no text/timestamp
-matching used (verification is rpcId-exact over the full log).
+No text or timestamp matching was used for acceptance; correlation was exact on
+`source.rpcId` across the complete durable log.
 
-## Response-loss leg (passed)
+## Response-loss leg — PASS
 
-A test-only downstream-response delay wrapper ran on spark **private port 3201**
-(`/tmp/r0-delay-proxy.mjs`, ESM, forwards `/glasses/v1/*` to the plugin
-`127.0.0.1:3190`; for `/actions` it awaited the full upstream response, wrote a
-local marker `/tmp/r0-delay-marker.log` (operationId only — no credentials), then
-delayed the downstream response ≥15 s). The app was temporarily pointed at
-`http://100.92.81.33:3201`.
+A test-only response-delay proxy ran on Spark private port `3201`. For
+`/glasses/v1/actions` it awaited the complete upstream response, wrote a local
+marker containing operation identity and timing only, then delayed the downstream
+response for at least 15 seconds. The app was temporarily configured to use that
+private endpoint.
 
-IDs: `mutationId = r0-rl-mut-mt01wsbq-wxz5lcyl`, `sendId = r0-rl-send-mt01wsbq-wxz5lcyl`,
-text identical.
+IDs:
 
-- baseline `draft.revision=4` (note: two stray mutation-only calls from an
-  operator diagnostic re-run bumped 2→3→4; same text, never Sent, no durable
-  effect; recorded for honesty); mutation → `revision=5`.
-- Send fired (not awaited). Upstream completed + dispatched durably
-  (`user/message` **seq 23**, `source.rpcId=r0-rl-send-…`), op entered `unknown`
-  (dispatch admitted, settlement pending), draft locked. App was force-stopped
-  before receiving any response (downstream lost).
-- Restart: bootstrap reconcile found the durable message (count 1) →
-  `draft {revision:6, text:"", locked:false}`, `writeState ready` — accepted
-  history reconstructed with **no re-Send**.
-- Retry with the **same sendId + same request body** through the delay wrapper:
-  HTTP 200 `{ok, operationId:r0-rl-send-…, state:"accepted", reconciled:true}` —
-  stored accepted, no new prompt.
-- Exactly-one durable: full log has exactly **1** `user/message` with
-  `source.rpcId == r0-rl-send-…` after restart + retry. Plugin operations:
-  `r0-send-…` and `r0-rl-send-…` both `accepted`.
+- `mutationId = r0-rl-mut-mt01wsbq-wxz5lcyl`
+- `sendId = r0-rl-send-mt01wsbq-wxz5lcyl`
+- text: same as the normal leg
+
+Results:
+
+- Baseline draft revision was 4; the tested mutation advanced it to revision 5.
+- Send was admitted durably as one `user/message` at sequence 23 with
+  `source.rpcId=r0-rl-send-mt01wsbq-wxz5lcyl`.
+- The app was force-stopped after the upstream-complete marker appeared and
+  before the delayed response reached the client.
+- On restart, bootstrap reconciliation found the exact durable message and
+  settled the operation accepted; draft became revision 6, empty, unlocked, and
+  `writeState=ready`, without dispatching again.
+- Retrying the same `sendId` and identical request body returned HTTP 200
+  `{state:"accepted", reconciled:true}`.
+- The complete durable log still contained exactly one matching `user/message`.
+
+## Assistant-output boundary
+
+The complete disposable session log contained 27 events and **zero**
+`assistant/message` events. The minimal idle test agent produced no durable text
+reply. Therefore this evidence does not claim that the requested phrase
+`glasses tracer passed` was generated by an assistant.
+
+## Committed response-loss fixture
+
+The repository contains:
+
+- `dev/r0-delay-proxy.mjs`
+- `dev/r0-delay-proxy-smoke.mjs`
+
+The fixture:
+
+- accepts only `/glasses/v1/*` request paths;
+- forwards authorization upstream without logging it;
+- buffers the `/actions` upstream response;
+- records only operation ID, upstream status, marker type, and timing;
+- delays only the downstream `/actions` response;
+- embeds no session ID, token, or endpoint credential.
+
+The committed smoke was rerun from the rebased PR files and passed all ten
+assertions plus the terminal `SMOKE PASS` result:
+
+1. non-glasses path returns 403;
+2. blocked path never reaches upstream;
+3. allowed bootstrap reaches upstream;
+4. authorization is forwarded;
+5. marker exists before downstream settlement;
+6. marker records the operation ID;
+7. marker contains no credential;
+8. action response is forwarded;
+9. configured downstream delay elapses;
+10. non-action requests write no marker.
+
+## Post-rebase repository verification
+
+The R0 branch was replayed onto merged `main`
+`9316f7f9c2df9f18ffb56a180b380fbfd90d0dce`. Before this final evidence commit,
+the rebased head was `834027bfae20d0f474683b15ff8f461731a8c7c1`.
+
+The PR diff against `main` contains exactly:
+
+```text
+dev/r0-delay-proxy.mjs
+dev/r0-delay-proxy-smoke.mjs
+docs/evidence/tb0-r0-debug-roundtrip-2026-08-19.md
+```
+
+It contains no I0 recorder, sensor, Activity, AGENTS, or I0-evidence changes.
 
 ## Operator note
 
-Two `r0-rl-mut-*` mutation-only entries (revisions 3,4) were created while
-diagnosing the first B1 script run (same R0 text, never Sent, no durable
-message); they demonstrate idempotent no-op mutations but are excluded from the
-round-trip claims above. The delay wrapper is test-only (`/tmp`), holds no
-credentials, and remains bound to private port 3201.
+Two earlier `r0-rl-mut-*` mutation-only diagnostic calls advanced draft revision
+2→3→4 using the same text. They were never sent and produced no durable user
+message. They are excluded from both admission claims above.
+
+## Remaining explicit gap
+
+Physical function-button, one-finger, and two-finger bindings remain
+unqualified. The passive recorder remains the mechanism for collecting future
+genuine `PHYSICAL` evidence.
