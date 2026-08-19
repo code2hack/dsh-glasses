@@ -139,7 +139,7 @@ async function newSession() {
 
 // thin helper: create a fresh session then run the instance against it
 const SESSION_POOL = [];
-async function prepareSessionPool(n = 9) {
+async function prepareSessionPool(n = 18) {
   for (let i = 0; i < n; i++) SESSION_POOL.push(await newSession());
   if (process.env.VERBOSE) console.log("[verbose] session pool ready:", SESSION_POOL.length);
 }
