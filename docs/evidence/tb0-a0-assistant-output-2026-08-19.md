@@ -1,6 +1,6 @@
 # TB0-A0 — Durable assistant-output qualification (real LFM, disposable DSH)
 
-Date: 2026-08-19. Branch: `tb0/assistant-output` (base merge `87a0968`).
+Date: 2026-08-19. Branch: `tb0/assistant-output` (base merge `87a0968e3cf081930d19df214eaacbf8053026aa`).
 
 ## Summary
 
@@ -8,7 +8,7 @@ One prompt RPC through the ordinary DSH `session.prompt` path produced:
 
 - exactly one durable `user/message` (`source.kind=user`, `source.rpcId=a0-assistant-<fresh-suffix>`);
 - exactly one durable, nonempty `assistant/message` — joined text `TB0 assistant passed`;
-- the assistant event observed once live through the authenticated `/glasses/v1/stream` SSE (seq 21), and reconstructed in `/glasses/v1/bootstrap` after a plugin-instance restart.
+- the assistant event observed once live through the authenticated `GET /glasses/v1/stream` SSE (seq 21), and reconstructed in `/glasses/v1/bootstrap` after a plugin-instance restart.
 
 This qualifies the DSH assistant-output transport end-to-end on a fresh disposable session.
 
@@ -16,13 +16,13 @@ This qualifies the DSH assistant-output transport end-to-end on a fresh disposab
 
 | Item | Value |
 | --- | --- |
-| Host | spark (DGX GB10), disposable DSH instance only — resident `:3080`/`:pm2` untouched |
+| Host | spark (DGX GB10), disposable DSH instance only — resident `:3080`/pm2 stack untouched |
 | DSH | `@deepseek-ai/dsh@0.1.0-rc.7` (`/home/code2hack/.npm-global/.../dsh/package.json`), profile `web` |
 | Disposable instance | `DSH_HOME=/tmp/dsh-tb0-home`, web port `3192`, plugin generation `mt0745v5-03359f54` / `mt0768pt-3769bf00` (post-restart) |
 | Provider | `tb0vllm` (api `openai-completions`, baseURL `http://192.168.100.11:8887/v1`) — keyless local route, **no secrets** |
 | Model | `lfm2.5-vl-3b` (the model ID returned by `/v1/models`; used here as a text completion model) |
-| Agent preset | `a0-toolfree` (custom tool-less preset; see "Provider-side findings") |
-| Fresh session | `<disposable-session-id>` (created empty; boot events seq 0-3 only before the prompt) |
+| Agent preset | `a0-toolfree` (custom tool-less preset; see “Provider-side findings”) |
+| Fresh session | `<disposable-session-id>` (created empty; boot events seq 0–3 only before the prompt) |
 | Prompt RPC id | `a0-assistant-58958804` (fresh suffix) |
 | Prompt | `Reply with exactly: TB0 assistant passed` |
 
@@ -31,7 +31,7 @@ This qualifies the DSH assistant-output transport end-to-end on a fresh disposab
 1. Created an empty disposable session via the harness `session.create` (agentPreset `a0-toolfree`).
 2. Bound the glasses plugin to it: `DSH_GLASSES_TB0_SESSION_ID=<disposable-session-id>`, dev bearer token (40-char, never committed).
 3. Verified `GET /v1/models` → `{id:"lfm2.5-vl-3b"}` and a direct `/v1/chat/completions` text request returned `TB0 assistant passed`.
-4. Opened authenticated `POST /glasses/v1/stream` **before** the prompt.
+4. Opened authenticated `GET /glasses/v1/stream` **before** the prompt.
 5. Mutation (`a0-mut-<suffix>`, draft rev 0→1) set the durable draft to the prompt text.
 6. `POST /glasses/v1/actions` `{kind:"send", operationId:"a0-assistant-<suffix>", draftRevision:1}` → the plugin called `ctx.apiProxy.sessions.prompt({rpcId: operationId, ...})`; the session returned idle; the plugin settled the operation **accepted** and cleared the draft (rev →2).
 
@@ -79,13 +79,14 @@ Exact rc.7 assistant-event layout (field locations):
 
 - event sequence: `seq` (top level, e.g. 21)
 - event type: `type` = `"assistant/message"`
-- assembled message: `data.message` (`role`, `content` blocks, `source`, `usage`)
+- assembled message: `data.message` (`role`, `content` blocks, `source`, `id`)
 - message ID: `data.message.id`
 - text content: `data.message.content[].text` (block `type:"text"`)
 - turn/step: `data.turn`, `data.step`
+- usage: `data.usage`
 - provider/model source: `data.message.source.{kind,provider,model}` + `data.message.source.replayState.response.{kind,version,api,provider,model,responseId,stopReason}`
 - surface operation: `surfaceOp` = `"append"`
-- provenance: `sourceEventSeqs` lists the `assistant/chunk` seqs the message was assembled from (13-20)
+- provenance: `sourceEventSeqs` lists the `assistant/chunk` seqs the message was assembled from (13–20)
 
 ## Counts
 
@@ -93,7 +94,7 @@ Exact rc.7 assistant-event layout (field locations):
 - `assistant/message`: **1**
 - joined assistant text: **`TB0 assistant passed`**
 
-## SSE (authenticated `/glasses/v1/stream`, opened before the prompt)
+## SSE (authenticated `GET /glasses/v1/stream`, opened before the prompt)
 
 Monotonic event order observed live (21 events):
 
@@ -115,15 +116,15 @@ Monotonic event order observed live (21 events):
 ## Provider-side findings resolved during this slice (disposable-only changes)
 
 1. **`UNSUPPORTED_REASONING_EFFORT`** — `settings.yaml` declared `agent-default-model.reasoningEffort: low`, which `lfm2.5-vl-3b` does not support. Removed the reasoning-effort override from the disposable `agent-default-model`.
-2. **`llm-pi-ai: no credential for provider route "tb0vllm"`** — the DSH provider interface requires an API key even for a keyless local vLLM. Added `apiKeyEnv: TB0VLLM_API_KEY` to the `tb0vllm` provider and exported a dummy development value (`dev-keyless-a0`) at instance launch; the keyless vLLM ignores it (verified a dummy bearer returns 200). No real credential involved.
-3. **`INVALID_REQUEST` `"auto" tool choice requires --enable-auto-tool-choice ...`** — the stock `standard` agent sends `tool_choice:"auto"`, which the user-deployed vLLM (started without auto-tool-choice, and NOT to be redeployed) rejects. Client-side resolution: authored a **tool-less agent preset** (`a0-toolfree`, cloned from `minimal` with all tool groups removed) under `$DSH_HOME/.agent-presets/a0-toolfree/`; with no tool schemas the OpenAI-completions adapter sends no `tools`, the vLLM call succeeds, and the assistant output is durable.
+2. **`llm-pi-ai: no credential for provider route "tb0vllm"`** — the DSH provider interface requires an API key even for a keyless local vLLM. Added `apiKeyEnv: TB0VLLM_API_KEY` to the `tb0vllm` provider and exported a dummy development value (`dev-keyless-a0`) at instance launch; the keyless vLLM ignores it (verified a dummy bearer returns 200). No real credential was involved.
+3. **`INVALID_REQUEST` `"auto" tool choice requires --enable-auto-tool-choice ...`** — the stock `standard` agent sends `tool_choice:"auto"`, which the user-deployed vLLM (started without auto-tool-choice, and not to be redeployed in this slice) rejects. Client-side resolution: authored a **tool-less agent preset** (`a0-toolfree`, cloned from `minimal` with all tool groups removed) under `$DSH_HOME/.agent-presets/a0-toolfree/`; with no tool schemas the OpenAI-completions adapter sends no `tools`, the vLLM call succeeds, and the assistant output is durable.
 
-These are disposable-runtime changes (`/tmp/dsh-tb0-home/settings.yaml` + `.agent-presets/`); the repo contains only this evidence document.
+These are disposable-runtime changes under `/tmp/dsh-tb0-home`; no provider settings, dummy key, or preset files are committed. This evidence records the runtime qualification only.
 
 ## Remaining difference vs the desired glasses projection
 
-- The plugin projection currently exposes `{seq, type}` only. The durable `assistant/message` carries full text blocks and model provenance, but **message content is not yet projected** to the glasses. Content projection + chat-history rendering is the next (ChatGPT-owned) code slice boundary (TB0-C0).
-- The stock `standard` agent cannot drive this particular vLLM deployment (tool-choice capability); qualification used the companion tool-less preset. If the final TB0 acceptance needs the full coding agent on device, vLLM must be launched with auto-tool-choice or a supported tool-call parser (deployment-side decision).
+- The plugin projection currently exposes `{seq, type}` only. The durable `assistant/message` carries full text blocks and model provenance, but **message content is not yet projected** to the glasses. Content projection + chat-history rendering is the next ChatGPT-owned code slice boundary (TB0-C0).
+- The stock `standard` agent cannot drive this particular vLLM deployment with its current tool-choice configuration; qualification used the companion tool-less preset. If final acceptance later requires the full tool-using agent on this endpoint, the deployment needs compatible auto-tool-choice/tool-call parsing or another supported provider configuration.
 
 ## Pass boundary
 
