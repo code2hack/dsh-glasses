@@ -19,6 +19,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
+import { projectEvent } from "./projection.js";
 
 export const name = "dsh-glasses-plugin";
 
@@ -53,11 +54,6 @@ function sendJson(res, status, body) {
     "content-length": Buffer.byteLength(data),
   });
   res.end(data);
-}
-
-function projectEvent(evt) {
-  // Minimal, TB0-only projection: no raw DSH event objects are exposed.
-  return { seq: evt.seq, type: evt.type };
 }
 
 export async function apply(ctx, config) {
@@ -145,7 +141,6 @@ export async function apply(ctx, config) {
 
     let lastSeq = -1;
     let closed = false;
-    let gapFlag = false;
 
     const t0 = Date.now();
     const heartbeat = setInterval(() => {
@@ -158,7 +153,6 @@ export async function apply(ctx, config) {
       if (session.id !== sessionId) return;
       const s = typeof evt?.seq === "number" ? evt.seq : -1;
       if (lastSeq !== -1 && s !== lastSeq + 1 && s > lastSeq + 1) {
-        gapFlag = true;
         res.write(`id: ${s}\nevent: gap\ndata: ${JSON.stringify({ reason: "sequence-gap", lastSeq, nextSeq: s })}\n\n`);
       }
       lastSeq = Math.max(lastSeq, s);

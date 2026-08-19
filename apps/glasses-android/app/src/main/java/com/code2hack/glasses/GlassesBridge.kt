@@ -1,5 +1,6 @@
 package com.code2hack.glasses
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -15,8 +16,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 /**
- * Narrow native bridge for G0. The asset WebView never receives the bearer
- * credential: it stays in app-private storage and is attached natively.
+ * Narrow native bridge for the glasses shell. The asset WebView never receives
+ * the bearer credential: it stays in app-private storage and is attached
+ * natively.
  *
  * JS surface (registered as `GlassesBridge`):
  *   configure(base, token, sessionId)  synchronously persist debug provisioning
@@ -25,6 +27,8 @@ import java.util.concurrent.Future
  *   fetch(path, bodyJson)              authenticated glasses/v1 path only
  *   openStream()                       one authenticated SSE connection
  *   closeStream()                      cancel the current SSE connection
+ *   clipboardText()                    current plain/coerced clipboard text
+ *   debugSemanticControl(name)         DEBUG-only semantic reducer injection
  */
 class GlassesBridge(private val context: Context) {
     companion object {
@@ -34,12 +38,15 @@ class GlassesBridge(private val context: Context) {
         private const val KEY_BASE = "base"
         private const val KEY_TOKEN = "token"
         private const val KEY_SESSION = "session"
+        private const val MAX_CLIPBOARD_CHARS = 16_384
+        private const val MAX_SEMANTIC_NAME_CHARS = 48
 
         fun jsName() = NAME
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val main = Handler(Looper.getMainLooper())
+    private val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val network = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dsh-glasses-network").apply { isDaemon = true }
     }
@@ -89,6 +96,34 @@ class GlassesBridge(private val context: Context) {
         )
         if (committed) closeStream()
         return committed
+    }
+
+    /** Clipboard content is never logged and remains bounded before crossing JS. */
+    @JavascriptInterface
+    fun clipboardText(): String {
+        val clip = clipboard.primaryClip ?: return ""
+        if (clip.itemCount == 0) return ""
+        return clip.getItemAt(0)
+            .coerceToText(context)
+            ?.toString()
+            ?.take(MAX_CLIPBOARD_CHARS)
+            ?: ""
+    }
+
+    /**
+     * Debug-only semantic input. This drives the same JS reducer as future
+     * qualified hardware bindings, while remaining explicitly synthetic.
+     */
+    @JavascriptInterface
+    fun debugSemanticControl(name: String) {
+        if (!BuildConfig.DEBUG || closed) return
+        val sanitized = name.trim().take(MAX_SEMANTIC_NAME_CHARS)
+        if (sanitized.isEmpty()) return
+        Log.i(TAG, "debug-semantic-control name=$sanitized source=SYNTHETIC_DEBUG_CONTROL")
+        jsEval(
+            "window.glassesOnSemanticControl&&window.glassesOnSemanticControl(" +
+                "${jsQ(sanitized)},${jsQ("SYNTHETIC_DEBUG_CONTROL")})",
+        )
     }
 
     @JavascriptInterface
@@ -227,7 +262,7 @@ class GlassesBridge(private val context: Context) {
                 if (data.isNotEmpty()) {
                     jsEval(
                         "window.glassesOnLine&&window.glassesOnLine(" +
-                            "${jsQ(eventName)},${jsQ(data.toString())},${jsQ(eventId)})"
+                            "${jsQ(eventName)},${jsQ(data.toString())},${jsQ(eventId)})",
                     )
                 }
                 eventName = "message"
