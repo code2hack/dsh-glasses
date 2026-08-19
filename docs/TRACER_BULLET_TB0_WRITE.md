@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0 — host write slice (tb0/host-write)
 
-**Status:** amended contract; implementation + committed reproducible recovery test ALL PASS (2026-08-19).
+**Status:** amended contract; implementation + committed reproducible recovery suite ALL PASS 16/16 (2026-08-19).
 **Date:** 2026-08-19
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/host-write`
 **Normative:** `SPEC.md` rev3 + `docs/TRACER_BULLET_TB0.md` (Send-only actions; Steer → TB0.1).
