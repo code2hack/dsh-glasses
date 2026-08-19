@@ -243,6 +243,16 @@ export async function apply(ctx, config) {
     await writeState(st);
   };
 
+  // In-process serialization per operationId so concurrent identical /actions
+  // yields one dispatch. Test-only fault hooks are env-gated and inert by default.
+  const opChains = new Map();
+  const chainOp = (opId, fn) => {
+    const prev = opChains.get(opId) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    opChains.set(opId, next);
+    return next;
+  };
+
   const readBody = async (req) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -316,8 +326,14 @@ export async function apply(ctx, config) {
       if (body.kind !== "send") return sendJson(res, 400, { ok: false, error: "unknown-action", kind: body.kind ?? null });
       const opId = typeof body.operationId === "string" ? body.operationId : "";
       if (!opId) return sendJson(res, 400, { ok: false, error: "operationId-required" });
-      const digest = digestOf({ kind: "send", operationId: opId, draftRevision: body.draftRevision ?? null, contentDigest: body.contentDigest ?? null });
+      return await chainOp(opId, async () => await handleActionsInner(req, res, body, opId, digestOf({ kind: "send", operationId: opId, draftRevision: body.draftRevision ?? null, contentDigest: body.contentDigest ?? null })));
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
+    }
+  };
 
+  const handleActionsInner = async (req, res, body, opId, digest) => {
+    try {
       const st = await readState();
       const op = st.operations[opId];
       if (op) {
@@ -364,6 +380,10 @@ export async function apply(ctx, config) {
       st.operations[opId] = newOp;
       st.draft.lockedByOperationId = opId;
       await writeState(st); // prepared + draft lock (one durable write)
+      if (process.env.DSH_GLASSES_TEST_CRASH_AFTER_PREPARED === "1") {
+        console.log("[dsh-glasses-plugin] [test] crash after prepared (op=" + opId + ")");
+        process.exit(1);
+      }
 
       newOp.state = "dispatching";
       await writeState(st); // dispatching (one durable write)
@@ -384,6 +404,10 @@ export async function apply(ctx, config) {
       }
 
       // accepted:true — do NOT clear draft yet; reconcile durable facts.
+      if (process.env.DSH_GLASSES_TEST_CRASH_AFTER_DISPATCH === "1") {
+        console.log("[dsh-glasses-plugin] [test] crash after dispatch (op=" + opId + ")");
+        process.exit(1);
+      }
       const { positive, discarded } = await reconcileOperation(newOp);
       if (positive) {
         await settle(st, opId, "accepted");

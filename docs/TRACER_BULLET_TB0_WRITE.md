@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0 — host write slice (tb0/host-write)
 
-**Status:** amended contract (per review); implementation + fault tests to follow.
+**Status:** amended contract; implementation + fault-injection tests PASSED (2026-08-19).
 **Date:** 2026-08-19
 **Repo:** `code2hack/dsh-glasses` @ branch `tb0/host-write`
 **Normative:** `SPEC.md` rev3 + `docs/TRACER_BULLET_TB0.md` (Send-only actions; Steer → TB0.1).

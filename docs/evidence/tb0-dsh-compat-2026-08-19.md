@@ -216,3 +216,27 @@ Executed on the same disposable isolated instance (port 3190, keyless `tb0vllm` 
 - `Last-Event-ID` wire resync not implemented (bootstrap-first).
 - `steer`/followup shapes, image/photo blocks, Voice/Morse deferred.
 - Agent must be live (`ctx.agents.get` non-null) for Send; pre-agent Send returns 503 `agent-unavailable` (host warms the agent on session resume).
+
+---
+
+## TB0 host-write — amended implementation + fault tests (2026-08-19)
+
+Supersedes the earlier write-slice records in this doc where they differ. Executed on the disposable instance; resident stack untouched. No session IDs recorded.
+
+### Amended design implemented (per review)
+- Admission via the in-process host service: `ctx.apiProxy.sessions.prompt({ rpcId: operationId, payload: { sessionId, mode: 'queue', content } })` (NOT `ctx.agents.get(...).send`).
+- Correlation: glasses `operationId` == prompt `rpcId` == durable `user/message.source.rpcId` (runtime-verified: `source: { kind: 'user', rpcId }`).
+- One atomic KvUnit state document (`glasses_plugin` unit, `state` table, key=sessionId): `{ schemaVersion, sessionId, draft { revision, text, lockedByOperationId?, lastMutation? }, operations: Record<opId, Tb0Operation> }`; transitions are single `putRecord` writes.
+- Send states `prepared | dispatching | accepted | rejected | unknown`; never more than one `session.prompt` per operationId; `accepted` settled only on exact durable positive; absence never classified as rejection (→ `unknown`, draft locked).
+- Draft mutation simplified: `{ operationId, expectedRevision, mutation: { kind: 'replace', text } }`, monotonic revision bump, no client ack; idempotency + `409 operation-conflict` / `409 revision-conflict` / `409 draft-locked`.
+- Per-operation in-process serialization for concurrent identical sends.
+
+### Fault-injection results (env-gated test hooks, inert by default)
+| Test | Result |
+| --- | --- |
+| Crash after `prepared`, before dispatch | 0 durable user/messages; draft retained + locked; repeated `/actions` returns prepared/pending with **no re-dispatch**. |
+| Crash after DSH admission, before settlement (admission not flushed) | 0 durable; stays `dispatching`/pending; no re-dispatch; draft retained + locked (safe-unknown leg). Normal-path leg: `unknown → accepted`, draft cleared once, count 1. |
+| Response lost after durable settlement | Repeated `/actions` returns stored `accepted`; no new prompt; durable count stays 1. |
+| Concurrent identical `/actions` | 1 prompt dispatch (instrumented), 1 durable user/message. |
+| Operation-id conflict (same op, different digest) | `409 operation-conflict`; no dispatch. |
+| Long response pushes message past first bounded page | Full-log scan still finds it (seq 141 of 199); `accepted`; count 1; never misclassified as zero. |
