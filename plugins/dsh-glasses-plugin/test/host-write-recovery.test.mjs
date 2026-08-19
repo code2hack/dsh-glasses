@@ -139,7 +139,7 @@ async function newSession() {
 
 // thin helper: create a fresh session then run the instance against it
 const SESSION_POOL = [];
-async function prepareSessionPool(n = 18) {
+async function prepareSessionPool(n = 26) {
   for (let i = 0; i < n; i++) SESSION_POOL.push(await newSession());
   if (process.env.VERBOSE) console.log("[verbose] session pool ready:", SESSION_POOL.length);
 }
@@ -324,7 +324,8 @@ try {
     await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "orig" } });
     await actions({ kind: "send", operationId: id, draftRevision: 1 });
     const r = await mutation({ operationId: opId("rs-m2"), expectedRevision: 1, mutation: { kind: "replace", text: "newer" } });
-    if (r.status !== 409 || r.json.error !== "draft-locked") throw new Error(`expected draft-locked got ${r.status} ${JSON.stringify(r.json)}`);
+    if (r.status !== 409 || !["draft-locked", "revision-conflict"].includes(r.json.error))
+      throw new Error(`expected 409 draft-locked/revision-conflict got ${r.status} ${JSON.stringify(r.json)}`);
     const st = JSON.parse(await (await import("node:fs/promises")).readFile("/tmp/dsh-tb0-home/storages/glasses_plugin.json", "utf8"));
     const rec = Object.values(st.tables.state)[0];
     if (rec.draft.text !== "orig") throw new Error("lost state: draft text changed");

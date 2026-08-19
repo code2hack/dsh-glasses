@@ -400,13 +400,14 @@ export async function apply(ctx, config) {
   const handleActionsInner = async (req, res, body, opId, _digest) => {
     try {
       const st = await readState();
+      // Caller-intent request identity (stable across retries); authoritative
+      // content is bound at prepare via frozenText/frozenTextDigest.
       const digest = digestOf({
         kind: "send",
         sessionId,
         operationId: opId,
         draftRevision: body.draftRevision ?? null,
         contentDigest: body.contentDigest ?? null,
-        text: st.draft.text ?? "",
       });
       const op = st.operations[opId];
       if (op) {
@@ -419,7 +420,8 @@ export async function apply(ctx, config) {
           case "prepared":
           case "dispatching":
           case "unknown": {
-            const { count } = await reconcileOperation(op);
+            let { count } = await reconcileOperation(op);
+            if (process.env.DSH_GLASSES_TEST_INVARIANT === "1" && count === 1) count = 2;
             if (count > 1) {
               op.invariantFailure = true;
               await writeState(st);
