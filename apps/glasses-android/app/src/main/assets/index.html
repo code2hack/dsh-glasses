@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>Glasses G0</title>
+  <link rel="stylesheet" href="app.css"/>
+</head>
+<body>
+  <header><h1>Glasses <span id="conn" class="dot off">offline</span></h1></header>
+
+  <section id="provision" class="card">
+    <h2>Dev provisioning</h2>
+    <input id="in-base" type="text" placeholder="endpoint base, e.g. http://100.92.81.33:3200"/>
+    <input id="in-session" type="text" placeholder="session id"/>
+    <input id="in-token" type="password" placeholder="dev bearer token"/>
+    <button id="save">Save (app-private)</button>
+    <p class="hint">Values are stored only in app-private storage on the device; never in Git.</p>
+  </section>
+
+  <section id="session" class="card hidden">
+    <h2>Session <span id="session-id"></span></h2>
+    <p class="meta">protocol <span id="proto"></span> · generation <span id="gen"></span> · asOfSeq <span id="asof"></span> · status <span id="status"></span> · writeState <span id="wsv"></span></p>
+    <ol id="events"></ol>
+  </section>
+
+  <section id="trace" class="card">
+    <h2>Raw input trace</h2>
+    <pre id="tracebox"></pre>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
