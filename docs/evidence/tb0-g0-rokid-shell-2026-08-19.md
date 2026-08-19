@@ -121,3 +121,28 @@ They are an explicit qualification gate (TB0-I0) and are **not** claimed as
 passed. Bounded `DSHGlasses` captures are armed for when a physical press is
 performed; `nativeEffect` stays `unknown` until separately correlated with
 lifecycle/focus/system logs.
+
+## Session-mismatch regression (directive's assertion suite, final patched build)
+
+Applied via CDP `configure(validToken, wrongSession)`: returns true; `sessionId()`
+returns the wrong value before reload. Because the app's own external-nav guard
+blocks in-page `location.reload()` (verified: post-"reload" state kept
+`streamVerified:true` and the old expected session), the identity change is
+applied by starting a fresh app process. Results on-device (final build, valid
+token, wrong session):
+
+    g0DebugState() = {
+      identityFailure: { expected: 0000…, actual: 47d0…, source: "bootstrap" },
+      streamOpen: false, streamVerified: false, generation: "", lastSeq: -1 }
+
+    connection="session-mismatch"; mismatchVisible=true; sessionHidden=true;
+    provisionVisible=true; expected=<wrong session>; actual=session-47d05b27…;
+    eventRows=0
+
+Log: `DSH_G0 transport-stopped {reason:"session-mismatch"}` then
+`DSH_G0 session-mismatch {expected, actual, source:"bootstrap"}`. This satisfies
+every required assertion of the hard-fail regression; only the directive's
+"Reload the WebView" step is a no-op under the app's navigation guard, so a
+fresh process is the identity-application path (recorded for the reviewer).
+After restoring the correct session and restarting, the app returns to healthy
+(`conn: live`, asOfSeq 11, rows [11..0]).
