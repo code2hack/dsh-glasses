@@ -292,6 +292,7 @@ export async function apply(ctx, config) {
     let changed = false;
     for (const op of Object.values(st.operations)) {
       if (!["prepared", "dispatching", "unknown"].includes(op.state)) continue;
+      if (op.invariantFailure) continue; // never settle/clear an invariant-failed op
       const { count } = await reconcileOperation(op);
       if (count === 1) {
         op.state = "accepted";

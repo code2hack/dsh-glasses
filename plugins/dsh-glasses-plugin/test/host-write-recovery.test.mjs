@@ -346,7 +346,7 @@ try {
     // locked). If the send already settled, the draft is legitimately cleared
     // (revision 2, "") — never a corrupted intermediate. Both are consistent.
     const st = JSON.parse(await (await import("node:fs/promises")).readFile("/tmp/dsh-tb0-home/storages/glasses_plugin.json", "utf8"));
-    const rec = Object.values(st.tables.state)[0];
+    const rec = st.tables.state[SID];
     const okState = (rec.draft.revision === 1 && rec.draft.text === "orig" && rec.draft.lockedByOperationId) ||
                     (rec.draft.revision === 2 && rec.draft.text === "");
     if (!okState) throw new Error(`lost state: revision=${rec.draft.revision} text=${JSON.stringify(rec.draft.text)} locked=${rec.draft.lockedByOperationId}`);
