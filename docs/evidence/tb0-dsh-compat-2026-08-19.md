@@ -186,3 +186,65 @@ Plugin log on load: `[dsh-glasses-plugin] ready: session=<id> generation=<rotate
 ### Directly proven vs inferred
 **Proven at runtime:** plugin load; route registration without conflict; bearer auth; 501 stubs; bounded history read (`session-query`); monotonic live events (`session/event`); idle/running turn shapes via durable events; SSE gapless continuation + reconnect resync; restart reconstruction of history.
 **Inferred/residual (recorded above):** exact `sessionId → AgentHandle` resolver remains `ctx.agents.get(sessionId)` (no separate named export pinned); status-resume policy; `Last-Event-ID` resync; `followup`/`steer` message shapes (deferred to the write slice).
+
+---
+
+## TB0 host-write runtime proof (2026-08-19) — PASSED
+
+Executed on the same disposable isolated instance (port 3190, keyless `tb0vllm` test provider); resident stack untouched. No session IDs recorded.
+
+### Implemented
+- `plugins/dsh-glasses-plugin`: `POST /glasses/v1/draft/mutations` (`setText`/`ack`, monotonic revision) and `POST /glasses/v1/actions` (Send-only) replacing the `501` stubs.
+- Durable storage via dsh-storage `json` backend KvUnit `glasses_plugin` (tables `drafts`, `ledger`), unit name must satisfy `UNIT_NAME_RE=/^[a-z][a-z0-9_]*$/` (hyphens rejected).
+- Message identity: `createUserMessage` mints the stable `MessageId` at Send admission; ledger row `{operationId, messageId, state, draftRevision, asOfSeqAtSend}` is durably written **before** `agent.send(message, 'next-turn', true)`.
+- Zero-or-one acceptance: count durable `user/message` events whose id equals the ledger `messageId`.
+
+### Runtime results (sanitized)
+| Check | Result |
+| --- | --- |
+| Write-route auth | 401 without bearer on both routes. |
+| `setText rev 1` | 200 `{revision:1, status:'editing'}`; durable in `storages/glasses_plugin.json`. |
+| `ack rev 1` | 200 with `committedSeq` snapshot. |
+| Stale revision | `setText rev 99` → 409 `revision-conflict {expected:2, got:99}`. |
+| Send while agent busy | 202 `{operationId, messageId, accepted:'pending'}`; message queued for next turn. |
+| Reconcile — 0 durable | `reconciled:true, state:'rejected'` (message accepted by transporter but not yet in the session log; draft retained). |
+| Reconcile — 1 durable | after the turn claimed it: `reconciled:true, state:'accepted'`; draft cleared (`revision:0, status:'cleared'`), ledger `state:'accepted'`. |
+| Exactly once | the durable `user/message` event carries the ledger `messageId` exactly once (rc.7 stores the message under `event.data`, `surfaceOp:'append'`); repeated reconcile stays `accepted`. |
+| Plugin restart | bootstrap + KvUnit reconstruction: draft + ledger survive with the same values. |
+
+### Residuals (same as read slice)
+- `Last-Event-ID` wire resync not implemented (bootstrap-first).
+- `steer`/followup shapes, image/photo blocks, Voice/Morse deferred.
+- Agent must be live (`ctx.agents.get` non-null) for Send; pre-agent Send returns 503 `agent-unavailable` (host warms the agent on session resume).
+
+---
+
+## TB0 host-write — amended implementation + fault tests (2026-08-19)
+
+Supersedes the earlier write-slice records in this doc where they differ. Executed on the disposable instance; resident stack untouched. No session IDs recorded.
+
+### Amended design implemented (per review)
+- Admission via the in-process host service: `ctx.apiProxy.sessions.prompt({ rpcId: operationId, payload: { sessionId, mode: 'queue', content } })` (NOT `ctx.agents.get(...).send`).
+- Correlation: glasses `operationId` == prompt `rpcId` == durable `user/message.source.rpcId` (runtime-verified: `source: { kind: 'user', rpcId }`).
+- One atomic KvUnit state document (`glasses_plugin` unit, `state` table, key=sessionId): `{ schemaVersion, sessionId, draft { revision, text, lockedByOperationId?, lastMutation? }, operations: Record<opId, Tb0Operation> }`; transitions are single `putRecord` writes.
+- Send states `prepared | dispatching | accepted | rejected | unknown`; never more than one `session.prompt` per operationId; `accepted` settled only on exact durable positive; absence never classified as rejection (→ `unknown`, draft locked).
+- Draft mutation simplified: `{ operationId, expectedRevision, mutation: { kind: 'replace', text } }`, monotonic revision bump, no client ack; idempotency + `409 operation-conflict` / `409 revision-conflict` / `409 draft-locked`.
+- Per-operation in-process serialization for concurrent identical sends.
+
+### Fault-injection results (env-gated test hooks, inert by default)
+| Test | Result |
+| --- | --- |
+| Crash after `prepared`, before dispatch | 0 durable user/messages; draft retained + locked; repeated `/actions` returns prepared/pending with **no re-dispatch**. |
+| Crash after DSH admission, before settlement (admission not flushed) | 0 durable; stays `dispatching`/pending; no re-dispatch; draft retained + locked (safe-unknown leg). Normal-path leg: `unknown → accepted`, draft cleared once, count 1. |
+| Response lost after durable settlement | Repeated `/actions` returns stored `accepted`; no new prompt; durable count stays 1. |
+| Concurrent identical `/actions` | 1 prompt dispatch (instrumented), 1 durable user/message. |
+| Operation-id conflict (same op, different digest) | `409 operation-conflict`; no dispatch. |
+| Long response pushes message past first bounded page | Full-log scan still finds it (seq 141 of 199); `accepted`; count 1; never misclassified as zero. |
+
+### Committed reproducible recovery suite (2026-08-19) — ALL PASS
+`plugins/dsh-glasses-plugin/test/host-write-recovery.test.mjs` (host-only; spawns the disposable instance; per-scenario pre-created settled sessions; corollary evidence recorded above).
+Scenarios: auth; mutation idempotency + operation-conflict; send 0→1 acceptance with exactly one durable msg (no client-visible rejected); concurrent identical → one dispatch; send-in-progress; monotonic clear (D+1) with stale mutations rejected; cold-session Send; crash-after-dispatch boundary (0 durable, no double, no false rejected); plugin-restart reconciliation (writeState ready). Result: ALL PASS.
+
+### Second review corrections + extended suite (2026-08-19) — ALL PASS 16/16
+Review 4968627268 corrections implemented: session-wide write mutex covering mutations + Send + bootstrap reconcile; monotonic accepted-clear (revision D→D+1); known rejection retains text and RELEASES the draft lock; Send bound at prepare to `frozenText` + `frozenTextDigest`; count-based reconciliation (0→unknown, 1→accepted, >1→invariant failure — never clears draft, invariant ops skipped by startup/bootstrap reconcile); per-operation append-only mutation result store (idempotency across later transitions); bootstrap returns `draft {revision,text,locked}` + `writeState` and reconciles unresolved operations before composing authoritative state; durable-discard settlement omitted (canceled splices carry no identity → absence stays unknown).
+`host-write-recovery.test.mjs` extended to 16 host-only scenarios; run result: **ALL PASS** (attested in this file's commit history and reproducible via the committed script).
