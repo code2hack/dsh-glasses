@@ -34,6 +34,10 @@ cleanup() {
   local getevent_process_status="missing"
   local getevent_event0_status="missing"
   local getevent_event1_status="missing"
+  local logcat_lines=0
+  local logcat_error_lines=0
+  local logcat_process_status="missing"
+
   if [[ -f "$RUN_DIR/getevent-live.txt" ]]; then
     getevent_lines="$(wc -l < "$RUN_DIR/getevent-live.txt" | tr -d ' ')"
   fi
@@ -49,6 +53,15 @@ cleanup() {
   if [[ -f "$RUN_DIR/getevent-event1.status" ]]; then
     getevent_event1_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event1.status")"
   fi
+  if [[ -f "$RUN_DIR/logcat-live.txt" ]]; then
+    logcat_lines="$(wc -l < "$RUN_DIR/logcat-live.txt" | tr -d ' ')"
+  fi
+  if [[ -f "$RUN_DIR/logcat-live.err" ]]; then
+    logcat_error_lines="$(wc -l < "$RUN_DIR/logcat-live.err" | tr -d ' ')"
+  fi
+  if [[ -f "$RUN_DIR/logcat-live.status" ]]; then
+    logcat_process_status="$(tr -d '[:space:]' < "$RUN_DIR/logcat-live.status")"
+  fi
 
   {
     echo "capture_end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -58,6 +71,9 @@ cleanup() {
     echo "getevent_process_status=$getevent_process_status"
     echo "getevent_event0_status=$getevent_event0_status"
     echo "getevent_event1_status=$getevent_event1_status"
+    echo "logcat_live_lines=$logcat_lines"
+    echo "logcat_error_lines=$logcat_error_lines"
+    echo "logcat_process_status=$logcat_process_status"
   } >> "$RUN_DIR/manifest.txt"
 
   "$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
@@ -191,13 +207,18 @@ EOF
 ) &
 PIDS+=("$!")
 
-# Framework/app/system logs. Do not clear logcat before this capture.
+# Framework/app/system logs. A healthy bounded reader exits through host timeout
+# with status 124. Persist that status so an immediate filter/ADB failure cannot
+# masquerade as a complete synchronized capture.
 (
+  logcat_status=0
   timeout "$DURATION" "$ADB" -s "$SERIAL" logcat -v monotonic \
     DSHGlasses:V DSHGlassesBridge:V DSHGlassesSensor:V \
     ActivityTaskManager:I ActivityManager:I WindowManager:I InputReader:I \
     InputDispatcher:I ViewRootImpl:I '*:S' \
-    > "$RUN_DIR/logcat-live.txt" 2> "$RUN_DIR/logcat-live.err" || true
+    > "$RUN_DIR/logcat-live.txt" 2> "$RUN_DIR/logcat-live.err" \
+    || logcat_status=$?
+  printf '%s\n' "$logcat_status" > "$RUN_DIR/logcat-live.status"
 ) &
 PIDS+=("$!")
 
