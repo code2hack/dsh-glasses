@@ -11,19 +11,27 @@ SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-1}"
 LABEL="${LABEL:-armed}"
 OUT_ROOT="${OUT_ROOT:-$HOME/tmp/dsh-glasses-ADB/i0}"
 GETEVENT_MODE="${GETEVENT_MODE:-auto}" # auto | timestamp | plain
+FOCUS_SAMPLE_TIMEOUT="${FOCUS_SAMPLE_TIMEOUT:-5}"
+ADB_PROBE_TIMEOUT="${ADB_PROBE_TIMEOUT:-15}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$OUT_ROOT/${STAMP}-${LABEL}"
 mkdir -p "$RUN_DIR"
 
-if ! "$ADB" -s "$SERIAL" get-state | grep -qx device; then
+if ! timeout -k 2 "$ADB_PROBE_TIMEOUT" "$ADB" -s "$SERIAL" get-state | grep -qx device; then
   echo "Rokid ADB unavailable: serial=$SERIAL" >&2
   exit 2
 fi
 
 PIDS=()
+
+bounded_probe() {
+  timeout -k 2 "$ADB_PROBE_TIMEOUT" "$@"
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+
   for pid in "${PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -42,7 +50,10 @@ cleanup() {
     getevent_lines="$(wc -l < "$RUN_DIR/getevent-live.txt" | tr -d ' ')"
   fi
   if [[ -f "$RUN_DIR/getevent-live.err" ]]; then
-    getevent_usage_errors="$(grep -Eic 'usage:|unknown option|invalid option|bad option|unrecognized option' "$RUN_DIR/getevent-live.err" || true)"
+    getevent_usage_errors="$(
+      grep -Eic 'usage:|unknown option|invalid option|bad option|unrecognized option' \
+        "$RUN_DIR/getevent-live.err" || true
+    )"
   fi
   if [[ -f "$RUN_DIR/getevent-live.status" ]]; then
     getevent_process_status="$(tr -d '[:space:]' < "$RUN_DIR/getevent-live.status")"
@@ -76,30 +87,46 @@ cleanup() {
     echo "logcat_process_status=$logcat_process_status"
   } >> "$RUN_DIR/manifest.txt"
 
-  "$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
-  "$ADB" -s "$SERIAL" shell uiautomator dump /sdcard/dsh-i0-window.xml > "$RUN_DIR/uiautomator-after-command.txt" 2>&1 || true
-  "$ADB" -s "$SERIAL" pull /sdcard/dsh-i0-window.xml "$RUN_DIR/window-after.xml" > "$RUN_DIR/uiautomator-after-pull.txt" 2>&1 || true
+  bounded_probe "$ADB" -s "$SERIAL" exec-out screencap -p \
+    > "$RUN_DIR/screen-after.png" 2> "$RUN_DIR/screen-after.err" || true
+  bounded_probe "$ADB" -s "$SERIAL" shell \
+    uiautomator dump /sdcard/dsh-i0-window.xml \
+    > "$RUN_DIR/uiautomator-after-command.txt" 2>&1 || true
+  bounded_probe "$ADB" -s "$SERIAL" pull \
+    /sdcard/dsh-i0-window.xml "$RUN_DIR/window-after.xml" \
+    > "$RUN_DIR/uiautomator-after-pull.txt" 2>&1 || true
+
   echo "TB0-I0 capture saved: $RUN_DIR"
   exit "$status"
 }
 trap cleanup EXIT INT TERM
 
 REPO_HEAD="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-FINGERPRINT="$($ADB -s "$SERIAL" shell getprop ro.build.fingerprint | tr -d '\r')"
-MODEL="$($ADB -s "$SERIAL" shell getprop ro.product.model | tr -d '\r')"
+FINGERPRINT="$(
+  bounded_probe "$ADB" -s "$SERIAL" shell getprop ro.build.fingerprint |
+    tr -d '\r'
+)"
+MODEL="$(
+  bounded_probe "$ADB" -s "$SERIAL" shell getprop ro.product.model |
+    tr -d '\r'
+)"
 
 # This firmware's toybox getevent rejects the combined `-lt` spelling. Probe
-# `-t` alone; if it is unavailable, fall back to plain hexadecimal events and
-# prefix each received line with a host-arrival timestamp. Static `-lp` output
+# `-t` alone. If unavailable, use plain hexadecimal events and prefix every
+# received line with a host monotonic-nanosecond timestamp. Static `-lp` output
 # below supplies the symbolic code inventory in either mode.
 GETEVENT_ARGS=()
-GETEVENT_CAPTURE_MODE="plain-host-arrival-time"
+GETEVENT_CAPTURE_MODE="plain-host-monotonic-ns"
+GETEVENT_TIMING_QUALIFYING="true"
 GETEVENT_PROBE_STATUS=0
+
 case "$GETEVENT_MODE" in
   auto)
     timeout 1 "$ADB" -s "$SERIAL" shell getevent -t /dev/input/event1 \
       > /dev/null 2> "$RUN_DIR/getevent-probe.err" || GETEVENT_PROBE_STATUS=$?
-    if ! grep -Eqi 'usage:|unknown option|invalid option|bad option|unrecognized option' "$RUN_DIR/getevent-probe.err"; then
+    if ! grep -Eqi \
+      'usage:|unknown option|invalid option|bad option|unrecognized option' \
+      "$RUN_DIR/getevent-probe.err"; then
       GETEVENT_ARGS=(-t)
       GETEVENT_CAPTURE_MODE="device-timestamp"
     fi
@@ -118,6 +145,11 @@ case "$GETEVENT_MODE" in
     ;;
 esac
 
+if [[ ${#GETEVENT_ARGS[@]} -eq 0 ]] && ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required for subsecond monotonic timestamps in plain getevent mode" >&2
+  exit 2
+fi
+
 cat > "$RUN_DIR/manifest.txt" <<EOF
 provenance=UNCLASSIFIED_CAPTURE_WINDOW
 note=Classify each resulting interaction as PHYSICAL, SYNTHETIC_ADB, SYNTHETIC_SENDEVENT, or PRIOR_REFERENCE in the evidence document.
@@ -130,21 +162,35 @@ model=$MODEL
 fingerprint=$FINGERPRINT
 duration_seconds=$DURATION
 sample_interval_seconds=$SAMPLE_INTERVAL
+focus_sample_timeout_seconds=$FOCUS_SAMPLE_TIMEOUT
+adb_probe_timeout_seconds=$ADB_PROBE_TIMEOUT
 label=$LABEL
 getevent_mode_requested=$GETEVENT_MODE
 getevent_capture_mode=$GETEVENT_CAPTURE_MODE
+getevent_timing_qualifying=$GETEVENT_TIMING_QUALIFYING
 getevent_probe_status=$GETEVENT_PROBE_STATUS
 EOF
 
-# Static inventory snapshots.
-"$ADB" -s "$SERIAL" shell cat /proc/bus/input/devices > "$RUN_DIR/proc-bus-input-devices.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" shell getevent -lp > "$RUN_DIR/getevent-capabilities.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" shell dumpsys input > "$RUN_DIR/dumpsys-input.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" shell dumpsys sensorservice > "$RUN_DIR/dumpsys-sensorservice.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" shell dumpsys package com.code2hack.glasses > "$RUN_DIR/dumpsys-package.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" exec-out screencap -p > "$RUN_DIR/screen-before.png" 2> "$RUN_DIR/screen-before.err" || true
-"$ADB" -s "$SERIAL" shell uiautomator dump /sdcard/dsh-i0-window.xml > "$RUN_DIR/uiautomator-before-command.txt" 2>&1 || true
-"$ADB" -s "$SERIAL" pull /sdcard/dsh-i0-window.xml "$RUN_DIR/window-before.xml" > "$RUN_DIR/uiautomator-before-pull.txt" 2>&1 || true
+# Static inventory snapshots. Every one-shot ADB command is bounded so a
+# transient device stall cannot prevent a passive recorder window from rotating.
+bounded_probe "$ADB" -s "$SERIAL" shell cat /proc/bus/input/devices \
+  > "$RUN_DIR/proc-bus-input-devices.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" shell getevent -lp \
+  > "$RUN_DIR/getevent-capabilities.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" shell dumpsys input \
+  > "$RUN_DIR/dumpsys-input.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" shell dumpsys sensorservice \
+  > "$RUN_DIR/dumpsys-sensorservice.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" shell dumpsys package com.code2hack.glasses \
+  > "$RUN_DIR/dumpsys-package.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" exec-out screencap -p \
+  > "$RUN_DIR/screen-before.png" 2> "$RUN_DIR/screen-before.err" || true
+bounded_probe "$ADB" -s "$SERIAL" shell \
+  uiautomator dump /sdcard/dsh-i0-window.xml \
+  > "$RUN_DIR/uiautomator-before-command.txt" 2>&1 || true
+bounded_probe "$ADB" -s "$SERIAL" pull \
+  /sdcard/dsh-i0-window.xml "$RUN_DIR/window-before.xml" \
+  > "$RUN_DIR/uiautomator-before-pull.txt" 2>&1 || true
 
 # Low-level Linux input events from the currently identified power/touch nodes.
 # This target accepts exactly one device argument, so event0 and event1 MUST be
@@ -169,16 +215,26 @@ EOF
 
       if [[ ${#GETEVENT_ARGS[@]} -gt 0 ]]; then
         timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
-          "${GETEVENT_ARGS[@]}" "$node_path" 2> "$node_err" \
-          | awk -v device="$node" '{ print "device=" device, $0; fflush(); }' \
-          > "$node_out" \
-          || node_status=$?
+          "${GETEVENT_ARGS[@]}" "$node_path" 2> "$node_err" |
+          awk -v device="$node" \
+            '{ print "device=" device, $0; fflush(); }' \
+            > "$node_out" ||
+          node_status=$?
       else
         timeout "$DURATION" "$ADB" -s "$SERIAL" shell getevent \
-          "$node_path" 2> "$node_err" \
-          | awk -v device="$node" '{ print "host_epoch_s=" systime(), "device=" device, $0; fflush(); }' \
-          > "$node_out" \
-          || node_status=$?
+          "$node_path" 2> "$node_err" |
+          python3 -u -c '
+import sys
+import time
+
+device = sys.argv[1]
+for line in sys.stdin:
+    print(
+        f"host_monotonic_ns={time.monotonic_ns()} device={device} {line.rstrip()}",
+        flush=True,
+    )
+' "$node" > "$node_out" ||
+          node_status=$?
       fi
 
       printf '%s\n' "$node_status" > "$RUN_DIR/getevent-$node.status"
@@ -191,18 +247,28 @@ EOF
   done
 
   for node in event0 event1; do
-    cat "$RUN_DIR/getevent-$node.txt" >> "$RUN_DIR/getevent-live.txt" 2>/dev/null || true
+    cat "$RUN_DIR/getevent-$node.txt" \
+      >> "$RUN_DIR/getevent-live.txt" 2>/dev/null || true
     if [[ -s "$RUN_DIR/getevent-$node.err" ]]; then
-      sed "s/^/device=$node /" "$RUN_DIR/getevent-$node.err" >> "$RUN_DIR/getevent-live.err"
+      sed "s/^/device=$node /" "$RUN_DIR/getevent-$node.err" \
+        >> "$RUN_DIR/getevent-live.err"
     fi
   done
 
-  status0="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event0.status" 2>/dev/null || echo missing)"
-  status1="$(tr -d '[:space:]' < "$RUN_DIR/getevent-event1.status" 2>/dev/null || echo missing)"
+  status0="$(
+    tr -d '[:space:]' < "$RUN_DIR/getevent-event0.status" 2>/dev/null ||
+      echo missing
+  )"
+  status1="$(
+    tr -d '[:space:]' < "$RUN_DIR/getevent-event1.status" 2>/dev/null ||
+      echo missing
+  )"
+
   if [[ "$status0" == "124" && "$status1" == "124" ]]; then
     printf '124\n' > "$RUN_DIR/getevent-live.status"
   else
-    printf 'event0=%s,event1=%s\n' "$status0" "$status1" > "$RUN_DIR/getevent-live.status"
+    printf 'event0=%s,event1=%s\n' "$status0" "$status1" \
+      > "$RUN_DIR/getevent-live.status"
   fi
 ) &
 PIDS+=("$!")
@@ -216,25 +282,24 @@ PIDS+=("$!")
     DSHGlasses:V DSHGlassesBridge:V DSHGlassesSensor:V \
     ActivityTaskManager:I ActivityManager:I WindowManager:I InputReader:I \
     InputDispatcher:I ViewRootImpl:I '*:S' \
-    > "$RUN_DIR/logcat-live.txt" 2> "$RUN_DIR/logcat-live.err" \
-    || logcat_status=$?
+    > "$RUN_DIR/logcat-live.txt" 2> "$RUN_DIR/logcat-live.err" ||
+    logcat_status=$?
   printf '%s\n' "$logcat_status" > "$RUN_DIR/logcat-live.status"
 ) &
 PIDS+=("$!")
-
-FOCUS_SAMPLE_TIMEOUT="${FOCUS_SAMPLE_TIMEOUT:-5}"
 
 # Foreground/focus samples correlated by host and device monotonic clocks.
 # Each ADB probe is bounded by FOCUS_SAMPLE_TIMEOUT so a transient ADB/dumpsys
 # stall cannot indefinitely stop the bounded window or the passive rotation.
 (
   end=$((SECONDS + DURATION))
-  while (( SECONDS < end )); do
+  while ((SECONDS < end)); do
     printf '\n=== host_utc=%s host_epoch_ms=%s ===\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$(date +%s%3N)"
     focus_status=0
-    timeout "$FOCUS_SAMPLE_TIMEOUT" \
-      "$ADB" -s "$SERIAL" shell 'printf "device_uptime="; cat /proc/uptime; dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp|mObscuringWindow"; dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -n 8' \
+    timeout -k 2 "$FOCUS_SAMPLE_TIMEOUT" \
+      "$ADB" -s "$SERIAL" shell \
+      'printf "device_uptime="; cat /proc/uptime; dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp|mObscuringWindow"; dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -n 8' \
       2>&1 || focus_status=$?
     printf '\nfocus_sample_status=%s\n' "$focus_status"
     sleep "$SAMPLE_INTERVAL"
