@@ -342,10 +342,15 @@ try {
     const r = await mutation({ operationId: opId("rs-m2"), expectedRevision: 1, mutation: { kind: "replace", text: "newer" } });
     if (r.status !== 409 || !["draft-locked", "revision-conflict"].includes(r.json.error))
       throw new Error(`expected 409 draft-locked/revision-conflict got ${r.status} ${JSON.stringify(r.json)}`);
+    // If the send still holds, draft must be untouched (revision 1, "orig",
+    // locked). If the send already settled, the draft is legitimately cleared
+    // (revision 2, "") — never a corrupted intermediate. Both are consistent.
     const st = JSON.parse(await (await import("node:fs/promises")).readFile("/tmp/dsh-tb0-home/storages/glasses_plugin.json", "utf8"));
     const rec = Object.values(st.tables.state)[0];
-    if (rec.draft.text !== "orig") throw new Error("lost state: draft text changed");
-    ok("replace races Send -> draft-locked, no lost state");
+    const okState = (rec.draft.revision === 1 && rec.draft.text === "orig" && rec.draft.lockedByOperationId) ||
+                    (rec.draft.revision === 2 && rec.draft.text === "");
+    if (!okState) throw new Error(`lost state: revision=${rec.draft.revision} text=${JSON.stringify(rec.draft.text)} locked=${rec.draft.lockedByOperationId}`);
+    ok("replace races Send -> 409, no lost state");
   });
 
   await scenario("known rejection -> text retained, draft unlocked; fresh op proceeds", async () => {
@@ -372,7 +377,17 @@ try {
     await mutation({ operationId: id + "-m", expectedRevision: 0, mutation: { kind: "replace", text: "inv text" } });
     proc.kill("SIGKILL"); await sleep(3000);
     await startInstance(SID, { DSH_GLASSES_TEST_INVARIANT: "1" });
-    const r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    let r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+    if (r.status === 500 && r.json.error === "identity-invariant-failure") {
+      // durable at dispatch time -> already flagged
+    } else {
+      // retry until the message is durable (count 1 -> hook forces count 2)
+      for (let i = 0; i < 60; i++) {
+        await sleep(1000);
+        r = await actions({ kind: "send", operationId: id, draftRevision: 1 });
+        if (r.status === 500) break;
+      }
+    }
     if (r.status !== 500 || r.json.error !== "identity-invariant-failure") throw new Error(`got ${r.status} ${JSON.stringify(r.json)}`);
     const b = await bootstrap();
     if (b.json.draft.text !== "inv text" || b.json.draft.locked !== true) throw new Error("draft cleared/lost on invariant!");
