@@ -20,7 +20,9 @@
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.0",
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",
-    "cordis": ">=4.0.0-rc <5"
+    "cordis": ">=4.0.0-rc <5",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-storage": "0.1.0-rc.7"
   },
   "license": "UNLICENSED",
   "private": true

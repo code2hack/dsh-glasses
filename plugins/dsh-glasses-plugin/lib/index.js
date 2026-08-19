@@ -4,8 +4,8 @@
 // Exposes the authenticated /glasses/v1/* read projection only:
 //   GET  /glasses/v1/bootstrap         bounded history + status + draft projection
 //   GET  /glasses/v1/stream            live SSE projection (monotonic seq, heartbeat, resume)
-//   POST /glasses/v1/draft/mutations   501 NOT_IMPLEMENTED (proves namespace/auth only)
-//   POST /glasses/v1/actions           501 NOT_IMPLEMENTED (proves namespace/auth only)
+//   POST /glasses/v1/draft/mutations   durable draft writes (monotonic revision)
+//   POST /glasses/v1/actions           Send-only action (operationId + ledger + 0-or-1)
 //
 // Session identity comes ONLY from the runtime environment
 // (DSH_GLASSES_TB0_SESSION_ID); never from committed config. The dev bearer
@@ -19,6 +19,7 @@
 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
 export const name = "dsh-glasses-plugin";
 
@@ -35,7 +36,7 @@ export const Config = z.object({
   bootstrapMaxEvents: z.number().default(200),
 });
 
-export const inject = ["webServer", "sessionQuery", "sessions", "agents"];
+export const inject = ["webServer", "sessionQuery", "sessions", "agents", "storage"];
 
 const PROTOCOL_MAJOR = 1;
 
@@ -163,13 +164,159 @@ export async function apply(ctx, config) {
     return sendJson(res, 501, { ok: false, error: "NOT_IMPLEMENTED", route });
   };
 
+  // ---- TB0 host-write slice ---------------------------------------------
+  // Durable draft + operation ledger via dsh-storage `json` backend KvUnit,
+  // plus the exactly-zero-or-one user-message acceptance reconciliation.
+  // See docs/TRACER_BULLET_TB0_WRITE.md.
+  const UNIT = { name: "glasses-plugin", version: 1, tables: ["drafts", "ledger"], hasGlobal: false };
+  let _kvUnit = null;
+  const units = async () => {
+    if (_kvUnit) return _kvUnit;
+    const backend = ctx.storage?.backend?.get?.("json");
+    const kv = backend?.kv;
+    if (!kv) throw new Error("storage backend 'json' unavailable");
+    _kvUnit = await kv.open(UNIT);
+    return _kvUnit;
+  };
+
+  const readDraft = async (sid) => {
+    const u = await units();
+    const snap = await u.loadAll();
+    return snap.tables.drafts?.[sid] ?? null;
+  };
+  const writeDraft = async (sid, draft) => {
+    const u = await units();
+    await u.putRecord("drafts", sid, draft);
+  };
+  const readLedger = async (opId) => {
+    const u = await units();
+    const snap = await u.loadAll();
+    return snap.tables.ledger?.[opId] ?? null;
+  };
+  const writeLedger = async (opId, row) => {
+    const u = await units();
+    await u.putRecord("ledger", opId, row);
+  };
+
+  const currentSeq = async () => {
+    const snap = await ctx.sessionQuery.readSession(sessionId);
+    const evts = Array.isArray(snap?.events) ? snap.events : [];
+    return evts.length ? evts[evts.length - 1].seq : -1;
+  };
+
+  // Exactly-zero-or-one: a durable user/message event carries message.id.
+  const countUserMessagesWithId = async (messageId) => {
+    const snap = await ctx.sessionQuery.readSession(sessionId);
+    const evts = Array.isArray(snap?.events) ? snap.events : [];
+    return evts.filter((e) => e.type === "user/message" && e?.message?.id === messageId).length;
+  };
+
+  const readBody = async (req) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const raw = Buffer.concat(chunks).toString("utf8");
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+
+  const handleDraftMutations = async (req, res) => {
+    if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: "bad-body" });
+    }
+    if (!body || typeof body !== "object") return sendJson(res, 400, { ok: false, error: "bad-body" });
+    try {
+      const draft = (await readDraft(sessionId)) ?? { revision: 0, content: "", committedSeq: -1, status: "cleared" };
+      switch (body.kind) {
+        case "setText": {
+          const rev = body.revision;
+          const text = typeof body.text === "string" ? body.text : "";
+          if (typeof rev !== "number") return sendJson(res, 400, { ok: false, error: "revision-required" });
+          if (rev !== draft.revision + 1)
+            return sendJson(res, 409, { ok: false, error: "revision-conflict", expected: draft.revision + 1, got: rev });
+          const next = { ...draft, revision: rev, content: text, status: "editing" };
+          await writeDraft(sessionId, next);
+          return sendJson(res, 200, { ok: true, revision: next.revision, status: next.status });
+        }
+        case "ack": {
+          const rev = body.revision;
+          if (typeof rev !== "number" || rev !== draft.revision)
+            return sendJson(res, 409, { ok: false, error: "stale-ack", expected: draft.revision, got: rev });
+          const next = { ...draft, committedSeq: await currentSeq() };
+          await writeDraft(sessionId, next);
+          return sendJson(res, 200, { ok: true, revision: next.revision, committedSeq: next.committedSeq });
+        }
+        default:
+          return sendJson(res, 400, { ok: false, error: "unknown-mutation", kind: body.kind ?? null });
+      }
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
+    }
+  };
+
+  const handleActions = async (req, res) => {
+    if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: "bad-body" });
+    }
+    if (!body || typeof body !== "object") return sendJson(res, 400, { ok: false, error: "bad-body" });
+    try {
+      if (body.kind !== "send") return sendJson(res, 400, { ok: false, error: "unknown-action", kind: body.kind ?? null });
+      const opId = typeof body.operationId === "string" ? body.operationId : "";
+      if (!opId) return sendJson(res, 400, { ok: false, error: "operationId-required" });
+
+      const existing = await readLedger(opId);
+      if (existing?.messageId) {
+        // Reconciled resubmit: never re-create a message id already proven.
+        const count = await countUserMessagesWithId(existing.messageId);
+        if (count > 1) return sendJson(res, 500, { ok: false, error: "identity-violation", messageId: existing.messageId, count });
+        return sendJson(res, 200, { ok: true, reconciled: true, operationId: opId, messageId: existing.messageId, state: count === 1 ? "accepted" : "rejected" });
+      }
+
+      const draft = await readDraft(sessionId);
+      if (!draft || typeof body.draftRevision !== "number" || body.draftRevision !== draft.revision)
+        return sendJson(res, 409, { ok: false, error: "draft-revision-mismatch", expected: draft?.revision ?? null, got: body.draftRevision ?? null });
+      if (!draft.content) return sendJson(res, 409, { ok: false, error: "empty-draft" });
+
+      const agent = ctx.agents.get(sessionId);
+      if (!agent) return sendJson(res, 503, { ok: false, error: "agent-unavailable" });
+
+      // Client-generated durable identity: createUserMessage mints the stable
+      // MessageId at admission; the ledger row records it BEFORE any send.
+      const message = createUserMessage({ content: [{ type: "text", text: draft.content }], source: { kind: "user" } });
+      await writeLedger(opId, {
+        operationId: opId,
+        messageId: message.id,
+        sessionId,
+        state: "pending",
+        draftRevision: draft.revision,
+        asOfSeqAtSend: await currentSeq(),
+      });
+      agent.send(message, "next-turn", true);
+      await writeDraft(sessionId, { ...draft, status: "submitted" });
+      return sendJson(res, 202, { ok: true, operationId: opId, messageId: message.id, draftRevision: draft.revision, accepted: "pending" });
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
+    }
+  };
+
   const handleGlassesRoot = (req, res) =>
     sendJson(res, 404, { ok: false, error: "not-found", namespace: "/glasses/v1" });
 
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/bootstrap", handler: handleBootstrap }), "glasses.bootstrap");
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/stream", handler: handleStream }), "glasses.stream");
-  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/draft/mutations", handler: handleStub("/glasses/v1/draft/mutations") }), "glasses.draft");
-  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/actions", handler: handleStub("/glasses/v1/actions") }), "glasses.actions");
+  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/draft/mutations", handler: handleDraftMutations }), "glasses.draft");
+  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/actions", handler: handleActions }), "glasses.actions");
   // Prove the namespace prefix registration also works and catches unknown sub-paths.
   ctx.effect(() => ctx.webServer.register({ kind: "prefix", path: "/glasses/v1", handler: handleGlassesRoot }), "glasses.prefix");
 
