@@ -87,7 +87,7 @@ class GlassesBridge(private val context: Context) {
         Log.i(TAG, "fetch path=$path")
         var conn: HttpURLConnection? = null
         return try {
-            conn = (URL(endpoint + path).openConnection() as HttpURLConnection).apply {
+            val connection = (URL(endpoint + path).openConnection() as HttpURLConnection).apply {
                 requestMethod = if (bodyJson.isNotEmpty() && bodyJson != "null") "POST" else "GET"
                 connectTimeout = 8_000
                 readTimeout = 20_000
@@ -101,8 +101,9 @@ class GlassesBridge(private val context: Context) {
                     outputStream.use { it.write(bodyJson.toByteArray(StandardCharsets.UTF_8)) }
                 }
             }
-            val status = conn.responseCode
-            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            conn = connection
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
             JSONObject().put("status", status).put("body", body).toString()
         } catch (e: Exception) {
@@ -143,7 +144,7 @@ class GlassesBridge(private val context: Context) {
         var conn: HttpURLConnection? = null
         var opened = false
         try {
-            conn = (URL(endpoint + "/glasses/v1/stream").openConnection() as HttpURLConnection).apply {
+            val connection = (URL(endpoint + "/glasses/v1/stream").openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8_000
                 readTimeout = 0
@@ -153,8 +154,9 @@ class GlassesBridge(private val context: Context) {
                 setRequestProperty("Accept-Encoding", "identity")
                 setRequestProperty("Cache-Control", "no-cache, no-transform")
             }
-            streamConnection = conn
-            val status = conn.responseCode
+            conn = connection
+            streamConnection = connection
+            val status = connection.responseCode
             if (status != 200) {
                 jsStream("error", "HTTP $status")
                 return
@@ -162,7 +164,7 @@ class GlassesBridge(private val context: Context) {
 
             opened = true
             jsStream("open", null)
-            parseSse(BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)))
+            parseSse(BufferedReader(InputStreamReader(connection.inputStream, StandardCharsets.UTF_8)))
         } catch (e: Exception) {
             val stillCurrent = streamConnection === conn
             if (!closed && stillCurrent && !Thread.currentThread().isInterrupted) {
