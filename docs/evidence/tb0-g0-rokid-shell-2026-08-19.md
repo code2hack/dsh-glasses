@@ -1,6 +1,6 @@
 # TB0-G0 glasses shell + real-device connectivity — evidence
 
-**Status:** in progress (real-APK install and hardware trace pending).  
+**Status:** bootstrap/SSE/reconnect/restart proven on the real Rokid (2026-08-19); raw physical presses pending hardware-qualification.  
 **Branch:** `tb0/glasses-shell` (base merge `c54833f`).
 
 ## Base / tested commits
@@ -85,3 +85,45 @@ merely because the app received an event.
 - Inspect real sensor availability for the later head-navigation wheel.
 - Open draft PR `tb0: connect the Rokid glasses shell` after the corrected shell
   first boots on-device.
+
+
+## On-device verification results (2026-08-19)
+
+APK: `app-debug.apk` `0.1.0-g0` (AGP 8.5.2, Kotlin 1.9.24, no AndroidX), built on
+u4090 (x86_64; spark is aarch64 and AGP's aapt2 Maven artifact is x86_64-only).
+Compile-unblock fixes on the branch (upstream KDoc nested-comment bug + BuildConfig
+gate): `122bce4`, `542329f`. Draft PR: https://github.com/code2hack/dsh-glasses/pull/3.
+
+- Install: `adb install -r -t` Success; `versionName=0.1.0-g0`, `versionCode=1`.
+- Launch: lifecycle `onCreate/onResume/windowFocus` logged; WebView `DSH_G0 init`.
+- Provisioning: via ADB + WebView CDP (debug socket forwarded over u4090 USB ADB);
+  credential stored in app-private `shared_prefs/glasses_private.xml` (never Git).
+- Tailscale recovery (mandatory route): Rokid was offline (last seen 1h) → launched
+  `com.tailscale.ipn` via ADB, UI showed "Not connected" + blue Connect → tapped →
+  "Connected"; identity `code2hack.github` preserved; spark verified `pong` + `active`.
+- Bootstrap (on-device renders): protocol 1, generation `mszrpmnz-e…`, asOfSeq 2→11,
+  attachment status `unavailable`→`idle`, `writeState: ready`, event rows `[11…0]`.
+- Live SSE (independent DSH surface): one `session.prompt` durable event via host RPC
+  → on-device asOfSeq 2→11, nine `projection-applied` rows, each exactly once,
+  no duplicate seqs (CDP DOM `[data-seq]` assert).
+- Controlled reconnect: proxy stop → `stream-state error|closed` → `reconnect-scheduled`
+  with backoff; proxy start → `bootstrap-applied` → `stream-state open` →
+  `recovery-start{reason:stream-open}` → second authoritative snapshot →
+  `recovery-complete`; no duplicates.
+- App restart: force-stop → relaunch (no reprovision) → configuration restored from
+  app-private prefs → `bootstrap-applied asOfSeq:11` → `recovery-complete`.
+- Raw tracer warm-up (same OS dispatch path as physical presses): synthetic
+  `DPAD_CENTER`, `ENTER`, tap → `DISPATCH_KEY DOWN/UP` (keyCode, scanCode 0, repeat,
+  meta, flags, source, device `Virtual`, monotonic down/event/observed uptimes,
+  `nativeEffect=unknown`) and `DISPATCH_TOUCH` (pointerCount, id, x/y, pressure, tool,
+  source `0x1002`, history). Full example lines in `~/tmp/dsh-glasses-ADB/g0/g0-input-log.txt`.
+- Head pose: `dumpsys sensorservice` lists `Game Rotation Vector` (QTI, wake+nw),
+  gyroscope `icm4x6xx` (TDK), accelerometer(+uncalibrated), linear accel — rotation
+  vector available for the later wheel.
+
+## Not yet hardware-qualified (physical presses cannot be automated over ADB)
+
+- Function-button short press; function-button long press; two-finger short touch.
+  ADB can inject the same OS dispatch path (synthetic warm-up captured above), but
+  REAL button/touch hardware evidence needs a physical press; recorded here per
+  AGENTS §15 rather than interrupting code2hack. Bounded captures are ready.
