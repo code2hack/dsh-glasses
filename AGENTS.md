@@ -1,11 +1,20 @@
 # dsh-glasses implementation instructions
 
+> **0. WMANDATORY — WHIP first (read before anything else).** Read `WHIP.md`
+> (Worker Heartbeat Integrity Protocol) before any other section: work the
+> todo, keep the heartbeat alive, inspect state, make progress, and NEVER stop
+> while the mission is open — across rounds, across compaction, and across new
+> sessions. After any blocking ask, poll the ChatGPT thread (~30 s) until the
+> reply lands; act on the reply before anything else; a usage-limit reply is
+> retried at the next-lower thinking effort (§17). Silence is not permission
+> to stop. Re-read `WHIP.md` if this project is reopened in a fresh session.
+
 Mandatory entry point for every implementation session. MVP-biased and lean: this
 file is operational, not production process.
 
 ## 1. Read order and authority
 
-Read before changing code: `AGENTS.md` → `SPEC.md` →
+Read before changing code: `WHIP.md` → `AGENTS.md` → `SPEC.md` →
 `docs/TRACER_BULLET_TB0.md` (when present) → the active evidence/seam-audit doc →
 source and tests.
 
