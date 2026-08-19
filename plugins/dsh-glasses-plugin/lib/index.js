@@ -97,10 +97,17 @@ export async function apply(ctx, config) {
     if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
     try {
       const { events, asOfSeq, status } = await readSnapshot();
+      // Reconcile unresolved operations (under the session-wide mutex) before
+      // composing authoritative draft/write state.
+      try {
+        await chainSession(() => reconcileUnresolved());
+      } catch (e) {
+        log("bootstrap reconcile failed:", String(e?.message ?? e));
+      }
       let draftProj = { revision: 0, text: "", locked: false };
       let writeState = "ready";
       try {
-        const st = await readStateForBootstrap();
+        const st = await readState();
         draftProj = { revision: st.draft.revision, text: st.draft.text, locked: !!st.draft.lockedByOperationId };
         const unresolved = Object.values(st.operations).some((o) => ["prepared", "dispatching", "unknown"].includes(o.state));
         writeState = unresolved ? "reconciling" : "ready";
@@ -192,11 +199,14 @@ export async function apply(ctx, config) {
     sessionId,
     draft: { revision: 0, text: "", lockedByOperationId: undefined, lastMutation: undefined },
     operations: {},
+    mutations: {}, // operationId -> { digest, revision } (append-only, no pruning)
   });
   const readState = async () => {
     const u = await units();
     const snap = await u.loadAll();
-    return snap.tables.state?.[sessionId] ?? emptyState();
+    const rec = snap.tables.state?.[sessionId] ?? emptyState();
+    if (!rec.mutations) rec.mutations = {};
+    return rec;
   };
   const writeState = async (st) => {
     const u = await units();
@@ -224,24 +234,20 @@ export async function apply(ctx, config) {
     return Array.isArray(snap?.events) ? snap.events : [];
   };
 
-  // Exact durable positive/discard reconciliation over the COMPLETE raw log.
+  // Count-based exact durable reconciliation over the COMPLETE raw log:
+  //  0 -> unknown (unless exact rejection), 1 -> accepted, >1 -> invariant failure.
+  // Durable-discard settlement is intentionally omitted in TB0 (canceled
+  // inbox splices carry no identifying inserted payload); absence stays unknown.
   const reconcileOperation = async (op) => {
     const events = await readFullEvents();
-    let positive = false;
-    let discarded = false;
+    let count = 0;
     for (const e of events) {
+      if (e?.type !== "user/message") continue;
       const data = e?.data ?? e; // rc.7 nests the event payload under .data
-      if (e?.type === "user/message") {
-        const src = data?.source ?? e?.message?.source;
-        if (src?.kind === "user" && src?.rpcId === op.operationId) positive = true;
-      } else if (e?.type === "agent/inbox/spliced") {
-        if (data?.outcome === "canceled") {
-          const inserted = Array.isArray(data?.inserted) ? data.inserted : [];
-          if (inserted.some((m) => m?.source?.rpcId === op.operationId)) discarded = true;
-        }
-      }
+      const src = data?.source ?? e?.message?.source;
+      if (src?.kind === "user" && src?.rpcId === op.operationId) count++;
     }
-    return { positive, discarded };
+    return { count };
   };
 
   const settle = async (st, opId, state, lastError) => {
@@ -253,6 +259,10 @@ export async function apply(ctx, config) {
       // Monotonic clear: submitted revision D -> cleared revision D+1 so the
       // plugin-authoritative revision never decreases and old mutations stay invalid.
       st.draft = { revision: st.draft.revision + 1, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
+    } else if (state === "rejected") {
+      // Known rejection: retain text and revision but RELEASE the draft lock so
+      // a fresh operation can proceed.
+      st.draft = { ...st.draft, lockedByOperationId: undefined };
     }
     await writeState(st);
   };
@@ -275,31 +285,30 @@ export async function apply(ctx, config) {
     return snap.tables.state?.[sessionId] ?? emptyState();
   };
 
-  // Startup reconcile sweep: settle unresolved operations from durable facts
-  // (never re-dispatch) before new writes are judged. Gated by the draft lock
-  // for writes; runs once per process start.
-  (async () => {
-    try {
-      const st = await readState();
-      let changed = false;
-      for (const op of Object.values(st.operations)) {
-        if (!["prepared", "dispatching", "unknown"].includes(op.state)) continue;
-        const { positive, discarded } = await reconcileOperation(op);
-        if (positive) {
-          op.state = "accepted";
-          st.draft = { revision: st.draft.revision + 1, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
-          changed = true;
-        } else if (discarded) {
-          op.state = "rejected";
-          op.lastError = "durable-discard";
-          changed = true;
-        }
+  // Reconcile unresolved operations from durable facts (never re-dispatch).
+  // Runs on startup and on bootstrap. Returns true if state changed.
+  const reconcileUnresolved = async () => {
+    const st = await readState();
+    let changed = false;
+    for (const op of Object.values(st.operations)) {
+      if (!["prepared", "dispatching", "unknown"].includes(op.state)) continue;
+      const { count } = await reconcileOperation(op);
+      if (count === 1) {
+        op.state = "accepted";
+        st.draft = { revision: st.draft.revision + 1, text: "", lockedByOperationId: undefined, lastMutation: st.draft?.lastMutation };
+        changed = true;
+      } else if (count > 1) {
+        log("identity-invariant failure op=" + op.operationId + " count=" + count);
+        op.invariantFailure = true;
+        changed = true; // persist the failure marker; draft never cleared
       }
-      if (changed) await writeState(st);
-    } catch (e) {
-      log("startup reconcile skipped:", String(e?.message ?? e));
     }
-  })();
+    if (changed) await writeState(st);
+    return changed;
+  };
+
+  // Startup reconcile sweep under the session-wide mutex.
+  chainSession(() => reconcileUnresolved()).catch((e) => log("startup reconcile errors:", String(e?.message ?? e)));
 
   const readBody = async (req) => {
     const chunks = [];
@@ -322,9 +331,13 @@ export async function apply(ctx, config) {
       return sendJson(res, 400, { ok: false, error: "bad-body" });
     }
     if (!body || typeof body !== "object") return sendJson(res, 400, { ok: false, error: "bad-body" });
+    const opId = typeof body.operationId === "string" ? body.operationId : "";
+    if (!opId) return sendJson(res, 400, { ok: false, error: "operationId-required" });
+    return await chainSession(() => handleDraftMutationsInner(res, body, opId));
+  };
+
+  const handleDraftMutationsInner = async (res, body, opId) => {
     try {
-      const opId = typeof body.operationId === "string" ? body.operationId : "";
-      if (!opId) return sendJson(res, 400, { ok: false, error: "operationId-required" });
       const mutation = body.mutation;
       if (!mutation || mutation.kind !== "replace" || typeof mutation.text !== "string")
         return sendJson(res, 400, { ok: false, error: "unsupported-mutation" });
@@ -336,9 +349,11 @@ export async function apply(ctx, config) {
       if (st.draft.lockedByOperationId)
         return sendJson(res, 409, { ok: false, error: "draft-locked", lockedByOperationId: st.draft.lockedByOperationId });
 
-      if (st.draft.lastMutation?.operationId === opId) {
-        if (st.draft.lastMutation.digest === digest)
-          return sendJson(res, 200, { ok: true, revision: st.draft.revision, status: "stored" });
+      // Append-only per-operation mutation result store (no pruning for TB0).
+      const prior = st.mutations?.[opId];
+      if (prior) {
+        if (prior.digest === digest)
+          return sendJson(res, 200, { ok: true, revision: prior.revision, status: "stored" });
         return sendJson(res, 409, { ok: false, error: "operation-conflict", operationId: opId });
       }
 
@@ -354,6 +369,8 @@ export async function apply(ctx, config) {
       st.draft.revision += 1;
       st.draft.text = mutation.text;
       st.draft.lastMutation = { operationId: opId, digest };
+      if (!st.mutations) st.mutations = {};
+      st.mutations[opId] = { digest, revision: st.draft.revision };
       await writeState(st);
       return sendJson(res, 200, { ok: true, revision: st.draft.revision, expectedRevision, status: "applied" });
     } catch (e) {
@@ -402,14 +419,15 @@ export async function apply(ctx, config) {
           case "prepared":
           case "dispatching":
           case "unknown": {
-            const { positive, discarded } = await reconcileOperation(op);
-            if (positive) {
+            const { count } = await reconcileOperation(op);
+            if (count > 1) {
+              op.invariantFailure = true;
+              await writeState(st);
+              return sendJson(res, 500, { ok: false, error: "identity-invariant-failure", operationId: opId, count });
+            }
+            if (count === 1) {
               await settle(st, opId, "accepted");
               return sendJson(res, 200, { ok: true, operationId: opId, state: "accepted", reconciled: true });
-            }
-            if (discarded) {
-              await settle(st, opId, "rejected", "durable-discard");
-              return sendJson(res, 200, { ok: true, operationId: opId, state: "rejected", reconciled: true });
             }
             return sendJson(res, 200, { ok: true, operationId: opId, state: op.state, reconciled: true, pending: true });
           }
@@ -425,11 +443,14 @@ export async function apply(ctx, config) {
       if (!st.draft.text) return sendJson(res, 409, { ok: false, error: "empty-draft" });
 
       const preDispatchSeq = await currentSeq();
+      const frozenText = st.draft.text;
       const newOp = {
         operationId: opId,
         state: "prepared",
         requestDigest: digest,
         draftRevisionAtPrepare: st.draft.revision,
+        frozenText,
+        frozenTextDigest: digestOf({ text: frozenText }),
         preDispatchSeq,
         lastError: undefined,
       };
@@ -448,7 +469,7 @@ export async function apply(ctx, config) {
       try {
         admitted = await ctx.apiProxy.sessions.prompt({
           rpcId: opId,
-          payload: { sessionId, mode: "queue", content: [{ type: "text", text: st.draft.text }] },
+          payload: { sessionId, mode: "queue", content: [{ type: "text", text: frozenText }] },
         });
       } catch (e) {
         await settle(st, opId, "rejected", String(e?.message ?? e));
@@ -464,14 +485,15 @@ export async function apply(ctx, config) {
         console.log("[dsh-glasses-plugin] [test] crash after dispatch (op=" + opId + ")");
         process.exit(1);
       }
-      const { positive, discarded } = await reconcileOperation(newOp);
-      if (positive) {
+      const { count } = await reconcileOperation(newOp);
+      if (count > 1) {
+        newOp.invariantFailure = true;
+        await writeState(st);
+        return sendJson(res, 500, { ok: false, error: "identity-invariant-failure", operationId: opId, count });
+      }
+      if (count === 1) {
         await settle(st, opId, "accepted");
         return sendJson(res, 202, { ok: true, operationId: opId, state: "accepted", accepted: true });
-      }
-      if (discarded) {
-        await settle(st, opId, "rejected", "durable-discard");
-        return sendJson(res, 202, { ok: true, operationId: opId, state: "rejected", accepted: false });
       }
       newOp.state = "unknown";
       await writeState(st);
