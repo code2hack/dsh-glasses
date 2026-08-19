@@ -245,11 +245,15 @@ concurrent implementation on the real Rokid.
   `FOCUS_SAMPLE_TIMEOUT`). (Details below.)
 - **Note**: an earlier W2d window is NOT cited as proof; its 12:27:40Z start
   timestamp predates commit `472b436`, so that run is discarded from evidence.
-- **Passive recorder (corrected script)**: tmux session `dsh-glasses-adb`,
-  loop PID `170034` (`bash /tmp/passive-loop.sh`), current window
-  `20260819T124041Z-passive` (LABEL=passive, DURATION=1800); the loop reads
-  `dev/i0-capture.sh` from the u4090 worktree each iteration so it now runs the
-  bounded-focus + concurrent-reader script (`99b6ab5`).
+- **Passive recorder (corrected script, restarted)**: tmux session
+  `dsh-glasses-adb`, loop PID `186944` (`bash /tmp/passive-loop.sh`), new window
+  `20260819T131258Z-passive` (LABEL=passive, DURATION=1800) running the
+  bounded-focus + concurrent-reader script (`repo_head=99b6ab5…`); 27+
+  `focus_sample_status=0` rows observed immediately. A pre-fix passive window
+  (started 12:40:41 on the unbounded-focus script) hung past its 1800 s budget —
+  the exact stall the focus-sampler fix targets — and was replaced by the
+  restarted loop; its orphaned subshells were killed by exact PID and no
+  floaters remain.
 - **AGENTS**: base-merge `6d1e1925b967cda3c19731decc570d02da2c9c6d`; active
   slice `tb0/input-qualification` (both occurrences).
 - Physical rows remain **unqualified**.
