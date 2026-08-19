@@ -184,10 +184,14 @@ evidence for TB0/MVP.
 - Never commit a real session ID — configure sessions only via
   `DSH_GLASSES_TB0_SESSION_ID`.
 
-## Hosted model services (outside TB0, user-deployed, on spark)
+## Hosted model services (outside TB0, user-deployed)
 
-- Vision "eyes": `lfm2.5-vl-3b` via vLLM at `127.0.0.1:8889`
-  (OpenAI-compatible `/v1/chat/completions`; images as base64 `image_url`
-  data URLs). Do not redeploy; this replaced the earlier LocateAnything attempt.
-- ASR: `nemotron-3.5-asr` at `127.0.0.1:8090` (endpoint format TBD while live).
+- Vision "eyes": `lfm2.5-vl-3b` via vLLM on **spark2** (`192.168.100.11:8887`,
+  alt NIC `192.168.101.11:8887`; OpenAI-compatible `/v1/chat/completions`,
+  `/v1/models`; images as base64 `image_url` data URLs). Verified with real
+  image inference. Do not redeploy.
+- ASR: `nemotron-3.5-asr-streaming-0.6b` via **NeMo-Speech.cpp** on **spark**
+  `127.0.0.1:8886` (`/health` ok; OpenAI-style `/v1/audio/transcriptions`
+  multipart file, `/v1/audio/diarizations`, `/v1/realtime`,
+  `/v1/audio/speech`).
 - Keep both isolated from TB0 and from the resident DSH/text-serving stack.
