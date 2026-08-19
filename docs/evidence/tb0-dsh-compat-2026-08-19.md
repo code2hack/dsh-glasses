@@ -186,3 +186,33 @@ Plugin log on load: `[dsh-glasses-plugin] ready: session=<id> generation=<rotate
 ### Directly proven vs inferred
 **Proven at runtime:** plugin load; route registration without conflict; bearer auth; 501 stubs; bounded history read (`session-query`); monotonic live events (`session/event`); idle/running turn shapes via durable events; SSE gapless continuation + reconnect resync; restart reconstruction of history.
 **Inferred/residual (recorded above):** exact `sessionId → AgentHandle` resolver remains `ctx.agents.get(sessionId)` (no separate named export pinned); status-resume policy; `Last-Event-ID` resync; `followup`/`steer` message shapes (deferred to the write slice).
+
+---
+
+## TB0 host-write runtime proof (2026-08-19) — PASSED
+
+Executed on the same disposable isolated instance (port 3190, keyless `tb0vllm` test provider); resident stack untouched. No session IDs recorded.
+
+### Implemented
+- `plugins/dsh-glasses-plugin`: `POST /glasses/v1/draft/mutations` (`setText`/`ack`, monotonic revision) and `POST /glasses/v1/actions` (Send-only) replacing the `501` stubs.
+- Durable storage via dsh-storage `json` backend KvUnit `glasses_plugin` (tables `drafts`, `ledger`), unit name must satisfy `UNIT_NAME_RE=/^[a-z][a-z0-9_]*$/` (hyphens rejected).
+- Message identity: `createUserMessage` mints the stable `MessageId` at Send admission; ledger row `{operationId, messageId, state, draftRevision, asOfSeqAtSend}` is durably written **before** `agent.send(message, 'next-turn', true)`.
+- Zero-or-one acceptance: count durable `user/message` events whose id equals the ledger `messageId`.
+
+### Runtime results (sanitized)
+| Check | Result |
+| --- | --- |
+| Write-route auth | 401 without bearer on both routes. |
+| `setText rev 1` | 200 `{revision:1, status:'editing'}`; durable in `storages/glasses_plugin.json`. |
+| `ack rev 1` | 200 with `committedSeq` snapshot. |
+| Stale revision | `setText rev 99` → 409 `revision-conflict {expected:2, got:99}`. |
+| Send while agent busy | 202 `{operationId, messageId, accepted:'pending'}`; message queued for next turn. |
+| Reconcile — 0 durable | `reconciled:true, state:'rejected'` (message accepted by transporter but not yet in the session log; draft retained). |
+| Reconcile — 1 durable | after the turn claimed it: `reconciled:true, state:'accepted'`; draft cleared (`revision:0, status:'cleared'`), ledger `state:'accepted'`. |
+| Exactly once | the durable `user/message` event carries the ledger `messageId` exactly once (rc.7 stores the message under `event.data`, `surfaceOp:'append'`); repeated reconcile stays `accepted`. |
+| Plugin restart | bootstrap + KvUnit reconstruction: draft + ledger survive with the same values. |
+
+### Residuals (same as read slice)
+- `Last-Event-ID` wire resync not implemented (bootstrap-first).
+- `steer`/followup shapes, image/photo blocks, Voice/Morse deferred.
+- Agent must be live (`ctx.agents.get` non-null) for Send; pre-agent Send returns 503 `agent-unavailable` (host warms the agent on session resume).
