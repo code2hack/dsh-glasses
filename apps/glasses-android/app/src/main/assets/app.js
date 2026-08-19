@@ -5,15 +5,28 @@
 const $ = (id) => document.getElementById(id);
 let streamOpen = false;
 let streamConnecting = false;
+let streamVerified = false;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
+let helloTimer = null;
 let recovering = false;
 let generation = '';
 let lastSeq = -1;
+let identityFailure = null;
 const seenSeqs = new Set();
 
 function trace(name, fields) {
   console.info('DSH_G0 ' + name + ' ' + JSON.stringify(fields || {}));
+}
+
+function configuredEndpoint() {
+  try { return String(window.GlassesBridge.endpoint() || '').trim(); }
+  catch (_) { return ''; }
+}
+
+function configuredSession() {
+  try { return String(window.GlassesBridge.sessionId() || '').trim(); }
+  catch (_) { return ''; }
 }
 
 function showProvision(show) {
@@ -22,6 +35,25 @@ function showProvision(show) {
 
 function showSession(show) {
   $('session').classList.toggle('hidden', !show);
+}
+
+function showIdentityError(show, expected, actual) {
+  $('identity-error').classList.toggle('hidden', !show);
+  $('identity-expected').textContent = show ? (expected || '(not configured)') : '';
+  $('identity-actual').textContent = show ? (actual || '(missing from endpoint)') : '';
+}
+
+function clearSessionProjection() {
+  generation = '';
+  lastSeq = -1;
+  seenSeqs.clear();
+  $('session-id').textContent = '';
+  $('proto').textContent = '';
+  $('gen').textContent = '';
+  $('asof').textContent = '';
+  $('status').textContent = '';
+  $('wsv').textContent = '';
+  $('events').innerHTML = '';
 }
 
 function setConn(state, text) {
@@ -38,26 +70,125 @@ function nativeFetch(path, body) {
   }
 }
 
+function cancelHelloTimer() {
+  if (helloTimer !== null) clearTimeout(helloTimer);
+  helloTimer = null;
+}
+
+function stopTransport(reason) {
+  cancelHelloTimer();
+  cancelReconnect();
+  streamOpen = false;
+  streamConnecting = false;
+  streamVerified = false;
+  try { window.GlassesBridge.closeStream(); } catch (_) {}
+  trace('transport-stopped', { reason: reason || 'unspecified' });
+}
+
+/**
+ * Session identity is a hard boundary. Once mismatched, server content is
+ * hidden, the native stream is canceled, and automatic retry is disabled until
+ * provisioning is explicitly changed (or the page is reloaded with a corrected
+ * app-private session id).
+ */
+function enterSessionMismatch(expected, actual, source) {
+  identityFailure = {
+    expected: expected || '',
+    actual: actual || '',
+    source: source || 'unknown',
+  };
+  stopTransport('session-mismatch');
+  clearSessionProjection();
+  showSession(false);
+  showProvision(true);
+  showIdentityError(true, identityFailure.expected, identityFailure.actual);
+  setConn('off', 'session-mismatch');
+  trace('session-mismatch', identityFailure);
+}
+
+function clearIdentityFailure(reason) {
+  if (identityFailure) trace('session-mismatch-cleared', { reason: reason || 'reconfigure' });
+  identityFailure = null;
+  showIdentityError(false, '', '');
+}
+
 function init() {
   trace('init');
+  $('in-base').value = configuredEndpoint();
+  $('in-session').value = configuredSession();
+  trace('configuration-loaded', {
+    endpoint: configuredEndpoint(),
+    expectedSession: configuredSession(),
+  });
+
   $('save').addEventListener('click', () => {
-    window.GlassesBridge.configure($('in-base').value, $('in-token').value, $('in-session').value);
+    const requestedBase = $('in-base').value.trim();
+    const requestedSession = $('in-session').value.trim();
+    stopTransport('reconfigure');
+    clearIdentityFailure('save');
+
+    const committed = Boolean(
+      window.GlassesBridge.configure(requestedBase, $('in-token').value, requestedSession),
+    );
     $('in-token').value = '';
-    trace('configured', { endpoint: window.GlassesBridge.endpoint(), session: window.GlassesBridge.sessionId() });
+    const storedSession = configuredSession();
+    trace('configure-result', {
+      committed: committed,
+      requestedSession: requestedSession,
+      storedSession: storedSession,
+      endpoint: configuredEndpoint(),
+    });
+
+    if (!committed || storedSession !== requestedSession) {
+      enterSessionMismatch(requestedSession, storedSession || '(not persisted)', 'configuration');
+      return;
+    }
     run();
   });
 
   window.glassesOnLine = (event, data, id) => {
+    if (identityFailure) {
+      trace('sse-ignored-identity-failure', { event: event || null, id: id || null });
+      return;
+    }
+
     let decoded = data;
     try { decoded = JSON.parse(data); } catch (_) {}
 
     if (event === 'hello') {
-      trace('sse-hello', { generation: decoded && decoded.serverGeneration });
-      if (decoded && decoded.serverGeneration && generation && decoded.serverGeneration !== generation) {
-        recoverSnapshot('generation-change');
+      const expected = configuredSession();
+      const actual = decoded && typeof decoded === 'object'
+        ? String(decoded.sessionId || '').trim()
+        : '';
+      trace('sse-hello', {
+        expectedSession: expected,
+        actualSession: actual,
+        generation: decoded && decoded.serverGeneration,
+      });
+
+      if (!expected || actual !== expected) {
+        enterSessionMismatch(expected, actual, 'sse-hello');
+        return;
       }
+
+      streamVerified = true;
+      cancelHelloTimer();
+      if (decoded.serverGeneration && generation && decoded.serverGeneration !== generation) {
+        recoverSnapshot('generation-change');
+        return;
+      }
+      setConn('open', 'live');
+      // Close the bootstrap→subscribe race only after the SSE peer proves the
+      // same session identity as the configured bootstrap target.
+      recoverSnapshot('stream-open');
       return;
     }
+
+    if (!streamVerified) {
+      trace('sse-event-before-identity', { event: event || null, id: id || null });
+      return;
+    }
+
     if (event === 'gap') {
       trace('sse-gap', decoded);
       recoverSnapshot('server-gap');
@@ -94,20 +225,28 @@ function init() {
 
   window.glassesOnStream = (state, detail) => {
     trace('stream-state', { state: state, detail: detail || null, lastSeq: lastSeq });
+
+    if (identityFailure) {
+      try { window.GlassesBridge.closeStream(); } catch (_) {}
+      trace('stream-state-ignored-identity-failure', { state: state });
+      return;
+    }
+
     if (state === 'open') {
       streamOpen = true;
       streamConnecting = false;
+      streamVerified = false;
       reconnectAttempt = 0;
       cancelReconnect();
-      setConn('open', 'live');
-      // Close the bootstrap→subscribe race: once SSE is definitely open, take
-      // another authoritative snapshot. Queued SSE events are de-duplicated by seq.
-      recoverSnapshot('stream-open');
+      setConn('reconnecting', 'verifying');
+      armHelloTimeout();
       return;
     }
 
     streamOpen = false;
     streamConnecting = false;
+    streamVerified = false;
+    cancelHelloTimer();
     scheduleReconnect(state === 'closed' ? 'closed·reconnect' : ('offline' + (detail ? '·' + detail : '')));
   };
 
@@ -115,34 +254,56 @@ function init() {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 6000);
   };
 
+  // Read-only CDP aid: contains no bearer token.
+  window.g0DebugState = () => ({
+    endpoint: configuredEndpoint(),
+    expectedSession: configuredSession(),
+    identityFailure: identityFailure ? { ...identityFailure } : null,
+    streamOpen: streamOpen,
+    streamVerified: streamVerified,
+    generation: generation,
+    lastSeq: lastSeq,
+  });
+
   run();
 }
 
 function run() {
-  const endpoint = window.GlassesBridge.endpoint();
-  if (!endpoint) {
+  if (identityFailure) {
+    setConn('off', 'session-mismatch');
+    return;
+  }
+
+  const endpoint = configuredEndpoint();
+  const expectedSession = configuredSession();
+  if (!endpoint || !expectedSession) {
     showProvision(true);
     showSession(false);
+    showIdentityError(false, '', '');
     setConn('off', 'configure');
-    trace('not-configured');
+    trace('not-configured', { endpointPresent: Boolean(endpoint), sessionPresent: Boolean(expectedSession) });
     return;
   }
 
   const snapshot = fetchSnapshot();
   if (!snapshot) return;
   showProvision(false);
+  showIdentityError(false, '', '');
   showSession(true);
   applySnapshot(snapshot);
 
   if (!streamOpen && !streamConnecting) {
     streamConnecting = true;
+    streamVerified = false;
     setConn('reconnecting', 'connecting');
-    trace('stream-opening', { lastSeq: lastSeq });
+    trace('stream-opening', { lastSeq: lastSeq, expectedSession: expectedSession });
     window.GlassesBridge.openStream();
   }
 }
 
 function fetchSnapshot() {
+  if (identityFailure) return null;
+
   const response = nativeFetch('/glasses/v1/bootstrap', '');
   if (response.status !== 200) {
     trace('bootstrap-failed', { status: response.status });
@@ -156,12 +317,12 @@ function fetchSnapshot() {
 
   try {
     const snapshot = JSON.parse(response.body);
-    const expectedSession = window.GlassesBridge.sessionId();
-    if (expectedSession && snapshot.attachment.sessionId !== expectedSession) {
-      trace('session-mismatch', { expected: expectedSession, actual: snapshot.attachment.sessionId });
-      setConn('off', 'session-mismatch');
-      showProvision(true);
-      showSession(false);
+    const expectedSession = configuredSession();
+    const actualSession = snapshot && snapshot.attachment
+      ? String(snapshot.attachment.sessionId || '').trim()
+      : '';
+    if (!expectedSession || actualSession !== expectedSession) {
+      enterSessionMismatch(expectedSession, actualSession, 'bootstrap');
       return null;
     }
     return snapshot;
@@ -173,6 +334,7 @@ function fetchSnapshot() {
 }
 
 function applySnapshot(snapshot) {
+  if (identityFailure) return;
   showSession(true);
   generation = snapshot.serverGeneration || '';
   lastSeq = Number(snapshot.history && snapshot.history.asOfSeq);
@@ -194,6 +356,7 @@ function applySnapshot(snapshot) {
     addEventRow(event);
   });
   trace('bootstrap-applied', {
+    session: snapshot.attachment.sessionId,
     generation: generation,
     asOfSeq: lastSeq,
     eventCount: events.length,
@@ -203,20 +366,25 @@ function applySnapshot(snapshot) {
 }
 
 function recoverSnapshot(reason) {
+  if (identityFailure) {
+    trace('recovery-blocked-identity-failure', { reason: reason });
+    return;
+  }
   if (recovering) {
     trace('recovery-coalesced', { reason: reason });
     return;
   }
   recovering = true;
-  trace('recovery-start', { reason: reason, streamOpen: streamOpen, lastSeq: lastSeq });
-  setConn(streamOpen ? 'open' : 'reconnecting', streamOpen ? 'live·sync' : reason);
+  trace('recovery-start', { reason: reason, streamOpen: streamOpen, streamVerified: streamVerified, lastSeq: lastSeq });
+  setConn(streamVerified ? 'open' : 'reconnecting', streamVerified ? 'live·sync' : reason);
   try {
     const snapshot = fetchSnapshot();
     if (snapshot) {
       showProvision(false);
+      showIdentityError(false, '', '');
       showSession(true);
       applySnapshot(snapshot);
-      if (streamOpen) setConn('open', 'live');
+      if (streamVerified) setConn('open', 'live');
       trace('recovery-complete', { reason: reason, lastSeq: lastSeq });
     }
   } finally {
@@ -225,6 +393,7 @@ function recoverSnapshot(reason) {
 }
 
 function renderProjection(event) {
+  if (identityFailure || !streamVerified) return;
   const seq = Number(event.seq);
   seenSeqs.add(seq);
   lastSeq = Math.max(lastSeq, seq);
@@ -243,7 +412,7 @@ function addEventRow(event) {
 }
 
 function renderRaw(event, data, id) {
-  if (!event || event === 'message') return;
+  if (!event || event === 'message' || identityFailure) return;
   const li = document.createElement('li');
   li.className = 'ev raw';
   li.textContent = event + (id ? ' #' + id : '') + ' ' + JSON.stringify(data);
@@ -251,7 +420,24 @@ function renderRaw(event, data, id) {
   trace('sse-raw', { event: event, id: id || null });
 }
 
+function armHelloTimeout() {
+  cancelHelloTimer();
+  helloTimer = setTimeout(() => {
+    helloTimer = null;
+    if (identityFailure || !streamOpen || streamVerified) return;
+    trace('sse-hello-timeout', { expectedSession: configuredSession() });
+    streamOpen = false;
+    streamConnecting = false;
+    try { window.GlassesBridge.closeStream(); } catch (_) {}
+    scheduleReconnect('identity-timeout');
+  }, 8_000);
+}
+
 function scheduleReconnect(label) {
+  if (identityFailure) {
+    trace('reconnect-blocked-identity-failure', { label: label });
+    return;
+  }
   setConn('reconnecting', label);
   if (reconnectTimer !== null) return;
   const delay = Math.min(10_000, 1_000 * Math.pow(2, reconnectAttempt++));
