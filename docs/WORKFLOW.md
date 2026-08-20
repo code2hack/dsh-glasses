@@ -5,8 +5,8 @@ This document defines the project workflow around the stable rules in `AGENTS.md
 ## 1. Lifetimes and ownership
 
 ```text
-Project
-└── one persistent ChatGPT CTO session: `CTO`
+ChatGPT project: `dsh-glasses`
+└── one persistent CTO session: `CTO`
     ├── Milestone N
     │   ├── Ticket Dispatcher materializes the ready frontier
     │   ├── Ticket A -> fresh DSH Ticket Lead + fresh Codex Coder
@@ -17,6 +17,8 @@ Project
 ```
 
 The CTO gets continuity. Ticket workers get freshness. The Ticket Dispatcher is deterministic runtime glue, not another planning agent. Durable truth lives in SPEC/ADRs, GitHub Milestones/Tickets/PRs, source/tests, and accepted evidence.
+
+The stable logical CTO identity is ChatGPT project `dsh-glasses`, session `CTO`. Browser/CDP automation must not resolve that target by fuzzy title/sidebar search. The machine-local `cto-bridge` configuration pins the opaque ChatGPT project/conversation identifiers and exact conversation URL used for routing, while GitHub remains the durable request/response surface.
 
 ## 2. Milestone lifecycle
 
@@ -137,7 +139,9 @@ Codex may run tests while developing, but DSH must independently rerun the Ticke
 
 ## 6. CTO request protocol
 
-GitHub is the durable mailbox. Browser/CDP communication may wake the `CTO` session, but request content, evidence, and verdicts belong on the Ticket or PR.
+GitHub is the durable mailbox. Browser/CDP communication may wake the canonical ChatGPT endpoint `dsh-glasses` / `CTO`, but request content, evidence, and verdicts belong on the Ticket or PR.
+
+The `cto-bridge` owns browser routing. Its target configuration should pin, once the CTO session exists, the exact ChatGPT project ID, conversation/session ID, and canonical conversation URL, with the expected names `dsh-glasses` / `CTO` retained as verification metadata. DSH workers address the logical CTO endpoint through the bridge and must not discover or guess these opaque identifiers themselves.
 
 Only three blocking request kinds are expected:
 
