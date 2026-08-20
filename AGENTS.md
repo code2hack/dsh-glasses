@@ -34,7 +34,9 @@ The normative agent names are **ChatGPT**, **DSH**, and **Codex**.
 Persistent project-wide endpoint:
 
 - `ChatGPT project = dsh-glasses`
-- `ChatGPT session = ChatGPT`
+- `ChatGPT session = CTO`
+
+`ChatGPT` is the agent name in this protocol; `CTO` is the exact persistent ChatGPT session name and must not be inferred, renamed, or replaced by the agent name.
 
 DSH communicates with this logged-in ChatGPT account through the existing DSH MCP plugin **`mcp-chatgpt`**. `mcp-chatgpt` is transport only; GitHub/repository state remains durable truth.
 
@@ -146,7 +148,7 @@ For a hard bug, ChatGPT/Codex may diagnose, propose fixes, or identify the next 
 
 For **review** or **hard-debug** requests, DSH must send the same prompt body to both reviewers:
 
-- ChatGPT through `mcp-chatgpt` targeting `ChatGPT project = dsh-glasses`, `ChatGPT session = ChatGPT`;
+- ChatGPT through `mcp-chatgpt` targeting `ChatGPT project = dsh-glasses`, `ChatGPT session = CTO`;
 - the paired persistent Codex thread.
 
 The request contains **git/project references only**, not full logs, transcript dumps, or pasted agent chat. Use this shape:
