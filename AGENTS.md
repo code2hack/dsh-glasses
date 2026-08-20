@@ -33,15 +33,21 @@ Owns product-direction changes, explicit human-required gates, and final busines
 
 ### ChatGPT CTO — project-long session `CTO`
 
-Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation or routine device operation.
+Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation, routine device operation, or worker scheduling.
 
 A CTO decision that changes durable product or architecture state must be written back to the appropriate Ticket, PR, SPEC, ADR, or approved design artifact before workers rely on it.
+
+### Ticket Dispatcher — deterministic non-LLM runtime
+
+Owns ready-frontier reconciliation and worker materialization only: read the declared Ticket DAG/status, admit ready unclaimed Tickets within configured capacity, create one dedicated branch/worktree and one independent root DSH Ticket Lead session per admitted Ticket, retain the Ticket↔session↔worktree binding, and retire/reconcile workers from durable GitHub state.
+
+The dispatcher does not create Tickets, choose product priority, invent dependencies, reinterpret gates, or perform Ticket work. Shared-device/resource scheduling is separate from logical DAG readiness.
 
 ### DSH Ticket Lead — one fresh DSH agent per Ticket
 
 Owns execution of exactly one Ticket: bootstrap, Codex orchestration, independent validation, server/device operation, tracing, debugging, evidence, commits, pushes, PR preparation, CTO requests, and closeout/handoff.
 
-The Ticket Lead may make temporary instrumentation and narrow evidence-driven debug changes, but does not redesign product behavior or expand Ticket scope. Product/architecture ambiguity is a CTO decision request.
+The Ticket Lead may make temporary instrumentation and narrow evidence-driven debug changes, but does not redesign product behavior, expand Ticket scope, select sibling work, or act as the Milestone scheduler. Product/architecture ambiguity is a CTO decision request.
 
 ### Codex Coder — one fresh Codex thread per Ticket
 
@@ -58,16 +64,17 @@ Default invariant:
 
 A Ticket should be a narrow, independently verifiable vertical slice sized for a fresh context. Its `Blocked by` edges express logical dependencies only; shared hardware availability is a resource constraint, not a fake dependency edge.
 
+The dispatcher normally establishes the Ticket claim, branch/worktree, session identity, and base SHA before waking the Ticket Lead. The Ticket Lead independently rechecks the durable Ticket and blocker state before implementation.
+
 ### Bootstrap
 
 Before implementation, the Ticket Lead must:
 
-1. Fetch `origin` and verify the Ticket is on the ready frontier: every declared blocker is complete.
-2. Record the exact base SHA.
-3. Create or enter the Ticket's dedicated branch/worktree; never reuse another active Ticket's mutable checkout.
-4. Read the Ticket and every required linked authority/evidence source.
-5. Inspect the relevant current implementation and tests.
-6. Start one fresh Codex Coder with only the Ticket scope and required context.
+1. Fetch `origin` and verify the assigned Ticket is on the ready frontier: every declared blocker is complete.
+2. Confirm the exact base SHA and its dedicated branch/worktree; never reuse another active Ticket's mutable checkout.
+3. Read the Ticket and every required linked authority/evidence source.
+4. Inspect the relevant current implementation and tests.
+5. Start one fresh Codex Coder with only the Ticket scope and required context.
 
 Bootstrap is complete only when the worker can state the Ticket, base SHA, blockers, required gate, acceptance criteria, and worktree/branch without guessing.
 
@@ -127,9 +134,9 @@ Closeout is a durable GitHub artifact, not a transcript summary. Record at minim
 - CTO review request/verdict and reviewed SHA;
 - any residual uncertainty or deliberately deferred behavior.
 
-The milestone DAG determines the next ready Ticket. A predecessor worker must not invent or redesign the successor frontier.
+The milestone DAG determines the next ready frontier. The outgoing worker does not invent, reorder, or spawn sibling/successor work. After durable closeout, the dispatcher recomputes the frontier and materializes newly ready Tickets.
 
-A successor uses a fresh DSH session and fresh Codex thread, bootstraps from current `origin/main` (or the explicitly specified base), its own Ticket, linked authorities, and completed dependency closeouts. Do not require it to replay the predecessor transcript. Archive/retire the predecessor only after its closeout is durable and any required successor bootstrap has succeeded.
+A successor uses a fresh DSH session and fresh Codex thread, bootstraps from current `origin/main` (or the explicitly specified base), its own Ticket, linked authorities, and completed dependency closeouts. Do not require it to replay the predecessor transcript. Archive/retire the predecessor after its closeout is durable; successor creation is dispatcher-owned rather than predecessor-owned.
 
 ## 8. Git, hosts, and hard guardrails
 
