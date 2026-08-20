@@ -26,15 +26,19 @@ DSH reaches ChatGPT through the existing DSH MCP plugin `mcp-chatgpt`, which ope
 
 ### ChatGPT
 
-ChatGPT owns product/architecture decisions, Milestone design, Ticket decomposition and DAGs, hard research, and product/architecture clarification. During Ticket execution it is also one of the two independent technical reviewers and hard-bug solvers.
+ChatGPT owns product/architecture decisions, Milestone design, Ticket decomposition and DAGs, hard research, product/architecture clarification, and startup implementation planning for every Ticket. During Ticket execution it is also one of the two independent technical reviewers and hard-bug solvers.
 
 ### DSH
 
-DSH owns implementation: coding, committed tests, runtime/device checks, ordinary debugging, evidence, git/PR work, reviewer requests/polling, and closeout. DSH must keep working until the Ticket completion gate is satisfied. A reviewer wait or external human gate is a wait state, not a terminal state.
+DSH owns implementation: coding, committed tests, runtime/device checks, ordinary debugging, evidence, git/PR work, planning/reviewer requests/polling, and closeout. DSH must keep working until the Ticket completion gate is satisfied. A planning/reviewer wait or external human gate is a wait state, not a terminal state.
+
+Before first production edits, DSH must ask ChatGPT for a concrete repository-grounded implementation plan and receive it. Codex remains idle during this startup planning step.
+
+When DSH becomes stuck on a hard problem, it must ask **both ChatGPT and Codex** for help using the same bounded git-only debug request. It may not keep making speculative changes instead of escalating.
 
 ### Codex
 
-Codex is the second independent technical reviewer and hard-bug solver. It is not the routine code author. The dispatcher creates a normal persistent Codex thread for the Ticket; its first prompt is exactly its assigned name and nothing else, then the thread remains idle until DSH contacts it.
+Codex is the second independent technical reviewer and hard-bug solver. It is not the routine code author. The dispatcher creates a normal persistent Codex thread for the Ticket; its first prompt is exactly its assigned name and nothing else, then the thread remains idle until DSH contacts it for review or hard-debug help. Startup planning does not wake Codex.
 
 ### Ticket Dispatcher
 
@@ -103,7 +107,9 @@ GitHub Ticket + Milestone
        first prompt = exact Codex name only
     -> persist pair binding
     -> wake/bootstrap DSH
-    -> keep Codex idle
+       require ChatGPT plan before first production edit
+       require dual ChatGPT+Codex help when stuck on a hard problem
+    -> keep Codex idle until review/hard-debug request
 ```
 
 Required properties:
@@ -120,19 +126,25 @@ Required properties:
 
 The dispatcher periodically checks every unfinished admitted Ticket's DSH state. If the bound DSH session is stopped, quiescent, or otherwise no longer progressing while the Ticket completion gate is false, the dispatcher resumes/wakes the **same DSH session** with a minimal continuation instruction. It must not create a replacement session merely because the existing one became idle.
 
-A completed Ticket is never re-woken. A Ticket waiting on a reviewer/human gate may remain waiting but its DSH session must remain recoverable and continue polling as required by the workflow.
+A completed Ticket is never re-woken. A Ticket waiting on a planning/reviewer/human gate may remain waiting but its DSH session must remain recoverable and continue polling as required by the workflow.
 
 ## 6. Ticket execution loop
 
 ```text
 Dispatcher bootstraps DSH + idle Codex
         ↓
+DSH inspects Ticket/source/tests
+        ↓
+DSH asks ChatGPT for concrete implementation plan
+        ↓
+ChatGPT plan received
+        ↓
 DSH implements
         ↓
 DSH tests / operates / ordinary-debug fixes
         ↓
-Hard bug?
-  yes → identical git-only request → ChatGPT + Codex
+Hard/stuck problem?
+  yes → MUST send identical git-only debug request → ChatGPT + Codex
         DSH polls both → DSH applies findings → continue
         ↓
 Acceptance-ready candidate
@@ -149,9 +161,40 @@ DSH polls both periodically
              Ticket completion gate
 ```
 
-DSH never uses a reviewer failure as a reason to stop. A failed review is another implementation loop.
+DSH never uses a reviewer failure or hard problem as a reason to stop. A failed review is another implementation loop; a hard/stuck problem is a mandatory dual-help escalation.
 
-## 7. Reviewer request protocol
+## 7. Planning and reviewer request protocol
+
+### Startup planning request
+
+Before first production edits, DSH sends a plan request to ChatGPT through:
+
+```text
+mcp-chatgpt
+→ ChatGPT project = dsh-glasses
+→ ChatGPT session = CTO
+```
+
+Codex remains idle.
+
+The planning request uses durable git/Ticket references rather than transcript dumps:
+
+```text
+request-id: <unique id>
+kind: plan
+repo: code2hack/dsh-glasses
+milestone: <milestone>
+ticket: #<number>
+base: <base ref + exact resolved SHA where useful>
+branch: <branch>
+head: <exact current SHA>
+paths: <relevant Ticket/SPEC/ADR/source/test paths>
+question: Produce a concrete implementation and validation plan for this Ticket within the current durable authorities.
+```
+
+DSH must receive the plan before production coding begins. If the plan changes product/architecture authority, the durable authority must be updated before DSH relies on that change.
+
+### Review and hard-debug requests
 
 DSH sends exactly the same request body to ChatGPT and Codex for `review` and `debug` requests.
 
@@ -188,7 +231,9 @@ question: <smallest concrete question>
 
 Do not paste complete logs, conversation transcripts, or previous reviewer chats into these prompts. Reviewers inspect the referenced git state themselves. If debug evidence must be preserved, DSH reduces it into bounded durable repository evidence and sends only the references.
 
-DSH polls both reviewer channels periodically after a blocking request. Polling cadence is operational configuration, not product logic.
+When DSH is stuck on a hard problem, this dual request is mandatory: both ChatGPT and Codex must be asked. “Stuck/hard” includes unresolved failure after bounded local debugging, ambiguity where the next code change would be speculative, uncertainty about a critical supported API/runtime invariant, or another blocker preventing reliable progress.
+
+DSH polls both reviewer channels periodically after a blocking review/debug request. Polling cadence is operational configuration, not product logic.
 
 ## 8. Review semantics
 
