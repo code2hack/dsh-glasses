@@ -39,18 +39,23 @@ M1
 
 ## Evidence
 
-- <durable repository evidence paths required for ChatGPT + fresh Codex exact-head review>
+- <durable repository evidence paths required for review and reviewer-availability records>
 
 <!-- Protocol reminder:
      - Ticket Dispatcher creates one persistent named DSH session only.
      - After local bootstrap/inspection and before first production edits, DSH
-       MUST ask ChatGPT for a concrete repository-grounded implementation plan
-       and receive the reply.
-     - If DSH becomes stuck on a hard problem, it MUST ask BOTH ChatGPT and a
-       fresh native Codex subagent using the same bounded git-only debug task.
-     - Final completion requires ChatGPT PASS and a fresh native Codex-subagent
-       PASS on the same exact head. Codex invocations are ephemeral and must not
-       modify the Ticket worktree. -->
+       MUST make a bounded attempt to ask ChatGPT for a concrete repository-
+       grounded implementation plan. If ChatGPT is unavailable, DSH records the
+       reason, self-plans within durable authority, and proceeds.
+     - If DSH becomes stuck on a hard problem, it should attempt BOTH ChatGPT and
+       a fresh native Codex subagent using the same bounded git-only debug task.
+       One available helper is sufficient; if both are unavailable, DSH continues
+       independently.
+     - Final review uses bounded exact-head attempts to ChatGPT and fresh Codex.
+       Two PASSes are preferred, not mandatory. PASS+UNAVAILABLE or even
+       UNAVAILABLE+UNAVAILABLE is allowed when every non-review acceptance gate
+       passes and no available reviewer has an unresolved blocking finding.
+     - Codex invocations are ephemeral and must not modify the Ticket worktree. -->
 
 ## Out of scope
 
