@@ -1,13 +1,13 @@
 # dsh-glasses agent instructions
 
-This file is the stable execution constitution for agent work in this repository. It must not carry current milestone, ticket, branch, or session state; GitHub owns live workflow state.
+This file is the stable execution constitution for agent work in this repository. It must not carry current milestone, Ticket, branch, or live session state; GitHub owns live workflow state.
 
 ## 1. Authority
 
 Read in this order before changing code:
 
 1. `AGENTS.md`.
-2. The GitHub Ticket assigned to this worker, including its blockers, acceptance criteria, gate, and linked design sources.
+2. The assigned GitHub Ticket, including blockers, acceptance criteria, gate, Milestone, and linked design sources.
 3. Only the SPEC sections, accepted ADRs/design artifacts, dependency closeouts, and evidence explicitly relevant to that Ticket.
 4. Source and tests in the current checkout.
 
@@ -23,134 +23,210 @@ accepted evidence                      observed runtime/hardware facts
 Git history / old transcripts          context only
 ```
 
-When sources disagree, obey the higher authority and surface the inconsistency. A ChatGPT or worker conversation is not durable authority until its decision is recorded in GitHub or the repository.
+When sources disagree, obey the higher authority and surface the inconsistency. Agent conversations are working context, not durable authority, until their decisions are written to GitHub or the repository.
 
-## 2. Roles
+## 2. Agents
 
-### Owner — code2hack
+The normative agent names are **ChatGPT**, **DSH**, and **Codex**.
 
-Owns product-direction changes, explicit human-required gates, and final business decisions.
+### ChatGPT
 
-### ChatGPT CTO — project-long endpoint
-
-Canonical logical CTO endpoint:
+Persistent project-wide endpoint:
 
 - `ChatGPT project = dsh-glasses`
-- `ChatGPT session = CTO`
+- `ChatGPT session = ChatGPT`
 
-Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation, routine device operation, or worker scheduling.
+DSH communicates with this logged-in ChatGPT account through the existing DSH MCP plugin **`mcp-chatgpt`**. `mcp-chatgpt` is transport only; GitHub/repository state remains durable truth.
 
-DSH reaches ChatGPT through the existing DSH MCP server `chat-agent-bridge`, which operates the user's already logged-in ChatGPT web account through CDP in Chrome/Chromium. This is the communication transport, not another agent or source of project truth. DSH workers must target the exact logical endpoint above and must not select a same-named session outside the `dsh-glasses` ChatGPT project.
+ChatGPT owns product/architecture decisions, Milestone contracts, Ticket decomposition and dependency DAGs, difficult research, and product/architecture clarification. During Ticket execution, ChatGPT is also one of two independent technical reviewers and hard-bug solvers.
 
-If `chat-agent-bridge` exposes opaque ChatGPT project/conversation identifiers or an exact conversation URL, those are machine-local routing metadata and may be pinned there for deterministic transport. They do not replace the explicit project/session identity above and do not belong in repository policy unless a future transport contract requires it.
+ChatGPT does not perform routine Ticket implementation, routine testing, or routine device operation.
 
-A CTO decision that changes durable product or architecture state must be written back to the appropriate Ticket, PR, SPEC, ADR, or approved design artifact before workers rely on it.
+### DSH
 
-### Ticket Dispatcher — deterministic non-LLM runtime
+One fresh DSH session is created per Ticket. DSH is the sole active Ticket executor and owns:
 
-Owns ready-frontier reconciliation and worker materialization only: read the declared Ticket DAG/status, admit ready unclaimed Tickets within configured capacity, create one dedicated branch/worktree and one independent root DSH Ticket Lead session per admitted Ticket, retain the Ticket↔session↔worktree binding, and retire/reconcile workers from durable GitHub state.
+- production coding;
+- committed tests;
+- independent test/runtime/device execution;
+- ordinary debugging and instrumentation;
+- evidence capture;
+- commits, pushes, PR preparation/update;
+- reviewer requests and polling;
+- closeout.
 
-The dispatcher does not create Tickets, choose product priority, invent dependencies, reinterpret gates, or perform Ticket work. Shared-device/resource scheduling is separate from logical DAG readiness.
+**DSH MUST continue until the Ticket completion gate is satisfied.** It must not voluntarily stop, hand off, or declare completion early. Waiting for required reviewer replies or an explicit human gate is not completion. If DSH stops or quiesces while its Ticket is unfinished, the Ticket Dispatcher must resume/wake the same bound DSH session.
 
-### DSH Ticket Lead — one fresh DSH agent per Ticket
+DSH may not redesign product behavior, expand Ticket scope, or invent dependencies. Product/architecture ambiguity goes to ChatGPT.
 
-Owns execution of exactly one Ticket: bootstrap, Codex orchestration, independent validation, server/device operation, tracing, debugging, evidence, commits, pushes, PR preparation, CTO requests, and closeout/handoff.
+### Codex
 
-The Ticket Lead may make temporary instrumentation and narrow evidence-driven debug changes, but does not redesign product behavior, expand Ticket scope, select sibling work, or act as the Milestone scheduler. Product/architecture ambiguity is a CTO decision request.
+One fresh normal persistent Codex thread is created per Ticket by the Ticket Dispatcher. It is not created through an `exec`-style one-shot coding invocation.
 
-### Codex Coder — one fresh Codex thread per Ticket
+Codex is an independent technical reviewer and hard-bug solver. It does not own routine implementation, routine testing, Ticket scope, product decisions, or merge authority. DSH remains the code author/executor.
 
-Owns production-code changes and committed tests for the Ticket. Codex may run narrow developer checks while coding, but its results are not acceptance evidence. Codex does not own Ticket scope, product decisions, final validation, CTO approval, or merge authority.
+At bootstrap, Codex remains idle after thread creation until DSH sends a review or hard-debug request.
 
-## 3. Ticket is the unit of execution
+## 3. Ticket pair and naming
 
 Default invariant:
 
 ```text
-1 Ticket = 1 fresh DSH Ticket Lead = 1 fresh Codex Coder
-         = 1 dedicated branch/worktree = 1 candidate PR
+1 Ticket = 1 DSH session + 1 Codex thread
+         = 1 dedicated branch/worktree
+         = 1 candidate PR
 ```
 
-A Ticket should be a narrow, independently verifiable vertical slice sized for a fresh context. Its `Blocked by` edges express logical dependencies only; shared hardware availability is a resource constraint, not a fake dependency edge.
-
-The dispatcher normally establishes the Ticket claim, branch/worktree, session identity, and base SHA before waking the Ticket Lead. The Ticket Lead independently rechecks the durable Ticket and blocker state before implementation.
-
-### Bootstrap
-
-Before implementation, the Ticket Lead must:
-
-1. Fetch `origin` and verify the assigned Ticket is on the ready frontier: every declared blocker is complete.
-2. Confirm the exact base SHA and its dedicated branch/worktree; never reuse another active Ticket's mutable checkout.
-3. Read the Ticket and every required linked authority/evidence source.
-4. Inspect the relevant current implementation and tests.
-5. Start one fresh Codex Coder with only the Ticket scope and required context.
-
-Bootstrap is complete only when the worker can state the Ticket, base SHA, blockers, required gate, acceptance criteria, and worktree/branch without guessing.
-
-## 4. Execution loop
-
-Use this loop until the Ticket completion gate is satisfied:
+The exact agent names are:
 
 ```text
-Codex candidate
-    -> DSH inspects diff
-    -> DSH independently builds/tests/operates real systems as required
-    -> ordinary code defect: return bounded findings to Codex
-    -> hard/ambiguous failure: capture a tight repro + bounded evidence and request CTO diagnosis
-    -> acceptance passes: commit/push exact candidate and prepare/update PR
-    -> request CTO review of the exact head SHA
-    -> REQUEST_CHANGES: loop through Codex + independent validation again
-    -> APPROVE on current head: evaluate Ticket completion gate
+<project>-<milestone>-#<ticket>-DSH
+<project>-<milestone>-#<ticket>-Codex
 ```
 
-Prefer tight, falsifiable debugging loops. Traces, structured instrumentation, logs, state readback, and deterministic reproduction are primary evidence; screenshots supplement visual bugs rather than replacing machine-observable facts.
+Example:
 
-## 5. CTO communication
+```text
+dsh-glasses-M1-#17-DSH
+dsh-glasses-M1-#17-Codex
+```
 
-GitHub is the durable DSH <-> CTO mailbox. `chat-agent-bridge` is the existing CDP/MCP transport used to send a wake/message to and read from the logged-in ChatGPT account. It must target `ChatGPT project = dsh-glasses`, `ChatGPT session = CTO`, and it must not become the canonical store for requests, evidence, or decisions.
+The Ticket Dispatcher must derive these names mechanically from the repository/project name, the Ticket's declared Milestone, and Ticket number.
 
-Use only three blocking CTO request kinds:
+For Codex, the **first prompt must be exactly the assigned Codex name and nothing else**. The thread then remains idle until DSH sends the first review/debug request.
 
-- **review** — exact candidate PR/head is acceptance-ready;
-- **debug** — a tight hard-bug packet needs CTO analysis;
-- **decision** — Ticket execution requires a product/architecture/user decision.
+The dispatcher must retain/reconstruct at minimum:
 
-Every request must have a unique request id and identify the Ticket, exact relevant head SHA, concise question/verdict needed, and bounded evidence references. The durable CTO response belongs on the PR/Ticket and must identify the request; code review must identify the reviewed head SHA.
+```text
+Ticket <-> DSH session id/name <-> Codex thread id/name
+       <-> branch/worktree <-> exact admitted base SHA
+```
 
-If the branch changes after CTO approval, the old approval is stale and a new review is required.
+## 4. Bootstrap
 
-## 6. Completion gate
+Before implementation begins, the dispatcher must establish the Ticket claim, exact base SHA, dedicated branch/worktree, DSH session, and paired Codex thread.
+
+DSH then must:
+
+1. fetch `origin` and verify every declared blocker is complete;
+2. verify the exact base SHA, branch, worktree, DSH name, and paired Codex name/thread;
+3. read the Ticket and every linked authority/evidence source required by the Ticket;
+4. inspect the relevant current source and tests;
+5. begin implementation itself.
+
+Codex does not implement during bootstrap. Its first prompt is only its exact assigned name, then it waits.
+
+Bootstrap is complete only when DSH can state the Ticket, Milestone, base SHA, blockers, gate, acceptance criteria, worktree/branch, DSH identity, and paired Codex identity without guessing.
+
+## 5. Execution and dual-review loop
+
+DSH owns the implementation loop:
+
+```text
+DSH codes
+  -> DSH tests / operates / debugs
+  -> ordinary defect: DSH fixes it itself
+  -> hard bug: send one identical git-only request to ChatGPT + Codex
+  -> DSH polls both reviewers periodically and applies useful findings
+  -> DSH continues coding/testing until acceptance-ready
+  -> DSH commits/pushes exact candidate and prepares/updates PR
+  -> send one identical git-only review request to ChatGPT + Codex
+  -> DSH polls both periodically
+       -> either reviewer UNPASSED / REQUEST_CHANGES: DSH loops implementation + validation
+       -> both reviewers PASS the same exact head: evaluate Ticket completion gate
+```
+
+ChatGPT and Codex are peer technical review gates for the exact candidate head. A PASS from only one reviewer is insufficient.
+
+Any production-code change after either reviewer passes invalidates both prior review results for completion purposes; DSH must revalidate and request dual review again on the new exact head.
+
+For a hard bug, ChatGPT/Codex may diagnose, propose fixes, or identify the next discriminating check, but DSH remains responsible for modifying code, running the checks, and proving the result.
+
+## 6. Git-only reviewer request protocol
+
+For **review** or **hard-debug** requests, DSH must send the same prompt body to both reviewers:
+
+- ChatGPT through `mcp-chatgpt` targeting `ChatGPT project = dsh-glasses`, `ChatGPT session = ChatGPT`;
+- the paired persistent Codex thread.
+
+The request contains **git/project references only**, not full logs, transcript dumps, or pasted agent chat. Use this shape:
+
+```text
+request-id: <unique id>
+kind: review | debug
+repo: code2hack/dsh-glasses
+milestone: <milestone>
+ticket: #<number>
+base: <exact base SHA or ref+resolved SHA>
+branch: <branch>
+head: <exact current SHA>
+pr: <PR number/url if present>
+paths: <relevant repository/evidence paths if needed>
+question: <smallest concrete review/debug question>
+```
+
+If raw diagnostic material is needed for a hard bug, DSH first reduces it into durable bounded repository evidence where appropriate, then sends only the git/path references. Do not send full logs or prior chats as reviewer prompts.
+
+DSH must poll both reviewers periodically after a blocking request. Polling/waiting does not terminate the DSH Ticket session. DSH acts on any UNPASSED / REQUEST_CHANGES result and continues the Ticket.
+
+Product/architecture decisions are sent to ChatGPT; Codex has no product-authority vote.
+
+## 7. Ticket completion gate
 
 A Ticket is complete only when all are true:
 
-- every acceptance criterion is demonstrably PASS;
-- every required automated, runtime, hardware, or human gate is satisfied;
+- every Ticket acceptance criterion is demonstrably PASS;
+- every required automated, runtime, hardware, and human gate is satisfied;
 - the final candidate is committed and pushed;
-- required evidence is durable and references the exact tested implementation;
-- ChatGPT CTO has approved the exact current head SHA;
-- no unresolved blocker or requested change remains;
-- the worktree is clean except for explicitly documented external/runtime artifacts.
+- required evidence is durable and tied to the tested implementation;
+- **ChatGPT PASSes the exact current head**;
+- **Codex PASSes the exact same current head**;
+- no unresolved reviewer failure, blocker, or requested change remains;
+- the worktree is clean except for explicitly documented external/runtime artifacts;
+- DSH has written the durable closeout.
 
-Do not merge by default. Merge only when the Ticket/CTO/owner explicitly authorizes it under the current workflow.
+Until all conditions are true, DSH is unfinished and must continue or remain waiting/polling for the required gate. Do not merge by default; merge only when explicitly authorized by the Ticket, ChatGPT/product authority, or owner under the current workflow.
 
-## 7. Closeout and handoff
+## 8. Ticket Dispatcher
 
-Closeout is a durable GitHub artifact, not a transcript summary. Record at minimum:
+The Ticket Dispatcher is deterministic non-LLM runtime glue. It owns no product reasoning.
+
+For each ready unclaimed Ticket within configured capacity it must:
+
+1. resolve the current admitted base deterministically;
+2. create/verify one dedicated branch/worktree;
+3. create one fresh DSH session and name it `<project>-<milestone>-#<ticket>-DSH`;
+4. create one normal persistent Codex thread and name it `<project>-<milestone>-#<ticket>-Codex`;
+5. send the Codex thread's first prompt as exactly that name, with no extra text;
+6. bootstrap/wake DSH to begin work while Codex stays idle;
+7. persist/reconstruct the paired binding;
+8. periodically reconcile Ticket state and DSH liveness;
+9. if DSH is stopped/quiescent while the Ticket completion gate is unsatisfied, resume/wake the **same** DSH session to continue;
+10. after closeout, retire/reconcile the pair and recompute the ready frontier.
+
+The dispatcher does not create Tickets, choose priority, invent dependencies, reinterpret gates, review code, or perform Ticket work. Shared-resource scheduling remains separate from logical DAG readiness.
+
+Repeated reconcile/restart must not duplicate either the DSH session or Codex thread for a live Ticket pair.
+
+## 9. Closeout and successor bootstrap
+
+DSH records a durable closeout containing at minimum:
 
 - final candidate SHA and PR;
 - acceptance results;
-- required evidence locations;
-- CTO review request/verdict and reviewed SHA;
-- any residual uncertainty or deliberately deferred behavior.
+- required evidence refs;
+- ChatGPT review request/verdict + reviewed SHA;
+- Codex review request/verdict + reviewed SHA;
+- residual uncertainty or explicit deferrals.
 
-The milestone DAG determines the next ready frontier. The outgoing worker does not invent, reorder, or spawn sibling/successor work. After durable closeout, the dispatcher recomputes the frontier and materializes newly ready Tickets.
+The outgoing DSH session does not choose or launch successors. The dispatcher recomputes the Milestone frontier from durable state.
 
-A successor uses a fresh DSH session and fresh Codex thread, bootstraps from current `origin/main` (or the explicitly specified base), its own Ticket, linked authorities, and completed dependency closeouts. Do not require it to replay the predecessor transcript. Archive/retire the predecessor after its closeout is durable; successor creation is dispatcher-owned rather than predecessor-owned.
+A successor gets a fresh DSH session and fresh Codex thread, with the exact naming convention above. It reads its own Ticket and linked durable authorities; it does not replay predecessor chat transcripts.
 
-## 8. Git, hosts, and hard guardrails
+## 10. Git, hosts, and hard guardrails
 
 - GitHub `origin` is shared truth across hosts. Transfer source through Git; do not hand-copy source trees between Spark and u4090.
-- One worker owns one active Ticket branch/worktree. Never rewrite another worker's branch and never force-push `main`.
+- One active Ticket owns one mutable Ticket branch/worktree. Never rewrite another Ticket's branch and never force-push `main`.
 - **spark** is the DSH/plugin/server host. **u4090** is the first-priority Android/Rokid build, USB-ADB, screenshot, logcat, UIAutomator, and input-tracing host.
 - Use debug builds for development Tickets unless the Ticket explicitly requires release qualification.
 - Never commit real credentials or real disposable session IDs.
@@ -159,4 +235,8 @@ A successor uses a fresh DSH session and fresh Codex thread, bootstraps from cur
 - Never claim hardware/runtime behavior that was not observed on the stated build/device/environment.
 - For DSH integration, follow `SPEC.md` section 5: keep DSH internals behind the project adapter, pin the supported DSH revision, and extend through documented services/events rather than patching the agent loop for convenience.
 
-For a Ticket that touches TB0 runtime/Rokid debug infrastructure, read the relevant `docs/TRACER_BULLET_TB0_*.md`, `docs/dev/*`, and `docs/evidence/*` files named by the Ticket before operating that path. Historical TB0 documents are references, not default startup reading for unrelated work.
+For a Ticket that touches TB0 runtime/Rokid debug infrastructure, read the relevant `docs/TRACER_BULLET_TB0_*.md`, `docs/dev/*`, and `docs/evidence/*` files named by the Ticket before operating that path. Historical TB0 documents are conditional references, not default startup reading for unrelated work.
+
+## 11. Protocol-v2 transition guard
+
+The dispatcher implementation merged before this protocol created DSH workers only. It does **not** yet satisfy the paired DSH+Codex creation and DSH-liveness-watchdog requirements above. Do not deploy automatic Ticket execution under protocol v2 until the follow-up dispatcher implementation Ticket is accepted.
