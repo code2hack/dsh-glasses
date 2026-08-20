@@ -35,12 +35,14 @@ Owns product-direction changes, explicit human-required gates, and final busines
 
 Canonical logical CTO endpoint:
 
-- ChatGPT project: `dsh-glasses`
-- ChatGPT session: `CTO`
+- `ChatGPT project = dsh-glasses`
+- `ChatGPT session = CTO`
 
 Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation, routine device operation, or worker scheduling.
 
-The project/session names above are the stable human-facing workflow identity. DSH workers must not locate the CTO by fuzzy sidebar/title search or by selecting another same-named session outside the `dsh-glasses` project. Browser/CDP routing identifiers such as ChatGPT project/conversation IDs and the exact conversation URL belong to the machine-local `cto-bridge` target configuration, not this repository; workers use the bridge/GitHub protocol rather than discovering those IDs themselves.
+DSH reaches ChatGPT through the existing DSH MCP server `chat-agent-bridge`, which operates the user's already logged-in ChatGPT web account through CDP in Chrome/Chromium. This is the communication transport, not another agent or source of project truth. DSH workers must target the exact logical endpoint above and must not select a same-named session outside the `dsh-glasses` ChatGPT project.
+
+If `chat-agent-bridge` exposes opaque ChatGPT project/conversation identifiers or an exact conversation URL, those are machine-local routing metadata and may be pinned there for deterministic transport. They do not replace the explicit project/session identity above and do not belong in repository policy unless a future transport contract requires it.
 
 A CTO decision that changes durable product or architecture state must be written back to the appropriate Ticket, PR, SPEC, ADR, or approved design artifact before workers rely on it.
 
@@ -105,7 +107,7 @@ Prefer tight, falsifiable debugging loops. Traces, structured instrumentation, l
 
 ## 5. CTO communication
 
-GitHub is the durable DSH <-> CTO mailbox. CDP/browser automation may wake the persistent `CTO` session, but it must not be the canonical store for requests, evidence, or decisions.
+GitHub is the durable DSH <-> CTO mailbox. `chat-agent-bridge` is the existing CDP/MCP transport used to send a wake/message to and read from the logged-in ChatGPT account. It must target `ChatGPT project = dsh-glasses`, `ChatGPT session = CTO`, and it must not become the canonical store for requests, evidence, or decisions.
 
 Use only three blocking CTO request kinds:
 
