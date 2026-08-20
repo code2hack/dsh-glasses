@@ -178,6 +178,117 @@ async function fetchJson(url, timeoutMs = 5000) {
   }
 }
 
+function sanitizeC0Signature(state) {
+  if (!state || typeof state !== 'object') return null;
+  const pick = (key) => (key in state ? state[key] : null);
+  return {
+    endpoint: pick('endpoint'),
+    expectedSession: pick('expectedSession'),
+    generation: pick('generation'),
+    lastSeq: pick('lastSeq'),
+    streamOpen: pick('streamOpen'),
+    streamVerified: pick('streamVerified'),
+    identityFailure: pick('identityFailure'),
+    mode: pick('mode'),
+    hudVisible: pick('hudVisible'),
+  };
+}
+
+// Non-secret liveness probe; never captures token or clipboard body.
+const PROBE_EXPRESSION = `(() => {
+  const hasC0 = typeof window.c0DebugState === 'function';
+  const cs = hasC0 ? window.c0DebugState.call(window) : null;
+  const t = Number(performance && performance.timeOrigin) || 0;
+  const sig = cs && typeof cs === 'object' ? {
+    endpoint: cs.endpoint ?? null,
+    expectedSession: cs.expectedSession ?? null,
+    generation: cs.generation ?? null,
+    lastSeq: cs.lastSeq ?? null,
+    streamOpen: cs.streamOpen ?? null,
+    streamVerified: cs.streamVerified ?? null,
+    identityFailure: cs.identityFailure ?? null,
+    mode: cs.mode ?? null,
+    hudVisible: cs.hudVisible ?? null,
+  } : null;
+  return {
+    hasC0,
+    readyState: document.readyState,
+    visibilityState: document.visibilityState,
+    hasFocus: document.hasFocus(),
+    timeOrigin: Number.isFinite(t) ? t : null,
+    sig,
+  };
+})()`;
+
+async function probeCandidate(target) {
+  const cdp = new CdpSocket(target.webSocketDebuggerUrl, 5000);
+  try {
+    await cdp.connect();
+    const info = await cdp.evaluate(PROBE_EXPRESSION);
+    return { ok: true, info: info && typeof info === 'object' ? info : null };
+  } catch (error) {
+    return { ok: false, info: null, error: error.message };
+  } finally {
+    cdp.close();
+  }
+}
+
+function selectFromProbes(preferred, probes) {
+  const usable = [];
+  for (let i = 0; i < preferred.length; i += 1) {
+    const p = probes[i];
+    if (p.ok && p.info && p.info.hasC0) usable.push({ target: preferred[i], info: p.info });
+  }
+  const diag = (idx, p) => (p.ok
+    ? `cand${idx}:hasC0=${p.info?.hasC0 ?? false},ready=${p.info?.readyState ?? '?'},vis=${p.info?.visibilityState ?? '?'},focus=${p.info?.hasFocus ?? false},timeOrigin=${p.info?.timeOrigin ?? 'n/a'}`
+    : `cand${idx}:probe-failed(${p.error ?? 'unknown'})`);
+  const ambiguity = () => ({
+    chosen: null,
+    selection: {
+      candidateCount: preferred.length,
+      candidateCountUsable: usable.length,
+      selectionReason: 'ambiguity-preserved',
+    },
+    diagnostics: probes.map(diag),
+  });
+  if (usable.length === 0) return ambiguity();
+
+  if (usable.length === 1) {
+    return { chosen: usable[0].target, selection: { candidateCount: preferred.length, candidateCountUsable: 1, selectionReason: 'unique' }, diagnostics: [] };
+  }
+
+  let chosen = null;
+  let reason = null;
+  const finite = usable.filter((u) => Number.isFinite(u.info.timeOrigin));
+  if (finite.length >= 1) {
+    const max = Math.max(...finite.map((u) => u.info.timeOrigin));
+    const atMax = finite.filter((u) => u.info.timeOrigin === max);
+    if (atMax.length === 1) { chosen = atMax[0].target; reason = 'newest-live-document'; }
+  }
+  if (!chosen) {
+    const focused = usable.filter((u) => u.info.visibilityState === 'visible' && u.info.hasFocus === true);
+    if (focused.length === 1) { chosen = focused[0].target; reason = 'focused-live-document'; }
+  }
+  if (!chosen) {
+    const targetKey = (t) => `${String(t.title ?? '')}\u0000${String(t.url ?? '')}`;
+    const sigs = usable.map((u) => JSON.stringify(u.info.sig));
+    const mirrorEquivalent =
+      sigs.every((v) => v === sigs[0]) && sigs[0] !== 'null' &&
+      usable.every((u) => targetKey(u.target) === targetKey(usable[0].target));
+    if (mirrorEquivalent) {
+      const sorted = [...usable].sort((a, b) =>
+        String(a.target.id ?? a.target.webSocketDebuggerUrl).localeCompare(
+          String(b.target.id ?? b.target.webSocketDebuggerUrl)
+        )
+      );
+      chosen = sorted[0].target;
+      reason = 'equivalent-firmware-mirror';
+    }
+  }
+  if (!chosen) return ambiguity();
+  return { chosen, selection: { candidateCount: preferred.length, candidateCountUsable: usable.length, selectionReason: reason }, diagnostics: [] };
+}
+
 async function discoverTarget(port, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -191,10 +302,18 @@ async function discoverTarget(port, timeoutMs) {
         String(x.url ?? '').startsWith('file:///android_asset/index.html') ||
         String(x.title ?? '').toLowerCase().includes('dsh-glasses')
       );
-      const chosen = preferred.length === 1 ? preferred[0] : (preferred.length === 0 && pages.length === 1 ? pages[0] : null);
-      if (chosen) return chosen;
-      if (preferred.length > 1 || pages.length > 1) {
-        throw new Error(`ambiguous WebView targets: ${pages.map((x) => `${x.title}:${x.url}`).join(' | ')}`);
+      if (preferred.length === 1) {
+        return { target: preferred[0], selection: { candidateCount: 1, selectionReason: 'unique' } };
+      }
+      if (preferred.length === 0 && pages.length === 1) {
+        return { target: pages[0], selection: { candidateCount: 1, selectionReason: 'unique' } };
+      }
+      if (preferred.length > 1) {
+        const probes = await Promise.all(preferred.map((t) => probeCandidate(t)));
+        const result = selectFromProbes(preferred, probes);
+        if (result.chosen) return { target: result.chosen, selection: result.selection };
+        last = `ambiguous WebView targets (sanitized): ${result.diagnostics.join(' | ')}`;
+        throw new Error(last);
       }
       last = 'no page target yet';
     } catch (error) {
@@ -436,11 +555,11 @@ async function withCdp(config, callback) {
   const forward = await createForward(config, pid);
   let cdp = null;
   try {
-    const target = await discoverTarget(forward.port, config.timeoutMs);
+    const { target, selection } = await discoverTarget(forward.port, config.timeoutMs);
     cdp = new CdpSocket(target.webSocketDebuggerUrl, config.timeoutMs);
     await cdp.connect();
     const value = await callback({ cdp, target, pid, port: forward.port });
-    return { value, target, pid, port: forward.port };
+    return { value, target, pid, port: forward.port, selection };
   } finally {
     cdp?.close();
     removeForward(config, forward);
@@ -518,6 +637,7 @@ async function commandProvision(config, options) {
           generation: lastState.generation ?? null,
           lastSeq: lastState.lastSeq ?? null,
           bearerEmitted: false,
+          cdpSelection: { candidateCount: result.selection.candidateCount, selectionReason: result.selection.selectionReason },
         });
         return;
       }
@@ -534,6 +654,7 @@ async function commandState(config) {
     command: 'state',
     device: deviceIdentity(config, result.pid),
     cdp: { port: result.port, title: result.target.title ?? '', url: result.target.url ?? '' },
+    cdpSelection: { candidateCount: result.selection.candidateCount ?? null, selectionReason: result.selection.selectionReason ?? null },
     state: result.value,
   });
 }
@@ -573,6 +694,7 @@ async function commandClipboard(config, options) {
     observedSha256: observedDigest,
     matches,
     clipboardBodyEmitted: false,
+    cdpSelection: { candidateCount: result.selection.candidateCount ?? null, selectionReason: result.selection.selectionReason ?? null },
   });
   if (!matches) process.exitCode = 1;
 }
@@ -603,6 +725,7 @@ async function commandControl(config, names) {
     command: 'control',
     provenance: 'SYNTHETIC_DEBUG_CONTROL',
     device: deviceIdentity(config, result.pid),
+    cdpSelection: { candidateCount: result.selection.candidateCount ?? null, selectionReason: result.selection.selectionReason ?? null },
     controls: names,
     before: result.value.before,
     afterEach: result.value.afterEach,
