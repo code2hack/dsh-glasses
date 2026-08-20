@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createGitAdapter, parseJqLines } from "../lib/adapters.js";
+import { createFixtureGithubAdapter, createGitAdapter, encodeSegment, normalizeIssues, parseJqLines, probeSession, projectKey, removeOrphanSession } from "../lib/adapters.js";
 
 const exec = promisify(execFile);
 
@@ -106,4 +106,69 @@ test("resolveBase with fetch=true returns the fetched remote head, never a stale
   assert.equal(await adapter.resolveBase({ baseRef: "origin/main", fetch: false }), baseSha);
   // With fetch=true the tracking ref is refreshed to the remote head, never stale.
   assert.equal(await adapter.resolveBase({ baseRef: "origin/main", fetch: true }), remoteHead);
+});
+
+test("session-dir encoding is exact and lossless for identity segments", () => {
+  assert.equal(encodeSegment("dsh-glasses-Bootstrap-#19-DSH"), "dsh-glasses-Bootstrap-~002319-DSH");
+  assert.equal(encodeSegment("."), "~002E");
+  assert.equal(encodeSegment(".."), "~002E~002E");
+  assert.equal(encodeSegment("a b/c:d~e"), "a~0020b~002Fc~003Ad~007Ee");
+  assert.equal(encodeSegment("plain-name_1.2-DSH"), "plain-name_1.2-DSH");
+  assert.equal(encodeSegment("/"), "~002F");
+});
+
+test("projectKey encoding matches the DSH sessions layout contract", () => {
+  assert.equal(projectKey("/home/code2hack/Projects/glasses/dsh-glasses-19"), "--home-code2hack-Projects-glasses-dsh-glasses-19--");
+  assert.equal(projectKey("/"), "--root--");
+  assert.throws(() => projectKey(""), /empty project path/);
+  assert.equal(projectKey("/a/b"), "--a-b--");
+  assert.match(projectKey("/x/y"), /^--[A-Za-z0-9._-]{1,251}--$/);
+});
+
+test("probe reports persisted, missing, collision, and unknown faithfully", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-probe-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessions = join(root, "sessions");
+  const cwdA = join(root, "worktree-a");
+  const cwdB = join(root, "worktree-b");
+  const sessionId = "dsh-glasses-Bootstrap-#19-DSH";
+  const ip = (cwd) => join(sessions, projectKey(cwd), encodeSegment(sessionId));
+  await mkdir(dirname(ip(cwdA)), { recursive: true });
+  await writeFile(ip(cwdA), "{}");
+
+  const binding = { sessionId, worktree: cwdA };
+  assert.equal((await probeSession(root, binding)).status, "persisted");
+  assert.equal((await probeSession(void 0, binding)).status, "unknown");
+
+  const other = { sessionId, worktree: cwdB };
+  const collided = await probeSession(root, other);
+  assert.equal(collided.status, "collision");
+  assert.deepEqual(collided.dirs, [ip(cwdA)]);
+
+  await removeOrphanSession(root, other);
+  assert.equal((await probeSession(root, other)).status, "missing");
+  assert.equal((await probeSession(root, binding)).status, "missing");
+});
+
+test("fixture adapter persists completion markers and normalizes Ticket Milestones from issue bodies", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-fixture-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "fixtures.json");
+  const adapter = createFixtureGithubAdapter(path);
+  const body = "## Milestone\n\nBootstrap\n\n## What to build\nBuild it\n\n## Blocked by\n- None\n\n## Gate\nautonomous";
+  await writeFile(path, JSON.stringify({
+    tickets: [{ number: 19, state: "OPEN", pull_request: false, body, html_url: "https://example.test/issues/19", blockerStates: {} }],
+    claims: [],
+    completions: [],
+  }, null, 2));
+  const normalized = normalizeIssues(await adapter.listTickets());
+  assert.equal(normalized[0].milestone, "Bootstrap");
+  assert.deepEqual(normalized[0].blockers, []);
+  assert.equal(normalized[0].number, 19);
+
+  const binding = { number: 19, name: "dsh-glasses-Bootstrap-#19-DSH", sessionId: "dsh-glasses-Bootstrap-#19-DSH", branch: "workflow/ticket-19", worktree: "/w/19", baseSha: "a".repeat(40) };
+  await adapter.writeComplete(binding, { head: "b".repeat(40), pr: "https://example.test/pr" });
+  const markers = await adapter.listCompletions();
+  assert.equal(markers[0].number, 19);
+  assert.equal(markers[0].head, "b".repeat(40));
 });

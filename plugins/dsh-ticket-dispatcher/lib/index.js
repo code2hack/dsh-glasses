@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import z from "@deepseek-ai/schemastery";
-import { createFixtureGithubAdapter, createGitAdapter, createGithubAdapter, createSessionProbe } from "./adapters.js";
-import { DEFAULT_MAX_ACTIVE, formatReport } from "./core.js";
+import { createFixtureGithubAdapter, createGitAdapter, createGithubAdapter, createSessionProbe, removeOrphanSession } from "./adapters.js";
+import { DEFAULT_INTERVAL_MS, DEFAULT_MAX_ACTIVE, formatReport } from "./core.js";
 import { createDispatcher } from "./dispatcher.js";
 import { createDshAdapter } from "./dsh.js";
 import { runReconcileLoop } from "./loop.js";
@@ -12,7 +12,7 @@ export const inject = ["agentDefaultModel", "agents", "sessions"];
 
 const envState = process.env.DISPATCHER_STATE_PATH ?? resolve(process.env.XDG_STATE_HOME ?? `${process.env.HOME}/.local/state`, "dsh-glasses/ticket-dispatcher/state.json");
 const envMax = Number(process.env.DISPATCHER_MAX_ACTIVE ?? DEFAULT_MAX_ACTIVE);
-const envInterval = Number(process.env.DISPATCHER_INTERVAL_MS ?? 60_000);
+const envInterval = Number(process.env.DISPATCHER_INTERVAL_MS ?? DEFAULT_INTERVAL_MS);
 const envPasses = Number(process.env.DISPATCHER_MAX_PASSES ?? 0);
 const envFetch = process.env.DISPATCHER_FETCH !== "false";
 
@@ -28,7 +28,7 @@ export const Config = z.object({
   intervalMs: z.number().default(envInterval),
   maxPasses: z.number().default(envPasses),
   fixturesPath: z.string().default(""),
-  wakeAgents: z.boolean().default(false),
+  wakeAgents: z.boolean().default(true),
   stayAlive: z.boolean().default(false),
 });
 
@@ -59,6 +59,7 @@ async function run(ctx, config) {
   const github = config.fixturesPath ? createFixtureGithubAdapter(config.fixturesPath) : createGithubAdapter({ repo: config.repo });
   const dsh = createDshAdapter(ctx);
   if (!config.wakeAgents) delete dsh.wakeAgent;
+  const dshHome = process.env.DSH_HOME;
   const dispatcher = createDispatcher({
     github,
     git: createGitAdapter(config.repoRoot, worktreeRoot),
@@ -70,7 +71,9 @@ async function run(ctx, config) {
     baseRef: options.baseRef,
     fetch: options.fetch,
     maxActive: options.maxActive,
-    sessionProbe: createSessionProbe(process.env.DSH_HOME),
+    intervalMs: options.intervalMs,
+    sessionProbe: createSessionProbe(dshHome),
+    sessionCleanup: dshHome ? (binding) => removeOrphanSession(dshHome, binding) : undefined,
   });
   const emit = (report) => process.stdout.write(formatReport(report));
   if (options.command === "reconcile" && (options.stayAlive || options.maxPasses > 0)) {
@@ -92,7 +95,7 @@ async function run(ctx, config) {
 
 export function apply(ctx, config) {
   run(ctx, config).catch((error) => {
-    process.stderr.write(`dsh-ticket-dispatcher: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`dsh-ticket-dispatcher: ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
     ctx.get("appExit")?.(1);
   });
 }

@@ -339,10 +339,13 @@ For a Ticket that touches TB0 runtime/Rokid debug infrastructure, read the relev
 
 ## 12. Native-Codex transition guard
 
-The dispatcher implementation currently on `main` predates the final protocol in this file. Automatic Ticket execution must remain disabled until the bootstrap dispatcher Ticket verifies all of the following against the pinned DSH deployment:
+VALIDATED by Bootstrap Ticket #19 against the pinned DSH deployment; automatic Ticket execution is now enabled (dispatcher `wakeAgents` defaults to `true`). Evidence: `docs/evidence/ticket-19-validation-2026-08-20.md` (unit suite, typecheck, real-DSH + real-native-Codex smoke) and the PR that raises `plugins/dsh-ticket-dispatcher` + pinned workflow composition to the current native-Codex protocol.
 
-- named persistent DSH admission/restart/watchdog behavior;
-- generated DSH bootstrap contains ChatGPT-plan attempt + availability fallback before code;
-- native Codex subagent capability is available to admitted DSH agents;
-- hard-debug and final review attempt ChatGPT + fresh native Codex but do not deadlock when either/both are unavailable;
-- existing deterministic frontier, moving-base, rollback, failed-fetch, and resource-separation guarantees remain intact.
+Everything below was verified and is under test:
+
+- named persistent DSH admission/restart/watchdog behavior (exact identity `dsh-glasses-<milestone>-#<n>-DSH`, no duplicates on reconcile/restart, restart reconstructs the same session and worktree);
+- generated DSH bootstrap contains the bounded ChatGPT-plan attempt before code plus availability fallback before any production edit;
+- native Codex subagent capability is available to admitted DSH agents (fresh one-shot `subagent_codex` invocations in the Ticket worktree, non-mutating, no persistent Codex lifecycle);
+- hard-debug and final review attempt ChatGPT + fresh native Codex but do not deadlock when either/both are unavailable (`UNAVAILABLE` is not a blocker; technical `UNPASSED`/`REQUEST_CHANGES` findings are);
+- the dispatcher watchdog respects live/progressing, wakes a quiescent unfinished session with a minimal continuation, and never re-wakes a completed binding;
+- existing deterministic frontier, moving-base, rollback, failed-fetch, identity-collision, and resource-separation guarantees remain intact under the 120-second default heartbeat.

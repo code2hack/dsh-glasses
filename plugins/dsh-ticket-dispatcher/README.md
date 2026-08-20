@@ -1,10 +1,20 @@
 # DSH Ticket Dispatcher
 
-`dsh-ticket-dispatcher` is deterministic runtime glue for the workflow in `AGENTS.md` and `docs/WORKFLOW.md`. It sorts open contract Tickets by numeric id, admits the ready unclaimed frontier, and creates one root DSH agent plus one branch/worktree per Ticket. It does not plan Milestones, infer dependencies, schedule devices, or patch the agent loop.
+`dsh-ticket-dispatcher` is deterministic runtime glue for the workflow in `AGENTS.md` and `docs/WORKFLOW.md`. It reads the declared Ticket DAG/status, admits the ready unclaimed frontier within capacity, and materializes one dedicated branch/worktree and one independent root DSH Ticket Lead session per admitted Ticket. It does not plan Milestones, infer dependencies, schedule devices, patch the agent loop, or maintain any Codex lifecycle. Native Codex runs are request-scoped ephemeral specialists started by each Ticket Lead on demand; the dispatcher itself never sees Codex.
+
+## Protocol (v2, nativized)
+
+The dispatcher implements named, deterministic DSH admission and a DSH watchdog, and leaves the full protocol to the generated bootstrap text.
+
+- **Identity is exact and durable.** A first claim binds `name = sessionId = dsh-glasses-<milestone>-#<n>-DSH`, derived from the Ticket's declared `## Milestone`. Only Ticket↔DSH identity (number, name, sessionId, branch, worktree, base SHA, bootstrap prompt) is persisted; no Codex fields are stored.
+- **Bootstrap.** Every admitted/resumed Ticket Lead receives a self-contained bootstrap prompt that names its exact identity, worktree, base SHA, blocker set, and required gate; tells it to fetch `origin`, re-verify its ready frontier, and confirm the base SHA; requires a **bounded start-up plan before the first production edit**; connects the project-long intelligence endpoint exactly as `ChatGPT project = dsh-glasses` / `ChatGPT session = CTO` through `mcp-chatgpt`; and instructs it to use **one fresh one-shot native Codex escalation via `subagent_codex` in its own Ticket worktree** for both hard-debug help and the final exact-head review.
+- **Availability fallback, never deadlock.** Helper unavailability is `UNAVAILABLE`, not a blocker: both helpers down → the Ticket Lead continues alone with DSH; one helper down → proceed with the other. Technical verdicts (`UNPASSED` / `REQUEST_CHANGES` / a blocking finding) are the opposite of `UNAVAILABLE` and must be addressed. The bootstrap explicitly forbids waiting indefinitely on a helper.
+- **Watchdog.** Live + progressing ⇒ no-op. Loaded but quiescent while its Ticket is unfinished ⇒ the **same** bound session is woken with a minimal continuation. Completed (Ticket closed or matching `ticket-complete:` marker) ⇒ disposed and never re-woken. Restart reconstructs the same named session and worktree from durable state and markers.
+- **No duplicate admission.** Repeated or restarted reconciles reuse the exact deterministic binding and persisted session; no second agent, worktree, or claim is created. Completion is durable and idempotent.
 
 ## Install and run
 
-Install or link this package into a DSH profile that mounts `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-headless`. Disable the stock headless rows and insert this plugin:
+Install or link this package into a DSH profile that mounts `@deepseek-ai/dsh-base` and the native-Codex provider bundle `@deepseek-ai/dsh-subagent-codex`. The agent-presets service and the composed preset are loaded separately. Disable the stock headless rows and insert the plugin together with `@deepseek-ai/dsh-agent-presets`:
 
 ```yaml
 - id: headless-startup
@@ -12,15 +22,28 @@ Install or link this package into a DSH profile that mounts `@deepseek-ai/dsh-ba
 - id: headless-runner
   disabled: true
 - insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: ticket-lead
     - id: ticket-dispatcher
       name: 'dsh-ticket-dispatcher'
       config:
         repoRoot: /absolute/path/to/dsh-glasses
         baseRef: origin/main
         stayAlive: true
-        # Required for automatic Ticket execution: deliver the bootstrap prompt
-        # to each admitted/resumed Ticket Lead and start its model turns.
-        wakeAgents: true
+```
+
+`wakeAgents` defaults to `true`: every admitted or resumed Ticket Lead is woken with its recorded bootstrap prompt. The composed Ticket-Lead preset must expose the native Codex tool so the generated bootstrap's capability statement is real. Host availability alone grants no tool — the `subagent_codex` tool is mounted by a preset row such as:
+
+```yaml
+- id: tool-subagent-codex
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: codex
+    toolName: subagent_codex
+    backgroundMode: one-shot
+    maxDepth: provider-managed
 ```
 
 The package must resolve its DSH peers from the running deployment. For a linked source checkout, link the deployment's `node_modules/@deepseek-ai` scope into this package's `node_modules`, as the smoke script does.
@@ -28,11 +51,11 @@ The package must resolve its DSH peers from the running deployment. For a linked
 ```bash
 dsh --profile dispatcher --patch overlay.yml status
 dsh --profile dispatcher --patch overlay.yml reconcile
-dsh --profile dispatcher --patch overlay.yml reconcile --stay-alive --interval-ms 60000 --max-active 2
+dsh --profile dispatcher --patch overlay.yml reconcile --stay-alive --interval-ms 120000 --max-active 2
 dsh --profile dispatcher --patch overlay.yml reconcile --max-passes 3 --base-ref origin/main
 ```
 
-The command prints stable JSON followed by a stable human summary for every pass. `status` and ordinary `reconcile` are one-shot. `stayAlive: true` loops sequentially without overlapping passes; `maxPasses: N` provides the same loop with a deterministic cap. Agent creation, resume, and session flush do not invoke an LLM. `wakeAgents` defaults to `false` (create/claim/report only, no model turn). **Automatic Ticket execution requires `wakeAgents: true`:** each newly admitted or resumed Ticket Lead then receives its recorded bootstrap prompt and starts model turns. The production workflow profile above therefore slips it explicitly; keep the safe default only for manual, LLM-free admission inspect.
+The command prints stable JSON followed by a stable human summary for every pass. `status` and ordinary `reconcile` are one-shot. `stayAlive: true` loops sequentially without overlapping passes; `maxPasses: N` provides the same loop with a deterministic cap. Agent creation, resume, and session flush do not invoke an LLM. `wakeAgents` may be set to `false` only for manual, LLM-free admission inspect.
 
 ## Configuration
 
@@ -46,21 +69,23 @@ The command prints stable JSON followed by a stable human summary for every pass
 | `fetch` / `DISPATCHER_FETCH` / `--fetch`, `--no-fetch` | `true` | fetch `origin` before ref resolution when `origin` is configured; a failed fetch fails that admission pass (`resolutionError`, no admission) instead of falling back to a stale local `origin/main`. Only explicit `fetch: false` permits resolving an intentionally local/stale ref |
 | `statePath` / `DISPATCHER_STATE_PATH` | `$XDG_STATE_HOME/dsh-glasses/ticket-dispatcher/state.json` | private local binding state |
 | `maxActive` / `DISPATCHER_MAX_ACTIVE` / `--max-active` | `3` | active Ticket ceiling |
-| `intervalMs` / `DISPATCHER_INTERVAL_MS` / `--interval-ms` | `60000` | delay between sequential live passes |
+| `intervalMs` / `DISPATCHER_INTERVAL_MS` / `--interval-ms` | `120000` | default delay between sequential live passes; every report carries `heartbeatMs` equal to this value |
 | `maxPasses` / `DISPATCHER_MAX_PASSES` / `--max-passes` | `0` | live-pass cap; zero is unlimited with `stayAlive` |
 | `stayAlive` / `--stay-alive` | `false` | continuously reconcile rather than run one pass |
-| `wakeAgents` | `false` | send the bootstrap followup after durable claim publication; **`true` is required for automatic Ticket execution** |
+| `wakeAgents` / `--no-wake` | `true` | send the bootstrap (or minimal continuation) followup after durable claim publication |
 | `fixturesPath` | empty | offline test/smoke Ticket and marker store |
 
-`gh` must already be authenticated for the target host; no token is read from configuration or committed. The adapter recognizes issue bodies containing the Ticket contract's `## What to build` heading and parses references only from `## Blocked by`. Pull requests may satisfy blockers but are not dispatched as Tickets.
+`gh` must already be authenticated for the target host; no token is read from configuration or committed. The adapter recognizes issue bodies containing the Ticket contract's `## What to build` heading, requires a valid `## Milestone` for admission, and parses references only from `## Blocked by`. Open Tickets without a valid milestone are never admitted and are reported under `invalidMilestone`. Pull requests may satisfy blockers but are not dispatched as Tickets.
 
-Each pass resolves the current base ref only for new admissions and records the resulting exact SHA in their bindings; existing bindings retain their historical SHA. Resolution failure admits nothing and appears as `resolutionError`. The active Ticket limit is independent of vLLM `max_seqs`: the former limits admitted workers, while the latter limits simultaneous inference. Scarce resources such as the Rokid are reported in a separate `resources.awaitsResource` bucket and never become fake DAG blocker edges.
+Each pass resolves the current base ref only for new admissions and records the resulting exact SHA in their bindings; existing bindings retain their historical SHA (moving-base safe). Resolution failure admits nothing and appears as `resolutionError`. The active Ticket limit is independent of vLLM `max_seqs`: the former limits admitted workers, while the latter limits simultaneous inference. Scarce resources such as the Rokid are reported in a separate `resources.awaitsResource` bucket and never become fake DAG blocker edges.
 
-## Claims, restart, and rollback
+## Claims, restart, rollback, and completion
 
-Branch `workflow/ticket-<n>` and worktree `ticket-<n>-<shortbase>` names are reconstructable. Each admission gets a unique `session-<uuid>`. Publication order is worktree, flushed DSH session, atomic state file, then one GitHub `dispatcher-claim:` comment. A process lock serializes local reconcile calls. Existing state or a durable claim marker suppresses duplicate creation. On restart, a checkout on the recorded branch is usable even when the Ticket Lead has advanced its HEAD beyond the historical binding SHA, so its persisted session resumes in place under the same id. A missing or wrong-branch dispatcher-owned path is removed and recreated; an existing Ticket branch is reused at its current head instead of re-pinned to the new binding SHA. Reports expose `live` and optional `recovered` on bindings.
+Branch `workflow/ticket-<n>` and worktree `ticket-<n>-<shortbase>` names are reconstructable. A first claim binds the exact identity `dsh-glasses-<milestone>-#<n>-DSH` as both name and session id. Publication order is worktree, flushed DSH session, atomic state file, then one GitHub `dispatcher-claim:` marker. A process lock serializes local reconcile calls. Existing state or a durable claim marker suppresses duplicate creation and duplicate re-claims. On restart, a checkout on the recorded branch is usable even when the Ticket Lead has advanced its HEAD beyond the historical binding SHA, so its persisted session resumes under the same deterministic id. A missing or wrong-branch dispatcher-owned path is removed and recreated; an existing Ticket branch is reused at its current head instead of re-pinned.
 
-A session is marked `stale-session` only when persistence is definitively absent. An indeterminate probe attempts resume; only a failed resume becomes `invalid-claim`. Missing sessions and resume failures are removed from capacity, reported in `invalid`, and durably superseded by a session-specific `dispatcher-claim:void` tombstone so a later pass can admit a fresh worker. Failure before the claim marker rolls back the agent, worktree, and branch. A crash after local `publishing` state reuses the exact deterministic worktree and retries with a fresh session. Resource leasing, Ticket retirement, CTO wake bridges, and model-driven scheduling are intentionally absent.
+`refreshState` keeps the durable projection free of runtime liveness signals (worktree usability, session probe, live/progressing flags) so reports never corrupt state. A session probe fails closed: an identity collision becomes `identity-collision`, definitive absence becomes `stale-session`, and an indeterminate probe attempts resume — only a failed resume becomes `invalid-claim`. Failures are removed from capacity, reported in `invalid`, and durably superseded by a session-specific `dispatcher-claim:void` tombstone so a later pass can re-admit. Failure before the claim marker rolls back the agent, worktree, and branch. A crash between session flush and claim publication uses the exact deterministic worktree and reuses the persisted session.
+
+A binding is complete only when its Ticket is CLOSED or a `ticket-complete:` marker matches its session id. Completed bindings are disposed, never woken, and permanently excluded from capacity and admission; the bootstrap instructs the Ticket Lead to write that marker with `{ schemaVersion: 1, ticket, sessionId, head: <exact head SHA>, pr }` at closeout. Resource leasing, Ticket retirement, CTO wake bridges, and model-driven scheduling are intentionally absent — Codex included.
 
 ## Checks
 
@@ -70,4 +95,4 @@ npm run typecheck
 npm run smoke
 ```
 
-The smoke uses a disposable Git repository, DSH home, profile, state directory, and fixture marker store under the operating system's temporary directory; it never calls GitHub, invokes a model, or touches product code or the Rokid.
+The smoke uses a disposable Git repository, DSH home, profile, state directory, and fixture marker store under the operating system's temporary directory; it never calls GitHub and never touches product code or the Rokid. It does run the **real pinned DSH deployment and real native Codex**: two dummy ready Tickets are admitted as exactly named persistent DSH sessions, restarted into the same sessions with no duplicates, a moving base and a durable completion marker are honored, and two **fresh one-shot self-contained read-only `subagent_codex` invocations** are driven on the bound Ticket DSH session (asserting the worktree stays byte-identical and that no persistent Codex session or thread is created).

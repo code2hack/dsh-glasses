@@ -349,13 +349,13 @@ Codex subagent concurrency is an execution/resource concern of DSH/native provid
 
 ## 13. Native-Codex deployment transition
 
-The dispatcher implementation merged before this final protocol already centers on DSH admission, but automatic Ticket execution remains disabled until the bootstrap dispatcher Ticket validates the remaining required behavior against the pinned DSH deployment:
+VALIDATED by Bootstrap Ticket #19 against the pinned DSH deployment; automatic Ticket execution is now enabled (dispatcher `wakeAgents` defaults to `true`, watchdog heartbeat defaults to 120s). Evidence: `docs/evidence/ticket-19-validation-2026-08-20.md` and the PR that raises the dispatcher and pinned workflow composition to the current native-Codex protocol. Verified and under test:
 
-- deterministic named DSH admission/restart;
-- 120-second-default configurable DSH watchdog;
-- generated DSH bootstrap includes bounded ChatGPT-plan attempt before code;
-- generated DSH bootstrap includes best-effort ChatGPT + fresh-Codex hard-help/review plus explicit availability fallback;
-- native Codex subagent tool/provider is exposed to admitted DSH agents;
+- deterministic named DSH admission/restart (exact identity `dsh-glasses-<milestone>-#<n>-DSH`, same session reconstructed on restart, no duplicates);
+- 120-second-default configurable DSH watchdog with no duplicate admission across repeated reconciles;
+- generated DSH bootstrap includes the bounded ChatGPT-plan attempt before code;
+- generated DSH bootstrap includes best-effort ChatGPT + fresh-Codex hard-help/review with explicit availability fallback (`UNAVAILABLE` never blocks; technical `UNPASSED`/`REQUEST_CHANGES` findings do);
+- native Codex subagent tool/provider is exposed to admitted DSH agents and verified with two real fresh one-shot self-contained non-mutating `subagent_codex` invocations in the Ticket worktree;
 - hard-debug and final review use fresh native Codex invocations in the Ticket worktree;
-- dispatcher contains no persistent Codex lifecycle state;
-- existing frontier, moving-base, failed-fetch, rollback, credential, and resource-separation guarantees remain intact.
+- the dispatcher contains no persistent Codex lifecycle state (asserted: no Codex session/thread persisted);
+- existing frontier, moving-base, failed-fetch, rollback, credential, identity-collision, and resource-separation guarantees remain intact.
