@@ -6,7 +6,7 @@ This document defines the operational workflow around the stable rules in `AGENT
 
 ```text
 ChatGPT project = dsh-glasses
-└── ChatGPT session = ChatGPT            persistent across the project
+└── ChatGPT session = CTO                persistent across the project
 
 Milestone N
 ├── Ticket #A
@@ -18,7 +18,7 @@ Milestone N
 └── Ticket Dispatcher                     deterministic runtime glue
 ```
 
-ChatGPT retains project continuity. Every Ticket gets a fresh DSH/Codex pair. DSH works continuously until completion; Codex is pre-created but idle until DSH requests review or hard-debug help.
+`ChatGPT` is the protocol agent name; `CTO` is the exact concrete persistent ChatGPT session name. ChatGPT retains project continuity. Every Ticket gets a fresh DSH/Codex pair. DSH works continuously until completion; Codex is pre-created but idle until DSH requests review or hard-debug help.
 
 DSH reaches ChatGPT through the existing DSH MCP plugin `mcp-chatgpt`, which operates the logged-in ChatGPT web account. GitHub/repository state remains canonical.
 
@@ -160,7 +160,7 @@ ChatGPT transport:
 ```text
 mcp-chatgpt
 → ChatGPT project = dsh-glasses
-→ ChatGPT session = ChatGPT
+→ ChatGPT session = CTO
 ```
 
 Codex transport:
