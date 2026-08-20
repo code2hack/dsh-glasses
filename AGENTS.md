@@ -31,9 +31,16 @@ When sources disagree, obey the higher authority and surface the inconsistency. 
 
 Owns product-direction changes, explicit human-required gates, and final business decisions.
 
-### ChatGPT CTO — project-long session `CTO`
+### ChatGPT CTO — project-long endpoint
+
+Canonical logical CTO endpoint:
+
+- ChatGPT project: `dsh-glasses`
+- ChatGPT session: `CTO`
 
 Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation, routine device operation, or worker scheduling.
+
+The project/session names above are the stable human-facing workflow identity. DSH workers must not locate the CTO by fuzzy sidebar/title search or by selecting another same-named session outside the `dsh-glasses` project. Browser/CDP routing identifiers such as ChatGPT project/conversation IDs and the exact conversation URL belong to the machine-local `cto-bridge` target configuration, not this repository; workers use the bridge/GitHub protocol rather than discovering those IDs themselves.
 
 A CTO decision that changes durable product or architecture state must be written back to the appropriate Ticket, PR, SPEC, ADR, or approved design artifact before workers rely on it.
 
