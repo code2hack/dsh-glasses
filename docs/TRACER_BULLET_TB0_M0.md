@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0_M0 — ADB-only MVP acceptance
 
-**Status:** active acceptance slice.  
+**Status:** PASS — acceptance complete; pending merge.  
 **Base:** `97dbec9f759efd4581dbb19c355aa5328f45793b` (D1 merge).  
 **Branch:** `tb0/adb-only-mvp-acceptance`.
 
@@ -98,9 +98,16 @@ Using synthetic semantic controls only:
 1. put the app in a known visible Navigation state;
 2. issue `SECONDARY_DOUBLE` to hide the HUD;
 3. issue one recognized non-destructive control such as `RIGHT`;
-4. require that first control only wakes the HUD and does not also execute its
-   ordinary movement/action;
-5. issue `RIGHT` again and require ordinary movement now occurs.
+4. require that first control only wakes the HUD and does not also dispatch its
+   ordinary handler;
+5. issue `RIGHT` again and require that it reaches the ordinary control handler
+   rather than being wake-consumed again.
+
+For C0 Navigation specifically, word-motion semantics are outside the implemented
+C0 surface. Therefore step 5 is evidenced by the ordinary Navigation branch
+(`action='Navigation word motion is outside C0'`), not by a cursor-position
+change. This is consistent with the C0 source and does not expand M0 into a new
+navigation-feature gate.
 
 Record before/after D1 state snapshots. Provenance remains
 `SYNTHETIC_DEBUG_CONTROL`.
@@ -117,7 +124,8 @@ M0 passes only if all are true:
 - assistant response is exactly `M0 ADB-only MVP passed`;
 - draft clears only after accepted Send;
 - restart/reconnect reconstructs exactly once;
-- hidden-HUD first recognized control is wake-only;
+- hidden-HUD first recognized control is wake-only and the next recognized
+  control reaches its ordinary handler;
 - helper-created ADB forwards are removed;
 - no resident services are modified;
 - no physical-hardware qualification is claimed.
@@ -127,7 +135,7 @@ single clean-room product acceptance pass over the merged seams.
 
 ## 7. Evidence
 
-Fill:
+See:
 
 ```text
 docs/evidence/tb0-m0-adb-only-mvp-acceptance-2026-08-20.md
