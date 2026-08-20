@@ -41,6 +41,10 @@ M1
 
 - <durable repository evidence paths required for ChatGPT + Codex review>
 
+<!-- DSH must obtain a ChatGPT implementation plan before first production edits.
+     If DSH becomes stuck on a hard problem, it must ask both ChatGPT and Codex
+     for help using the same bounded git-only debug request. -->
+
 ## Out of scope
 
 - <important nearby behavior intentionally excluded>
