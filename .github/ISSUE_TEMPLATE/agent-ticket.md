@@ -1,6 +1,6 @@
 ---
 name: Agent Ticket
-about: One vertical slice for one fresh DSH + Codex pair
+about: One vertical slice for one fresh persistent DSH executor
 labels: ready-for-agent
 ---
 
@@ -39,14 +39,18 @@ M1
 
 ## Evidence
 
-- <durable repository evidence paths required for ChatGPT + Codex review>
+- <durable repository evidence paths required for ChatGPT + fresh Codex exact-head review>
 
 <!-- Protocol reminder:
+     - Ticket Dispatcher creates one persistent named DSH session only.
      - After local bootstrap/inspection and before first production edits, DSH
        MUST ask ChatGPT for a concrete repository-grounded implementation plan
-       and receive the reply. Codex stays idle for startup planning.
-     - If DSH becomes stuck on a hard problem, it MUST ask BOTH ChatGPT and Codex
-       for help using the same bounded git-only debug request. -->
+       and receive the reply.
+     - If DSH becomes stuck on a hard problem, it MUST ask BOTH ChatGPT and a
+       fresh native Codex subagent using the same bounded git-only debug task.
+     - Final completion requires ChatGPT PASS and a fresh native Codex-subagent
+       PASS on the same exact head. Codex invocations are ephemeral and must not
+       modify the Ticket worktree. -->
 
 ## Out of scope
 
