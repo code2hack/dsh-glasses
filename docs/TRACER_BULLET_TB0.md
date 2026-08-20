@@ -1,9 +1,11 @@
 # TRACER_BULLET_TB0 — one-session text round trip
 
-**Status:** H0, host-write, G0, I0, R0, A0, C0, D0, and D1 complete. **TB0-M0 ADB-only MVP acceptance passed; pending merge.** Physical input qualification (P0) was eliminated from the MVP by code2hack on 2026-08-19.  
+**Status:** COMPLETE. H0, host-write, G0, I0, R0, A0, C0, D0, D1, and **TB0-M0 ADB-only MVP acceptance** are merged on `main`; M0 merged in PR #13 at `f92a866f2e46c769cd28b90c2260213795430ac2`. Physical input qualification (P0) was eliminated from the MVP by code2hack on 2026-08-19.  
 **Date:** 2026-08-20  
 **Repo:** `code2hack/dsh-glasses` (authoritative branch: `main`)  
 **Normative source:** `SPEC.md` revision 3 for product behavior. The MVP scope below may defer normative physical-input behavior without claiming that behavior implemented or qualified.
+
+TB0 is now a historical acceptance/reference document. New implementation work is planned as GitHub Milestones and Tickets under `docs/WORKFLOW.md`; do not encode a new "current slice" here or in `AGENTS.md`.
 
 Supporting compatibility evidence: `docs/evidence/tb0-dsh-compat-2026-08-19.md`.
 
