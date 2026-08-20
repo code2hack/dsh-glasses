@@ -5,9 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createGitAdapter, parseJqLines } from "../lib/adapters.js";
+import { createGitAdapter, encodeSegment, parseJqLines } from "../lib/adapters.js";
 
 const exec = promisify(execFile);
+
+test("DSH session-id encoding mirrors the persistence backend so the probe finds real sessions", () => {
+  assert.equal(encodeSegment("dsh-glasses-S1-#21-DSH"), "dsh-glasses-S1-~002321-DSH");
+  assert.equal(encodeSegment("a-z0.9_"), "a-z0.9_");
+  assert.equal(encodeSegment("s p"), "s~0020p");
+  assert.equal(encodeSegment("t~t"), "t~007Et");
+  assert.equal(encodeSegment("."), "~002E");
+  assert.equal(encodeSegment(".."), "~002E~002E");
+  assert.throws(() => encodeSegment(""), /cannot encode an empty path segment/);
+});
 
 async function scratchRepo(t) {
   const root = await mkdtemp(join(tmpdir(), "dispatcher-git-test-"));

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CLAIM_PREFIX, claimBody, collapseClaimMarkers, parseBlockers, voidClaimBody } from "./core.js";
+import { CLAIM_PREFIX, claimBody, closeoutMarkerBody, collapseClaimMarkers, collapseCloseoutMarkers, parseBlockers, voidClaimBody } from "./core.js";
 
 const exec = promisify(execFile);
 
@@ -87,6 +87,7 @@ function normalizeIssues(issues) {
         number: issue.number,
         state: issue.state.toUpperCase(),
         url: issue.html_url,
+        body: issue.body ?? "",
         blockers,
         blockerStates: Object.fromEntries(blockers.map((number) => [number, states.get(number) ?? "UNKNOWN"])),
       };
@@ -107,6 +108,17 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
         bodies.push(...comments.map((comment) => comment.body));
       }
       return collapseClaimMarkers(bodies);
+    },
+    async listCloseouts(ticketNumbers) {
+      const bodies = [];
+      for (const number of [...ticketNumbers].sort((a, b) => a - b)) {
+        const comments = parseJqLines(await run("gh", ["api", "--paginate", "--jq", ".[]", `${endpoint}/issues/${number}/comments?per_page=100`]));
+        bodies.push(...comments.map((comment) => comment.body));
+      }
+      return collapseCloseoutMarkers(bodies);
+    },
+    async writeCloseout(binding, info = {}) {
+      await run("gh", ["api", `${endpoint}/issues/${binding.number}/comments`, "-f", `body=${closeoutMarkerBody(binding, info)}`]);
     },
     async writeClaim(binding) {
       const body = claimBody(binding);
@@ -136,9 +148,15 @@ export function createFixtureGithubAdapter(path) {
   return {
     async listTickets() { return (await load()).tickets; },
     async listClaims() { return collapseClaimMarkers((await load()).claims); },
+    async listCloseouts() { return collapseCloseoutMarkers((await load()).claims); },
     async writeClaim(binding) {
       const data = await load();
       data.claims.push(claimBody(binding));
+      await save(data);
+    },
+    async writeCloseout(binding, info = {}) {
+      const data = await load();
+      data.claims.push(closeoutMarkerBody(binding, info));
       await save(data);
     },
     async voidClaim(binding, reason) {
@@ -149,11 +167,54 @@ export function createFixtureGithubAdapter(path) {
   };
 }
 
+/** DSH session-id path encoding (mirror of @deepseek-ai/dsh-session-persistence encodeSegment). */
+export function encodeSegment(raw) {
+  if (!raw) throw new Error("cannot encode an empty path segment");
+  if (raw === ".") return "~002E";
+  if (raw === "..") return "~002E~002E";
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    const ch = String.fromCharCode(code);
+    if (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) out += ch;
+    else out += `~${code.toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return out;
+}
+
 export function createSessionProbe(dshHome) {
   return async (binding) => {
     if (!dshHome) return undefined;
     const cwdKey = `--${binding.worktree.slice(1).replaceAll("/", "-")}--`;
-    try { await stat(`${dshHome}/sessions/${cwdKey}/${binding.sessionId}`); return true; } catch { return false; }
+    try { await stat(`${dshHome}/sessions/${cwdKey}/${encodeSegment(binding.sessionId)}`); return true; } catch { return false; }
+  };
+}
+
+/** Exact bootstrap opening used as the sentinel in a persisted session log. */
+export function bootstrapMarker(sessionId) {
+  return `You are DSH session ${sessionId}`;
+}
+
+/**
+ * Read a persisted DSH session log (decompressed) for a binding, or null when
+ * nothing is on disk. Used to gate resume/wake decisions on identity reality:
+ * a crashed admission must not silently resume a foreign orphan, and an
+ * already-delivered bootstrap must not be re-sent after restart.
+ */
+export function createSessionLogReader(dshHome) {
+  return async (binding) => {
+    if (!dshHome) return null;
+    const cwdKey = `--${binding.worktree.slice(1).replaceAll("/", "-")}--`;
+    const dir = `${dshHome}/sessions/${cwdKey}/${encodeSegment(binding.sessionId)}`;
+    for (const name of ["session.jsonl.zstd", "session.jsonl.zst", "session.jsonl"]) {
+      try {
+        const path = `${dir}/${name}`;
+        if (name.endsWith("jsonl")) return await readFile(path, "utf8");
+        const { stdout } = await exec("zstd", ["-dc", path], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+        return stdout;
+      } catch {}
+    }
+    return null;
   };
 }
 
