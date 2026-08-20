@@ -3,6 +3,9 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 export function createDshAdapter(ctx) {
   const handles = new Map();
   return {
+    isLive(binding) {
+      return handles.has(binding.sessionId);
+    },
     async createAgent(binding) {
       const selection = ctx.get("agentDefaultModel").currentSelection();
       const handle = await ctx.get("agents").create({
@@ -12,6 +15,14 @@ export function createDshAdapter(ctx) {
       });
       handles.set(binding.sessionId, handle);
       await ctx.get("sessions").flush(handle.agent.session);
+    },
+    async resumeAgent(binding) {
+      const selection = ctx.get("agentDefaultModel").currentSelection();
+      const handle = await ctx.get("agents").resume({
+        resumeSessionId: binding.sessionId,
+        agentOptions: { provider: selection.provider, model: selection.model },
+      });
+      handles.set(binding.sessionId, handle);
     },
     async disposeAgent(binding) {
       await handles.get(binding.sessionId)?.dispose();

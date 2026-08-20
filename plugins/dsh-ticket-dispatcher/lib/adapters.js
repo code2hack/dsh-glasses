@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
-import { CLAIM_PREFIX, claimBody, parseBlockers, parseClaim } from "./core.js";
+import { CLAIM_PREFIX, claimBody, collapseClaimMarkers, parseBlockers, voidClaimBody } from "./core.js";
 
 const exec = promisify(execFile);
 
@@ -27,16 +27,29 @@ export function parseJqLines(stdout) {
 
 export function createGitAdapter(repoRoot) {
   return {
+    async resolveBase({ baseSha, baseRef, fetch }) {
+      if (baseSha) return baseSha;
+      if (fetch) try {
+        await run("git", ["remote", "get-url", "origin"], repoRoot);
+        await run("git", ["fetch", "--quiet", "origin"], repoRoot).catch(() => {});
+      } catch {}
+      try {
+        const resolved = (await run("git", ["rev-parse", `${baseRef}^{commit}`], repoRoot)).trim();
+        if (/^[0-9a-f]{40}$/i.test(resolved)) return resolved;
+      } catch {}
+      throw new Error(`cannot resolve base ref ${baseRef}`);
+    },
     async createWorktree(binding) {
       await mkdir(dirname(binding.worktree), { recursive: true });
       try {
         const head = (await run("git", ["-C", binding.worktree, "rev-parse", "HEAD"], repoRoot)).trim();
         const branch = (await run("git", ["-C", binding.worktree, "branch", "--show-current"], repoRoot)).trim();
-        if (head === binding.baseSha && branch === binding.branch) return;
+        if (head === binding.baseSha && branch === binding.branch) return { worktreeCreated: false, branchCreated: false };
         throw new Error(`refusing non-matching existing worktree: ${binding.worktree}`);
       } catch (error) {
         if (!error.code && error.message.startsWith("refusing")) throw error;
       }
+      await run("git", ["worktree", "prune"], repoRoot);
       let branchExists = false;
       try {
         branchExists = (await run("git", ["rev-parse", `refs/heads/${binding.branch}`], repoRoot)).trim() === binding.baseSha;
@@ -44,10 +57,11 @@ export function createGitAdapter(repoRoot) {
       await run("git", branchExists
         ? ["worktree", "add", binding.worktree, binding.branch]
         : ["worktree", "add", "-b", binding.branch, binding.worktree, binding.baseSha], repoRoot);
+      return { worktreeCreated: true, branchCreated: !branchExists };
     },
-    async removeWorktree(binding) {
+    async removeWorktree(binding, { removeBranch = true } = {}) {
       try { await run("git", ["worktree", "remove", "--force", binding.worktree], repoRoot); } catch {}
-      try { await run("git", ["branch", "-D", binding.branch], repoRoot); } catch {}
+      if (removeBranch) try { await run("git", ["branch", "-D", binding.branch], repoRoot); } catch {}
     },
     async worktreeExists(binding) {
       try { return (await run("git", ["-C", binding.worktree, "rev-parse", "HEAD"], repoRoot)).trim() === binding.baseSha; } catch { return false; }
@@ -79,15 +93,12 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
       return normalizeIssues(issues);
     },
     async listClaims(ticketNumbers) {
-      const claims = [];
+      const bodies = [];
       for (const number of [...ticketNumbers].sort((a, b) => a - b)) {
         const comments = parseJqLines(await run("gh", ["api", "--paginate", "--jq", ".[]", `${endpoint}/issues/${number}/comments?per_page=100`]));
-        for (const comment of comments) {
-          const claim = parseClaim(comment.body);
-          if (claim) claims.push(claim);
-        }
+        bodies.push(...comments.map((comment) => comment.body));
       }
-      return claims;
+      return collapseClaimMarkers(bodies);
     },
     async writeClaim(binding) {
       const body = claimBody(binding);
@@ -96,6 +107,15 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
       } catch (error) {
         const published = (await adapter.listClaims([binding.number])).some((claim) => claim.sessionId === binding.sessionId);
         if (!published) throw error;
+      }
+    },
+    async voidClaim(binding, reason) {
+      const body = voidClaimBody(binding, reason);
+      try {
+        await run("gh", ["api", `${endpoint}/issues/${binding.number}/comments`, "-f", `body=${body}`]);
+      } catch (error) {
+        const voided = (await adapter.listClaims([binding.number])).some((claim) => claim.status === "void" && claim.sessionId === binding.sessionId);
+        if (!voided) throw error;
       }
     },
   };
@@ -107,10 +127,15 @@ export function createFixtureGithubAdapter(path) {
   const save = async (data) => writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
   return {
     async listTickets() { return (await load()).tickets; },
-    async listClaims() { return (await load()).claims.map((claim) => parseClaim(claim)).filter(Boolean); },
+    async listClaims() { return collapseClaimMarkers((await load()).claims); },
     async writeClaim(binding) {
       const data = await load();
       data.claims.push(claimBody(binding));
+      await save(data);
+    },
+    async voidClaim(binding, reason) {
+      const data = await load();
+      data.claims.push(voidClaimBody(binding, reason));
       await save(data);
     },
   };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CLAIM_PREFIX, DEFAULT_MAX_ACTIVE, bindingNames, bootstrapPrompt, claimBody, classify, parseBlockers, parseClaim, stableReport } from "../lib/core.js";
+import { CLAIM_PREFIX, DEFAULT_MAX_ACTIVE, bindingNames, bootstrapPrompt, claimBody, classify, collapseClaimMarkers, parseBlockers, parseClaim, stableReport, voidClaimBody } from "../lib/core.js";
 
 test("blocker parser accepts issue and PR references only inside Blocked by", () => {
   assert.deepEqual(parseBlockers("## What to build\nSee #99\n\n## Blocked by\n- #4\n- https://github.com/x/y/pull/2\n- #4\n\n## Gate\nautonomous"), [2, 4]);
@@ -67,4 +67,13 @@ test("binding, claim, and bootstrap identities are deterministic except session 
   assert.match(prompt, /AGENTS\.md section 3/);
   assert.match(prompt, /issues\/15/);
   assert.match(prompt, new RegExp(binding.baseSha));
+});
+
+test("claim tombstones suppress only their matching durable session", () => {
+  const first = { number: 15, sessionId: "session-one", branch: "b", worktree: "w", baseSha: "a".repeat(40) };
+  const second = { ...first, sessionId: "session-two" };
+  assert.deepEqual(collapseClaimMarkers([claimBody(first), voidClaimBody(first, "stale-session")]), [
+    { number: 15, sessionId: "session-one", status: "void", reason: "stale-session" },
+  ]);
+  assert.equal(collapseClaimMarkers([claimBody(first), claimBody(second), voidClaimBody(first, "stale-session")])[0].sessionId, "session-two");
 });

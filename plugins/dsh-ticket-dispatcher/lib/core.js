@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 export const DEFAULT_MAX_ACTIVE = 3;
 export const CLAIM_PREFIX = "dispatcher-claim:";
+export const VOID_PREFIX = "dispatcher-claim:void";
 
 const byNumber = (a, b) => a.number - b.number;
 
@@ -20,7 +21,7 @@ export function classify(tickets, bindings = {}, maxActive = DEFAULT_MAX_ACTIVE)
   const blocked = [];
 
   for (const ticket of [...tickets].sort(byNumber)) {
-    if (ticket.state !== "OPEN" || ["claimed", "running"].includes(bindings[ticket.number]?.status)) continue;
+    if (ticket.state !== "OPEN" || ["claimed", "running", "voiding"].includes(bindings[ticket.number]?.status)) continue;
     const blocking = ticket.blockers.filter((number) => (ticket.blockerStates?.[number] ?? states.get(number)) !== "CLOSED");
     if (blocking.length) blocked.push({ number: ticket.number, blocking });
     else ready.push({ number: ticket.number });
@@ -53,6 +54,10 @@ export function claimBody(binding) {
   return `${CLAIM_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: binding.number, sessionId: binding.sessionId, branch: binding.branch, worktree: binding.worktree, baseSha: binding.baseSha })}`;
 }
 
+export function voidClaimBody(binding, reason) {
+  return `${VOID_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: binding.number, sessionId: binding.sessionId, reason })}`;
+}
+
 export function parseClaim(body = "") {
   if (!body.startsWith(`${CLAIM_PREFIX} `)) return undefined;
   try {
@@ -62,6 +67,27 @@ export function parseClaim(body = "") {
   } catch {
     return undefined;
   }
+}
+
+export function parseClaimMarker(body = "") {
+  if (body.startsWith(`${VOID_PREFIX} `)) try {
+    const value = JSON.parse(body.slice(VOID_PREFIX.length + 1));
+    if (value.schemaVersion === 1 && Number.isInteger(value.ticket) && value.sessionId && value.reason) {
+      return { number: value.ticket, sessionId: value.sessionId, status: "void", reason: value.reason };
+    }
+  } catch {}
+  return parseClaim(body);
+}
+
+export function collapseClaimMarkers(bodies) {
+  const records = new Map();
+  for (const body of bodies) {
+    const marker = parseClaimMarker(body);
+    if (!marker) continue;
+    const current = records.get(marker.number);
+    if (marker.status !== "void" || !current || current.sessionId === marker.sessionId) records.set(marker.number, marker);
+  }
+  return [...records.values()].sort(byNumber);
 }
 
 export function stableReport(view, resources = {}) {
@@ -74,6 +100,8 @@ export function stableReport(view, resources = {}) {
     baseSha: item.baseSha,
     validWorktree: item.validWorktree,
     sessionPersisted: item.sessionPersisted,
+    live: item.live === true,
+    recovered: item.recovered,
   });
   return {
     schemaVersion: 1,
@@ -82,6 +110,8 @@ export function stableReport(view, resources = {}) {
     running: view.running.map(binding),
     blocked: view.blocked.map((item) => ({ number: item.number, blocking: [...item.blocking] })),
     capacityLimited: view.capacityLimited.map((item) => item.number),
+    invalid: [...(view.invalid ?? [])].sort(byNumber).map(({ number, reason }) => ({ number, reason })),
+    resolutionError: view.resolutionError ?? null,
     resources: {
       awaitsResource: [...(resources.awaitsResource ?? [])].sort((a, b) => a.number - b.number),
     },
@@ -95,6 +125,8 @@ export function formatReport(report) {
     `running: ${report.running.map((x) => `#${x.number}=${x.sessionId}`).join(", ") || "-"}`,
     `blocked: ${report.blocked.map((x) => `#${x.number}<-${x.blocking.join("+")}`).join(", ") || "-"}`,
     `capacity-limited: ${report.capacityLimited.join(", ") || "-"}`,
+    `invalid: ${report.invalid.map((x) => `#${x.number}:${x.reason}`).join(", ") || "-"}`,
+    `resolution-error: ${report.resolutionError ?? "-"}`,
     `awaits-resource: ${report.resources.awaitsResource.map((x) => `#${x.number}:${x.resource}`).join(", ") || "-"}`,
   ];
   return `${JSON.stringify(report, null, 2)}\n${lines.join("\n")}\n`;
