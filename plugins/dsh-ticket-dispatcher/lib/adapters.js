@@ -11,6 +11,20 @@ async function run(file, args, cwd) {
   return stdout;
 }
 
+export function parseJqLines(stdout) {
+  const values = [];
+  for (const [index, raw] of stdout.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      values.push(JSON.parse(line));
+    } catch (error) {
+      throw new Error(`invalid gh --jq JSON on line ${index + 1}: ${JSON.stringify(line)}`, { cause: error });
+    }
+  }
+  return values;
+}
+
 export function createGitAdapter(repoRoot) {
   return {
     async createWorktree(binding) {
@@ -61,14 +75,14 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
   const endpoint = `repos/${repo}`;
   const adapter = {
     async listTickets() {
-      const pages = JSON.parse(await run("gh", ["api", "--paginate", "--slurp", `${endpoint}/issues?state=all&per_page=100`]));
-      return normalizeIssues(pages.flat());
+      const issues = parseJqLines(await run("gh", ["api", "--paginate", "--jq", ".[]", `${endpoint}/issues?state=all&per_page=100`]));
+      return normalizeIssues(issues);
     },
     async listClaims(ticketNumbers) {
       const claims = [];
       for (const number of [...ticketNumbers].sort((a, b) => a - b)) {
-        const comments = JSON.parse(await run("gh", ["api", "--paginate", "--slurp", `${endpoint}/issues/${number}/comments?per_page=100`]));
-        for (const comment of comments.flat()) {
+        const comments = parseJqLines(await run("gh", ["api", "--paginate", "--jq", ".[]", `${endpoint}/issues/${number}/comments?per_page=100`]));
+        for (const comment of comments) {
           const claim = parseClaim(comment.body);
           if (claim) claims.push(claim);
         }
