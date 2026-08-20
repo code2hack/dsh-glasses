@@ -124,11 +124,40 @@ Per pass, for every unfinished admitted binding:
   `ChatGPT session = CTO` (per PR #20 on main).
 - No product/Rokid/SPEC change.
 
-## Acceptance evidence (filled at closeout)
+## Acceptance evidence (exact tested head)
 
-- Tested implementation head: TBD
-- PR: TBD
-- Test commands/results, paired names/IDs from disposable smoke, Codex first-prompt
-  proof, idle proof, DSH-start proof, watchdog wake proof, no-spurious-wake proof,
-  completed-no-wake proof, restart/idempotency proof, moving-base/rollback proof,
-  config defaults/overrides proof, host assumptions: appended below at closeout.
+- Tested implementation head: `53a868fefa20e2bde2bc8acfbed1d8045466a88a`
+  (branch `workflow/ticket-19`, pushed `origin/workflow/ticket-19`)
+- PR: https://github.com/code2hack/dsh-glasses/pull/22
+- Unit: `npm test` = 68/68 PASS; `node --check` on all lib/test modules; `git diff --check` clean.
+- Real-seam smoke `npm run smoke` (scratch git repo + scratch `DSH_HOME` + real codex
+  app-server (`~/.codex/app-server-control/app-server-control.sock`) + DS4 vLLM
+  default model for the wake phase) — PASS assertions:
+
+  ```
+  SMOKE pair-admission: sessions=dsh-glasses-S1-#21-DSH,dsh-glasses-S1-#22-DSH threads=01a020bb-af07-7e03-a708-7c8040f842b7,01a020bd-496c-7632-bc1b-d1e55d3b55b8
+  SMOKE named-sessions: dsh-glasses-S1-#21-DSH@dsh-glasses-S1-#21-DSH | dsh-glasses-S1-#22-DSH@dsh-glasses-S1-#22-DSH
+  SMOKE codex-first-prompt-exact: dsh-glasses-S1-#21-Codex=dsh-glasses-S1-#21-Codex | dsh-glasses-S1-#22-Codex=dsh-glasses-S1-#22-Codex
+  SMOKE restart-reconstruct: same_sessions=2/2 same_threads=true live=true invalid=0
+  SMOKE moving-base: ticket31=0c1a63bd67523e4b4f4e0d43024672f08a489685 ticket32=b504a5f8d43e2478f851f70241b23f56ce1d730e
+  SMOKE real-wake: dsh_session=dsh-glasses-S2-#41-DSH codex_thread=01a020c0-f74b-7a23-aa08-8057c3f511e8 thinking=max
+  SMOKE watchdog-completed: retired_ticket=41 running_after=0 thread_count=1
+  SMOKE invalid-claim: ticket=51 reason=stale-session tombstone=true ready=true
+  SMOKE branch-readmission: ticket=52 same_name=true new_base=06c12c3c47b097eb20aae8178705329ad1513180
+  SMOKE scope: no product code or Rokid touched (scratch repo/worktrees only)
+  ```
+
+- Proofs covered by the above smoke lines: paired names, DSH session id == name,
+  exact byte-for-byte first prompt (single user turn), idle seeded Codex, immediate
+  DSH start (real wake), same-pair restart reconstruction (no duplicate session or
+  thread), per-binding exact base preservation under moving refs, watchdog no-wake
+  on completed tickets, stale-session tombstone (orphan worktree/session
+  `#`-encoding path handling), branch readmission reusing the same-name thread.
+- Config proofs: `codexThinking=max` default asserted in smoke; heartbeat default
+  120 s unit-proved (`heartbeatIntervalMs` defaults and override paths).
+- Host assumptions: `code2hack`@`spark` (aarch64 Ubuntu); `dsh` from npm-global;
+  codex app-server daemon already running; `zstd` at `/usr/bin/zstd`; DS4 vLLM at
+  `http://192.168.1.9:8888/v1` for the model-backed wake phase; `DSH_SCOPE` per
+  host; settings copied from host `~/.dsh/settings.yaml` into the scratch home.
+
+Closeout (dual review + marker) appended at closeout.
