@@ -55,16 +55,17 @@ function argumentsOf(ctx, config) {
 async function run(ctx, config) {
   await ctx.get("loader")?.await();
   const options = argumentsOf(ctx, config);
+  const worktreeRoot = config.worktreeRoot || resolve(config.repoRoot, "../dsh-glasses-tickets");
   const github = config.fixturesPath ? createFixtureGithubAdapter(config.fixturesPath) : createGithubAdapter({ repo: config.repo });
   const dsh = createDshAdapter(ctx);
   if (!config.wakeAgents) delete dsh.wakeAgent;
   const dispatcher = createDispatcher({
     github,
-    git: createGitAdapter(config.repoRoot),
+    git: createGitAdapter(config.repoRoot, worktreeRoot),
     dsh,
     stateStore: createStateStore(config.statePath),
     repoRoot: config.repoRoot,
-    worktreeRoot: config.worktreeRoot || undefined,
+    worktreeRoot,
     baseSha: options.baseSha,
     baseRef: options.baseRef,
     fetch: options.fetch,

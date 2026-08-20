@@ -58,7 +58,7 @@ function harness(options = {}) {
       sharedWorktrees.delete(binding.worktree);
       if (removeBranch) sharedBranches.delete(binding.branch);
     },
-    async worktreeExists(binding) { return sharedWorktrees.has(binding.worktree); },
+    async worktreeUsable(binding) { return sharedWorktrees.has(binding.worktree); },
   };
   const dsh = {
     isLive(binding) { return live.has(binding.sessionId); },
@@ -86,12 +86,13 @@ function harness(options = {}) {
     async lock(fn) { return fn(); },
   };
   let id = 0;
-  const dispatcher = createDispatcher({
+  const dispatcherOptions = {
     github, git, dsh, stateStore, repoRoot: "/repo", worktreeRoot: "/tickets",
     baseSha, baseRef: "moving", fetch: false, maxActive,
-    sessionProbe: async (binding) => sharedSessions.has(binding.sessionId),
     uuid: () => `uuid-${++id}`,
-  });
+  };
+  if (!options.omitSessionProbe) dispatcherOptions.sessionProbe = options.sessionProbe ?? (async (binding) => sharedSessions.has(binding.sessionId));
+  const dispatcher = createDispatcher(dispatcherOptions);
   return {
     dispatcher, calls, durableClaims, live, records, sharedBranches, sharedSessions, sharedWorktrees,
     setRef(value) { refSha = value; },
@@ -167,6 +168,56 @@ test("restart resumes a valid durable claim under the same session id", async ()
   assert.equal(restarted.calls.includes("agent:1"), false);
 });
 
+test("restart resumes a progressed worktree without recreating or voiding it", async () => {
+  const binding = { number: 1, sessionId: "session-progressed", branch: "workflow/ticket-1", worktree: "/tickets/progressed", baseSha: BASE };
+  const claims = [claimBody(binding)];
+  const h = harness({
+    durableClaims: claims,
+    sharedWorktrees: new Set([binding.worktree]),
+    sharedSessions: new Set([binding.sessionId]),
+    maxActive: 1,
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.equal(report.running[0].sessionId, binding.sessionId);
+  assert.equal(report.running[0].validWorktree, true);
+  assert.equal(report.running[0].live, true);
+  assert.equal(report.running[0].recovered, undefined);
+  assert.equal(h.calls.includes("worktree:1"), false);
+  assert.equal(h.calls.some((call) => call.startsWith("void:1:")), false);
+});
+
+test("default indeterminate session probe attempts and succeeds at resume", async () => {
+  const binding = { number: 1, sessionId: "session-unknown", branch: "workflow/ticket-1", worktree: "/tickets/unknown", baseSha: BASE };
+  const h = harness({
+    durableClaims: [claimBody(binding)],
+    sharedWorktrees: new Set([binding.worktree]),
+    omitSessionProbe: true,
+    maxActive: 1,
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.equal(report.running[0].sessionId, binding.sessionId);
+  assert.equal(report.running[0].sessionPersisted, undefined);
+  assert.equal(report.running[0].live, true);
+  assert.equal(h.calls.includes("resume:1"), true);
+  assert.equal(h.calls.some((call) => call.startsWith("void:1:")), false);
+});
+
+test("indeterminate session probe voids once only after resume fails", async () => {
+  const binding = { number: 1, sessionId: "session-unknown-bad", branch: "workflow/ticket-1", worktree: "/tickets/unknown-bad", baseSha: BASE };
+  const claims = [claimBody(binding)];
+  const h = harness({
+    fail: "resume",
+    durableClaims: claims,
+    sharedWorktrees: new Set([binding.worktree]),
+    sessionProbe: async () => undefined,
+    maxActive: 1,
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.deepEqual(report.invalid, [{ number: 1, reason: "invalid-claim" }]);
+  assert.equal(h.calls.includes("resume:1"), true);
+  assert.equal(h.calls.filter((call) => call === "void:1:invalid-claim").length, 1);
+});
+
 test("missing worktree is recreated before the claimed session resumes", async () => {
   const binding = { number: 1, sessionId: "session-old", branch: "workflow/ticket-1", worktree: "/tickets/old", baseSha: BASE };
   const claims = [claimBody(binding)];
@@ -179,7 +230,7 @@ test("missing worktree is recreated before the claimed session resumes", async (
   assert.deepEqual(h.calls.slice(0, 2), ["worktree:1", "resume:1"]);
 });
 
-test("missing persisted session is voided and becomes ready for a later pass", async () => {
+test("definitively missing persisted session is voided stale without attempting resume", async () => {
   const binding = { number: 1, sessionId: "session-missing", branch: "workflow/ticket-1", worktree: "/tickets/old", baseSha: BASE };
   const claims = [claimBody(binding)];
   const h = harness({ durableClaims: claims, maxActive: 1 });
@@ -187,6 +238,7 @@ test("missing persisted session is voided and becomes ready for a later pass", a
   assert.deepEqual(first.running, []);
   assert.deepEqual(first.invalid, [{ number: 1, reason: "stale-session" }]);
   assert.equal(first.ready[0], 1);
+  assert.equal(h.calls.includes("resume:1"), false);
   assert.match(claims.at(-1), /^dispatcher-claim:void /);
   const second = await h.dispatcher.reconcile();
   assert.equal(second.running[0].number, 1);

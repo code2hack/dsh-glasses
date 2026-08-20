@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { bindingNames, bootstrapPrompt, classify, stableReport } from "./core.js";
 
-export function createDispatcher({ github, git, dsh, stateStore, repoRoot, worktreeRoot, baseSha = "", baseRef = "origin/main", fetch = true, maxActive, resources = {}, sessionProbe = async () => false, uuid = randomUUID }) {
+export function createDispatcher({ github, git, dsh, stateStore, repoRoot, worktreeRoot, baseSha = "", baseRef = "origin/main", fetch = true, maxActive, resources = {}, sessionProbe = async () => undefined, uuid = randomUUID }) {
   async function refreshState(state) {
     const tickets = await github.listTickets();
     const byNumber = new Map(tickets.map((ticket) => [ticket.number, ticket]));
@@ -21,7 +21,7 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       if (!["claimed", "running"].includes(binding.status)) continue;
       const ticket = byNumber.get(binding.number);
       if (!binding.bootstrapPrompt && ticket) binding.bootstrapPrompt = bootstrapPrompt({ ...ticket, ...binding });
-      binding.validWorktree = await git.worktreeExists(binding);
+      binding.validWorktree = await git.worktreeUsable(binding);
       binding.sessionPersisted = await sessionProbe(binding);
       binding.live = dsh.isLive?.(binding) === true;
     }
@@ -70,7 +70,7 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
 
       for (const binding of view.running) {
         if (binding.live) continue;
-        if (!binding.sessionPersisted) {
+        if (binding.sessionPersisted === false) {
           await invalidate(state, binding, "stale-session");
           continue;
         }

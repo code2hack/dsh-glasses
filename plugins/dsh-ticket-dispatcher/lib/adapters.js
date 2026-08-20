@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CLAIM_PREFIX, claimBody, collapseClaimMarkers, parseBlockers, voidClaimBody } from "./core.js";
 
@@ -25,7 +25,14 @@ export function parseJqLines(stdout) {
   return values;
 }
 
-export function createGitAdapter(repoRoot) {
+export function createGitAdapter(repoRoot, worktreeRoot = resolve(repoRoot, "../dsh-glasses-tickets")) {
+  const worktreeUsable = async (binding) => {
+    try {
+      return (await run("git", ["-C", binding.worktree, "rev-parse", "--abbrev-ref", "HEAD"], repoRoot)).trim() === binding.branch;
+    } catch {
+      return false;
+    }
+  };
   return {
     async resolveBase({ baseSha, baseRef, fetch }) {
       if (baseSha) return baseSha;
@@ -40,19 +47,16 @@ export function createGitAdapter(repoRoot) {
       throw new Error(`cannot resolve base ref ${baseRef}`);
     },
     async createWorktree(binding) {
+      if (dirname(resolve(binding.worktree)) !== resolve(worktreeRoot)) throw new Error(`worktree is outside dispatcher root: ${binding.worktree}`);
       await mkdir(dirname(binding.worktree), { recursive: true });
-      try {
-        const head = (await run("git", ["-C", binding.worktree, "rev-parse", "HEAD"], repoRoot)).trim();
-        const branch = (await run("git", ["-C", binding.worktree, "branch", "--show-current"], repoRoot)).trim();
-        if (head === binding.baseSha && branch === binding.branch) return { worktreeCreated: false, branchCreated: false };
-        throw new Error(`refusing non-matching existing worktree: ${binding.worktree}`);
-      } catch (error) {
-        if (!error.code && error.message.startsWith("refusing")) throw error;
-      }
+      if (await worktreeUsable(binding)) return { worktreeCreated: false, branchCreated: false };
+      await run("git", ["worktree", "remove", "--force", binding.worktree], repoRoot).catch(() => {});
+      await rm(binding.worktree, { recursive: true, force: true });
       await run("git", ["worktree", "prune"], repoRoot);
       let branchExists = false;
       try {
-        branchExists = (await run("git", ["rev-parse", `refs/heads/${binding.branch}`], repoRoot)).trim() === binding.baseSha;
+        await run("git", ["rev-parse", `refs/heads/${binding.branch}`], repoRoot);
+        branchExists = true;
       } catch {}
       await run("git", branchExists
         ? ["worktree", "add", binding.worktree, binding.branch]
@@ -63,9 +67,7 @@ export function createGitAdapter(repoRoot) {
       try { await run("git", ["worktree", "remove", "--force", binding.worktree], repoRoot); } catch {}
       if (removeBranch) try { await run("git", ["branch", "-D", binding.branch], repoRoot); } catch {}
     },
-    async worktreeExists(binding) {
-      try { return (await run("git", ["-C", binding.worktree, "rev-parse", "HEAD"], repoRoot)).trim() === binding.baseSha; } catch { return false; }
-    },
+    worktreeUsable,
   };
 }
 

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { claimBody, collapseClaimMarkers } from "../../lib/core.js";
+import { createDispatcher } from "../../lib/dispatcher.js";
 
 const exec = promisify(execFile);
 const sourcePackage = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -108,6 +110,48 @@ function sessionParent(binding) {
   return join(dshHome, "sessions", cwdKey);
 }
 
+async function indeterminateProbeSmoke() {
+  const binding = {
+    number: 61,
+    status: "claimed",
+    sessionId: "session-probe-unknown",
+    branch: "workflow/ticket-61",
+    worktree: "/disposable/ticket-61",
+    baseSha: "1".repeat(40),
+  };
+  const claims = [claimBody(binding)];
+  let state = { schemaVersion: 1, tickets: {} };
+  let resumed = false;
+  let voided = false;
+  const dispatcher = createDispatcher({
+    github: {
+      async listTickets() { return [{ number: 61, state: "OPEN", blockers: [], url: "https://example.test/issues/61" }]; },
+      async listClaims() { return collapseClaimMarkers(claims); },
+      async voidClaim() { voided = true; },
+    },
+    git: { async worktreeUsable() { return true; } },
+    dsh: {
+      isLive() { return resumed; },
+      async resumeAgent() { resumed = true; },
+      async disposeAgent() {},
+    },
+    stateStore: {
+      async load() { return structuredClone(state); },
+      async save(next) { state = structuredClone(next); },
+      async lock(fn) { return fn(); },
+    },
+    repoRoot: "/disposable",
+    maxActive: 1,
+  });
+  const report = await dispatcher.reconcile();
+  assert.equal(resumed, true);
+  assert.equal(voided, false);
+  assert.equal(report.running[0].live, true);
+  assert.equal(report.running[0].sessionPersisted, undefined);
+  assert.deepEqual(report.invalid, []);
+  return report.running[0];
+}
+
 let baseSha;
 try {
   await mkdir(scratchRepo, { recursive: true });
@@ -160,14 +204,23 @@ try {
   const claimsAfterFirst = (await readFixtures()).claims;
   assert.equal(claimsAfterFirst.length, 2);
 
+  const progressedBinding = firstReport.running[0];
+  await writeFile(join(progressedBinding.worktree, "lead-progress.txt"), "Ticket Lead progress\n");
+  await run("git", ["add", "lead-progress.txt"], { cwd: progressedBinding.worktree });
+  await run("git", ["commit", "--quiet", "-m", "lead progress"], { cwd: progressedBinding.worktree });
+  const progressedHead = (await run("git", ["rev-parse", "HEAD"], { cwd: progressedBinding.worktree })).stdout.trim();
+  assert.notEqual(progressedHead, progressedBinding.baseSha);
+
   const sessionEntriesBefore = await Promise.all(firstReport.running.map(async (binding) => [binding.sessionId, (await readdir(sessionParent(binding))).sort()]));
   await writeFixtures({ ...originalFixtures, claims: claimsAfterFirst });
   const restarted = reportsOf((await invoke(join(root, "state/restarted.json"))).stdout)[0];
   assert.deepEqual(restarted.running.map((item) => item.sessionId), firstReport.running.map((item) => item.sessionId));
   assert.ok(restarted.running.every((item) => item.live && item.validWorktree && item.sessionPersisted));
+  assert.deepEqual(restarted.invalid, []);
   const sessionEntriesAfter = await Promise.all(firstReport.running.map(async (binding) => [binding.sessionId, (await readdir(sessionParent(binding))).sort()]));
   assert.deepEqual(sessionEntriesAfter, sessionEntriesBefore);
   assert.equal((await readFixtures()).claims.length, 2);
+  assert.equal((await readFixtures()).claims.some((marker) => marker.startsWith("dispatcher-claim:void ")), false);
 
   await writeFixtures({
     tickets: [
@@ -215,10 +268,35 @@ try {
   assert.deepEqual(invalid.ready, [41]);
   assert.match(invalidFixtures.claims.at(-1), /^dispatcher-claim:void /);
 
+  await writeFixtures({ tickets: [{ number: 51, state: "OPEN", blockers: [], url: "https://example.test/issues/51" }], claims: [] });
+  const readmitState = join(root, "state/readmit.json");
+  const originalReadmit = reportsOf((await invoke(readmitState, { baseSha: "", baseRef: "HEAD" })).stdout)[0].running[0];
+  await rm(join(sessionParent(originalReadmit), originalReadmit.sessionId), { recursive: true, force: true });
+  const voidedReadmit = reportsOf((await invoke(readmitState, { baseSha: "", baseRef: "HEAD" })).stdout)[0];
+  assert.deepEqual(voidedReadmit.invalid, [{ number: 51, reason: "stale-session" }]);
+  assert.equal(JSON.parse(await readFile(readmitState, "utf8")).tickets[51].baseSha, originalReadmit.baseSha);
+  await git("worktree", "remove", "--force", originalReadmit.worktree);
+  await writeFile(join(scratchRepo, "README.md"), "disposable dispatcher smoke repository\nreadmission base\n");
+  await git("add", "README.md");
+  await git("commit", "--quiet", "-m", "move readmission base");
+  const readmitBase = (await git("rev-parse", "HEAD")).stdout.trim();
+  const readmitted = reportsOf((await invoke(readmitState, { baseSha: "", baseRef: "HEAD" })).stdout)[0].running[0];
+  assert.equal(readmitted.baseSha, readmitBase);
+  assert.notEqual(readmitted.baseSha, originalReadmit.baseSha);
+  assert.equal(readmitted.branch, originalReadmit.branch);
+  assert.notEqual(readmitted.sessionId, originalReadmit.sessionId);
+  assert.equal(readmitted.live, true);
+  assert.equal((await run("git", ["branch", "--show-current"], { cwd: readmitted.worktree })).stdout.trim(), readmitted.branch);
+
+  const unknownProbe = await indeterminateProbeSmoke();
+
   process.stdout.write("dsh-ticket-dispatcher smoke: PASS\n");
   process.stdout.write(`SMOKE live-reconcile: ticket=32 admitted_on_pass=${liveReports.indexOf(later) + 1} session=${laterBinding.sessionId}\n`);
   process.stdout.write(`SMOKE moving-base: ticket31=${firstBinding.baseSha} ticket32=${laterBinding.baseSha}\n`);
+  process.stdout.write(`SMOKE head-advanced-resume: live=true same_session=${restarted.running[0].sessionId} base=${progressedBinding.baseSha} head=${progressedHead} invalid=0 void=false\n`);
   process.stdout.write(`SMOKE restart-resume: live=true same_sessions=${restarted.running.map((item) => item.sessionId).join(",")}\n`);
+  process.stdout.write(`SMOKE indeterminate-probe: resumed=true live=${unknownProbe.live} session=${unknownProbe.sessionId} invalid=0 void=false\n`);
+  process.stdout.write(`SMOKE branch-readmission: ticket=51 old_base=${originalReadmit.baseSha} new_base=${readmitted.baseSha} same_branch=true live=${readmitted.live}\n`);
   process.stdout.write("SMOKE invalid-claim: ticket=41 reason=stale-session tombstone=true ready=true\n");
 } finally {
   if (process.env.KEEP_SMOKE) process.stdout.write(`smoke retained: ${root}\n`);
