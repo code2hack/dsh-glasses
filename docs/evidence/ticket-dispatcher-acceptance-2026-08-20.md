@@ -1,132 +1,103 @@
-# Ticket #15 — deterministic Ticket Dispatcher — independent DSH acceptance evidence
+# Ticket #15 — deterministic Ticket Dispatcher — independent DSH acceptance evidence (rev 2)
 
 - Ticket: https://github.com/code2hack/dsh-glasses/issues/15
 - DSH Ticket Lead session: `session-e264b58f-a673-447d-90e2-31d45ddc690c` (host `spark`, aarch64; user `code2hack`)
-- Tested implementation head: `488b4c4b2b7fecd1cf743d6969b1d4e7f9fe3f8c` (branch `workflow/ticket-dispatcher`)
-- Stacked base: accepted PR #14 head `ad6700b44c4fdd712a517b7a32002324c3a19af2` (branch `workflow/cto-dsh-codex`)
-- Original bootstrap base recorded before implementation: `71059429be3d6f95ef9625adf5dea52db2cd51d2`
+- Tested implementation head: `e09a3d72de48a0733fe9f3aa0ed1e4e5b91f6b86` (branch `workflow/ticket-dispatcher`)
+- Stacked base: current `origin/main` `0673f8c5c30c20caf25532c132b6a27122428578` — the Ticket Dispatcher PR #16 was retargeted to `main` because PR #14 (`workflow/cto-dsh-codex`) MERGED during this Ticket (merged 2026-08-20T13:12:24Z at head `e3f6cdbf`); the review packet required retargeting/integrating to current `main` in that case.
 - Evidence date: 2026-08-20
-- Codex Coder thread: ONE fresh `Codex-Thread-ID: 01a01f12-aac0-77c0-a3a7-6921db898642`
+- Codex Coder thread: single fresh `Codex-Thread-ID: 01a01f12-aac0-77c0-a3a7-6921db898642` used for all three rounds. The Harness bootstrap review packet (`REQUEST_CHANGES`, PR #16 comment, 2026-08-20T13:02:32Z) was the complete blocking review and was fully resolved.
 
-Independence: production code and committed tests were produced by the Codex Coder; every result below was re-executed independently by the DSH Ticket Lead on `spark` against the exact tested head `488b4c4b2b7fecd1cf743d6969b1d4e7f9fe3f8c`.
+SHA semantics (per review packet item 5): `head` in the review request is the exact PR head at request time; `e09a3d7` is the **tested-implementation-head** — the exact code head at which every command in this file was executed. The evidence document is committed on top of it, so the PR head differs only by this documentation commit; code content is identical.
 
-## Scope confirmation
+## Review loop history
 
-- New package only: `plugins/dsh-ticket-dispatcher/` (README, lib, tests, integration smoke). No product code, no Android/app changes, no Rokid/device state, no `SPEC.md`/`AGENTS.md`/`docs/WORKFLOW.md` (beyond the PR #14 stacked base), no TB0 runtime.
-- Deterministic non-LLM dispatcher: no LoopX, no DSH Agent Teams, no LLM scheduling, no CTO/CDP wake bridge, no Rokid lease engine (modeled only as a separate status bucket).
+1. Round 1 (`HEAD ~= 488b4c4`): initial candidate; Harness `REQUEST_CHANGES` with five blocking corrections (integrate current PR #14; real `stayAlive` loop; per-pass base ref resolution; restart must RESUME leads and recover invalid claims deterministically; fix review-packet SHA semantics).
+2. Round 2 (`ada2e18`): implemented live reconcile, per-pass base resolution, restart resume with void/rollback. Independent DSH real-git validation found three concrete defects (all outside the committed fixture-based tests):
+   - healthy lead whose worktree HEAD advanced was wrongly voided on restart instead of resumed;
+   - an indeterminate session probe (`undefined`, e.g. no `DSH_HOME`) voided healthy claims as `stale-session`;
+   - re-admission on a lingering branch at a different SHA failed to attach the branch.
+3. Round 3 (`6e21479`, now replayed as `e09a3d7`): fixed all three; independent DSH re-validation of the exact defects + the full acceptance surface now PASS.
 
-## Acceptance matrix — all PASS
+## Acceptance matrix — all PASS (re-executed by DSH at `e09a3d7`)
 
 | # | Criterion | Result | Evidence |
 | --- | --- | --- | --- |
-| 1 | one reconcile admits up to configured concurrency and creates one independent root DSH agent/session per admitted Ticket | PASS | integration smoke admitted dummy Tickets #21 and #22 concurrently; root agents created through the documented `ctx.agents.create` seam on the real `@deepseek-ai/dsh@0.1.0-rc.8` runtime |
-| 2 | unique session id, dedicated branch/worktree, exact base SHA, AGENTS.md + Ticket bootstrap prompt per admitted Ticket | PASS | smoke report shows distinct `sessionId`, distinct `worktree`, `baseSha == scratch base`, branches `workflow/ticket-21` / `workflow/ticket-22`; state files store `bootstrapPrompt` matching `AGENTS.md section 3` and `issues/<n>` |
-| 3 | claimed/running Ticket never spawned twice across repeated reconcile or restart/re-entry | PASS | repeated `reconcile` with same state → identical session ids; fresh state dir + durable markers → identical session ids (`first.json` vs `restarted.json` compared below); no new agents or claim markers |
-| 4 | blocked Tickets never admitted; closing blockers makes successors eligible later without LLM | PASS | unit tests `blocked transitions are mechanical` and `closing a blocker makes its successor ready on a later pass`; live read-only GitHub check classifies Ticket #15 as OPEN blocked by PR #14 (open) → not admitted |
-| 5 | DAG readiness independent of scarce resources; no fake blocker edge | PASS | unit `claimed Tickets consume capacity and scarce resources remain a separate view`; `resources.awaitsResource` is a separate status bucket in the report |
-| 6 | default active concurrency 3, configurable | PASS | `DEFAULT_MAX_ACTIVE = 3`; `--max-active`, config `maxActive`, `DISPATCHER_MAX_ACTIVE`; unit `capacity defaults to three` plus admission-limit tests |
-| 7 | documented DSH/Cordis lifecycle seam; agent loop untouched | PASS | implementation uses `ctx.agents.create`/`AgentHandle`, `ctx.sessions.flush`, `agent.followup` (the stock headless-runner pattern); no agent-loop patch |
-| 8 | deterministic status/reconcile surface showing ready, running/claimed, blocked, capacity-limited + bindings | PASS | `status`/`reconcile` print stable JSON + human summary; smoke transcript shows two simultaneous claim bindings with sessionId/branch/worktree/baseSha |
-| 9 | publication failure leaves no false claim; retry/reconcile safe | PASS | unit tests fault-inject failure at worktree / agent / state / claim steps → local `failed` state, durable marker not written; `a pre-marker publishing crash retries instead of becoming a false claim` |
-| 10 | no new credential committed; host auth reused | PASS | only local `gh` CLI auth is used; no token/config committed; probe comment round-trip done against live GitHub |
-| 11 | automated tests cover frontier, idempotent admission, concurrency, blocker transitions, rollback, restart/reconcile | PASS | `npm test` → 18/18 (suite includes `adapters.test`, `core.test`, `dispatcher.test`, `state.test`) |
-| 12 | integration smoke ≥2 dummy Tickets concurrently, distinct roots/worktrees, no duplicate spawn, no product/Rokid | PASS | `npm run smoke` PASS; retained artifact `/home/code2hack/tmp/dsh-ticket-dispatcher-smoke-0CbUhD` |
+| 1 | one reconcile admits up to configured concurrency; one independent root DSH agent/session per admitted Ticket | PASS | smoke admits dummy Tickets concurrently through `ctx.agents.create` on the real `@deepseek-ai/dsh@0.1.0-rc.8` runtime |
+| 2 | unique session id, dedicated branch/worktree, exact per-binding base SHA, AGENTS.md §3 + Ticket bootstrap prompt | PASS | smoke bindings carry distinct `sessionId`, `branch`, `worktree`; recorded `baseSha` per binding; prompts match `AGENTS.md section 3` and `issues/<n>` |
+| 3 | claimed/running Ticket never spawned twice across repeated reconcile or restart/re-entry | PASS | repeated `reconcile` and recorded restart resume same session ids (`restart-resume`/`head-advanced-resume` lines); no new agents or sessions |
+| 4 | blocked Tickets never admitted; closing blockers makes successors eligible on a later pass (live) | PASS | live reconcile admits a newly-unblocked Ticket on pass 2 of the SAME long-running process (`live-reconcile`); live GitHub classifies #15 READY after its blocker PR #14 merged |
+| 5 | DAG readiness independent of scarce resources | PASS | `resources.awaitsResource` remains a separate report bucket; admission does not depend on it |
+| 6 | default active concurrency 3, configurable | PASS | `DEFAULT_MAX_ACTIVE=3`; per-pass capacity; `--max-active`/config/env |
+| 7 | documented DSH seam; agent loop untouched | PASS | only `ctx.agents.create`/`ctx.agents.resume`/`ctx.sessions.flush` public services; no agent-loop patch |
+| 8 | deterministic status/reconcile surface with ready/running/blocked/capacity-limited/invalid/resolution-error + bindings | PASS | `formatReport` stable JSON + summary; smoke shows simultaneous bindings with `live`/`recovered` |
+| 9 | publication failure leaves no false claim; rollback safe | PASS | unit tests fault-inject worktree/agent/state/claim; rollback disposes agent, removes worktree, unclaimed; pre-marker crash retried |
+| 10 | restart after claim restores a LIVE Ticket Lead, no duplicate, invalid claims never false-running | PASS | `restart-resume` `live=true` same sessions; `head-advanced-resume` `live=true` same session with progressed worktree, no void; `stale-session` (definitively missing session) voided once with durable tombstone and becomes eligible again; `indeterminate-probe` attempts resume and never voids on unknown |
+| 11 | moving base: later admissions resolve the then-current ref; historical bindings keep their recorded SHA; no startup freeze | PASS | `moving-base` (ticket31 vs ticket32 different SHAs on later pass) + `branch-readmission` (new base recorded, same branch reused); `resolution failure reports deterministically` unit test |
+| 12 | no committed credentials; host auth reused | PASS | only local `gh` CLI; read/write round-trip on live GitHub |
+| 13 | tests cover frontier, blockers, admission, concurrency, restart/live loop, moving base, rollback, invalid claims | PASS | `npm test` 32/32 incl. `bounded reconcile loop`, `restart resumes a progressed worktree...`, `default indeterminate session probe...`, git-adapter real-repo tests |
+| 14 | integration smoke ≥2 concurrent Tickets + live reconcile + moving base + restart resume + invalid claim, disposable and LLM-free | PASS | `npm run smoke` PASS (retained `/home/code2hack/tmp/dsh-ticket-dispatcher-smoke-ZCCEIe`) |
 
-## Exact commands and results (re-executed by DSH at tested head `488b4c4`)
+## Exact commands and results (independently re-executed by DSH at tested head `e09a3d7`)
 
 ```
 $ git rev-parse HEAD
-488b4c4b2b7fecd1cf743d6969b1d4e7f9fe3f8c
+e09a3d72de48a0733fe9f3aa0ed1e4e5b91f6b86
 
-$ git diff --check                                     -> PASS (no whitespace errors)
+$ git diff --check                                       -> PASS
 
 $ cd plugins/dsh-ticket-dispatcher && npm test
-tests 18, pass 18, fail 0                              -> PASS
+tests 32, pass 32, fail 0                                -> PASS
 
-$ npm run typecheck (node --check lib/*.js)            -> PASS
+$ npm run typecheck (node --check lib/*.js)              -> PASS
 
 $ KEEP_SMOKE=1 npm run smoke
 dsh-ticket-dispatcher smoke: PASS
-smoke retained: /home/code2hack/tmp/dsh-ticket-dispatcher-smoke-0CbUhD
-
-$ node /tmp/real-gh-check.mjs                          -> live read-only GitHub adapter check
-agent tickets found: #15[OPEN]
-durable claims found: 0
-live classify: blocked [ { number: 15, blocking: [14] } ]
+smoke retained: /home/code2hack/tmp/dsh-ticket-dispatcher-smoke-ZCCEIe
 ```
 
-Deterministic status output from the smoke (two simultaneous Ticket bindings):
-
-```json
-{
-  "schemaVersion": 1,
-  "activeLimit": 3,
-  "ready": [],
-  "running": [
-    {
-      "number": 21,
-      "status": "claimed",
-      "sessionId": "session-b784bb89-1f60-4d2f-b20a-90f1f1b0aabc",
-      "branch": "workflow/ticket-21",
-      "worktree": "/home/code2hack/tmp/dsh-ticket-dispatcher-smoke-0CbUhD/worktrees/ticket-21-29d19e70ffbb",
-      "baseSha": "29d19e70ffbb527a1e7d2ea426de1bfb295dedad",
-      "validWorktree": true,
-      "sessionPersisted": true
-    },
-    {
-      "number": 22,
-      "status": "claimed",
-      "sessionId": "session-e2b7cd57-bfae-4dd8-8414-8d26b1ff3163",
-      "branch": "workflow/ticket-22",
-      "worktree": "/home/code2hack/tmp/dsh-ticket-dispatcher-smoke-0CbUhD/worktrees/ticket-22-29d19e70ffbb",
-      "baseSha": "29d19e70ffbb527a1e7d2ea426de1bfb295dedad",
-      "validWorktree": true,
-      "sessionPersisted": true
-    }
-  ],
-  "blocked": [],
-  "capacityLimited": [],
-  "resources": { "awaitsResource": [] }
-}
-```
-
-Distinct DSH root sessions and worktrees (persisted under the disposable `DSH_HOME`):
+Smoke proof lines (exact output):
 
 ```
-.../sessions/--…-worktrees-ticket-21-29d19e70ffbb--/session-b784bb89-1f60-4d2f-b20a-90f1f1b0aabc
-.../sessions/--…-worktrees-ticket-22-29d19e70ffbb--/session-e2b7cd57-bfae-4dd8-8414-8d26b1ff3163
+SMOKE live-reconcile: ticket=32 admitted_on_pass=2 session=session-ae570040-1058-42a3-9fb1-849101326002
+SMOKE moving-base: ticket31=3abdf93b8334cdd706edf2ace43016800a75c325 ticket32=ada8cc1c5fcffa26a6d681187801095f2feee6c2
+SMOKE head-advanced-resume: live=true same_session=session-a09a7b7a-e863-413b-ab07-84fe155b5ac4 base=3abdf93b8334cdd706edf2ace43016800a75c325 head=299952850a26360fb2175a59f1b3f2ec239924e7 invalid=0 void=false
+SMOKE restart-resume: live=true same_sessions=session-a09a7b7a-e863-413b-ab07-84fe155b5ac4,session-0b22dfd2-314b-4e88-9df7-e8d2a0fa80ac
+SMOKE indeterminate-probe: resumed=true live=true session=session-probe-unknown invalid=0 void=false
+SMOKE branch-readmission: ticket=51 old_base=ada8cc1c5fcffa26a6d681187801095f2feee6c2 new_base=614cc96e3c3fc9c6e3c068fb34dd7ece5fc3f534 same_branch=true live=true
+SMOKE invalid-claim: ticket=41 reason=stale-session tombstone=true ready=true
 ```
 
-Restart / repeated-reconcile idempotency (local binding state `first.json` vs `restarted.json`):
+Independent real-git defect repro (now PASS, see "Review loop history" for the round-2 FAILs):
 
 ```
-first:    21 -> (session-b784bb89-…, claimed) | 22 -> (session-e2b7cd57-…, claimed)
-restarted:21 -> (session-b784bb89-…, claimed) | 22 -> (session-e2b7cd57-…, claimed)
-NO DUPLICATE SPAWN ACROSS RESTART: True   (distinct sessions in first: 2)
+[A] restart of a lead whose worktree HEAD advanced: resumed same session, live=true, no void  -> PASS
+[B] restart with indeterminate session probe: resume attempted, no void                        -> PASS
+[C] re-admission with lingering branch at old SHA: branch reused, Ticket + successor admitted  -> PASS
 ```
 
-Durable claim markers written exactly once per Ticket (reconstructable on restart):
+Live GitHub read-only adapter check (same host, real remote):
 
 ```
-dispatcher-claim: {"schemaVersion":1,"ticket":21,"sessionId":"session-b784bb89-…","branch":"workflow/ticket-21",…}
-dispatcher-claim: {"schemaVersion":1,"ticket":22,"sessionId":"session-e2b7cd57-…","branch":"workflow/ticket-22",…}
+listTickets: #15[OPEN]
+durable claims:  (count 0)
+classify: ready=[{number:15}], blocked=[], running=[]    <- PR #14 (blocker) MERGED, #15 is on the ready frontier
+resolved origin/main: 0673f8c5c30c20caf25532c132b6a27122428578
 ```
 
-Worktree verification: `git -C <worktree> branch --show-current` = `workflow/ticket-21`; `git -C <worktree> rev-parse HEAD` = exact base SHA.
+## Behavior notes (deterministic, documented)
 
-## Live GitHub adapter verification (read-only, real remote)
-
-- `createGithubAdapter({ repo: "code2hack/dsh-glasses" }).listTickets()` returned issue #15 as the only OPEN agent Ticket with `blockers: [14]`; `listClaims([15])` returned `[]` (the validation probe was deleted).
-- `gh api --paginate --jq '.[]' …` is the pinned read path because the installed `gh` 2.45.0 (Ubuntu) does not support `--slurp`; the adapter’s `parseJqLines` and its contract tests cover that path.
-- Real `gh` comment write/read/delete round-trip verified on live GitHub (probe `dispatcher-claim:` comment created with id `5355846879`, listed back, deleted).
+- `reconcile` with `stayAlive`/`maxPasses` runs N sequential non-overlapping passes at `intervalMs`, printing a deterministic report per pass, and stops on its cap or SIGINT/SIGTERM. One-shot `status`/`reconcile` remain supported. A `maxPasses` cap is the deterministic bound the smoke/tests use.
+- Base ref resolution happens per admission pass (`fetch` then `rev-parse <baseRef>`), or the explicit exact `baseSha` override is used verbatim. Each binding records the exact 40-char SHA resolved at admission; historical bindings keep theirs. Resolution failure on a pass admits nothing and reports `resolutionError`.
+- Restart resume uses `ctx.agents.resume({ resumeSessionId })` (proven on rc.8): a checkout on the recorded branch is usable even when the Ticket Lead advanced its HEAD; the persisted session resumes in place under the same id, no duplicate. A missing or wrong-branch dispatcher-owned worktree path is removed and recreated; an existing Ticket branch is reused at its current head instead of re-pinned. Only a definitively absent persisted session voids `stale-session` (single durable `dispatcher-claim:void` tombstone, then the Ticket becomes eligible again); an indeterminate probe attempts resume and only a failed resume voids `invalid-claim`.
+- Dispatcher-owned paths are confined under the configured `worktreeRoot`; anything else is rejected before any mutation.
 
 ## Assumptions
 
-- GitHub authentication: the local, already-authenticated `gh` CLI (token scopes `repo` etc.) is the only GitHub surface; no repository-committed credential exists. Verified against `gh` 2.45.0.
-- DSH host composition: `spark` runs `@deepseek-ai/dsh@0.1.0-rc.8` at `/home/code2hack/.npm-global/lib/node_modules/@deepseek-ai/dsh`; the dispatcher resolves its DSH peers from the running deployment (smoke/README document the link step). DSH/vLLM `max_seqs` is an inference ceiling, not the active-Ticket limit.
-- Agent creation does not require an LLM; the `wakeAgents: true` bootstrap-followup path (which starts model turns) is an operator-enabled option and was not an acceptance surface of this bootstrap Ticket.
-- Temporary dispatcher smoke profile under the real `DSH_HOME` is created only when operated manually; the committed smoke is fully disposable (`/tmp` home, scratch repo, scratch worktrees, no product or Rokid interaction).
+- GitHub authentication: the local, already-authenticated `gh` CLI (2.45.0) is the only GitHub surface; `gh api --paginate --jq '.[]'` is the pinned read path (no `--slurp` on this build) with contract tests; no repository-committed credential.
+- DSH host composition: `spark` runs `@deepseek-ai/dsh@0.1.0-rc.8` at `/home/code2hack/.npm-global/lib/node_modules/@deepseek-ai/dsh`; DSH peers resolve from the running deployment; vLLM `max_seqs` is an inference ceiling, not the active-Ticket limit.
+- Agent creation/resume does not require an LLM; the `wakeAgents: true` model-turn bootstrap followup is operator-enabled and was not an acceptance surface of this bootstrap Ticket.
+- Smoke is fully disposable (temp DSH home, scratch repo, scratch worktrees) and offline-LLM-free; no product code, no Rokid/device interaction, no change to `SPEC.md` (`SPEC.md` §5 DSH-integration rule followed: DSH internals stay behind the project adapter).
 
 ## Review request
 
-See the stacked draft PR opened from `workflow/ticket-dispatcher`. Request id: `req-ticket-15-acceptance`.
+See the stacked PR #16 review request `req-ticket-15-acceptance-2` (kind `review`, head = exact PR head at posting, tested-implementation-head = `e09a3d72de48a0733fe9f3aa0ed1e4e5b91f6b86`).
