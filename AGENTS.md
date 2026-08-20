@@ -145,6 +145,7 @@ A successor uses a fresh DSH session and fresh Codex thread, bootstraps from cur
 - **spark** is the DSH/plugin/server host. **u4090** is the first-priority Android/Rokid build, USB-ADB, screenshot, logcat, UIAutomator, and input-tracing host.
 - Use debug builds for development Tickets unless the Ticket explicitly requires release qualification.
 - Never commit real credentials or real disposable session IDs.
+- Never expose an unauthenticated unrestricted DSH interface publicly.
 - Never wipe/reset the Rokid, Tailscale identity, DSH home/session history, or another durable environment without explicit owner authority.
 - Never claim hardware/runtime behavior that was not observed on the stated build/device/environment.
 - For DSH integration, follow `SPEC.md` section 5: keep DSH internals behind the project adapter, pin the supported DSH revision, and extend through documented services/events rather than patching the agent loop for convenience.
