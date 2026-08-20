@@ -8,6 +8,7 @@ This document defines the project workflow around the stable rules in `AGENTS.md
 Project
 └── one persistent ChatGPT CTO session: `CTO`
     ├── Milestone N
+    │   ├── Ticket Dispatcher materializes the ready frontier
     │   ├── Ticket A -> fresh DSH Ticket Lead + fresh Codex Coder
     │   ├── Ticket B -> fresh DSH Ticket Lead + fresh Codex Coder
     │   └── Ticket C -> fresh DSH Ticket Lead + fresh Codex Coder
@@ -15,7 +16,7 @@ Project
         └── fresh Ticket workers again
 ```
 
-The CTO gets continuity. Ticket workers get freshness. Durable truth lives in SPEC/ADRs, GitHub Milestones/Tickets/PRs, source/tests, and accepted evidence.
+The CTO gets continuity. Ticket workers get freshness. The Ticket Dispatcher is deterministic runtime glue, not another planning agent. Durable truth lives in SPEC/ADRs, GitHub Milestones/Tickets/PRs, source/tests, and accepted evidence.
 
 ## 2. Milestone lifecycle
 
@@ -42,6 +43,8 @@ The CTO then defines:
 - milestone-level acceptance.
 
 Tickets should be narrow vertical slices, independently verifiable, and sized for one fresh DSH/Codex pair.
+
+The first post-TB0 product Milestone must not start until the bootstrap Ticket Dispatcher is accepted. Once available, the dispatcher—not a Ticket Lead—materializes the CTO-declared ready frontier into independent DSH root sessions/worktrees.
 
 ### Close a milestone
 
@@ -85,11 +88,37 @@ Each implementation Ticket should contain:
 
 Avoid implementation recipes unless a prototype/schema/state-machine fragment is itself an approved design decision. The Ticket specifies behavior and proof; Codex retains implementation freedom inside accepted architecture.
 
-## 4. Ticket execution lifecycle
+## 4. Ticket Dispatcher
+
+The dispatcher owns no product reasoning. It repeatedly reconciles durable Ticket/DAG state into runtime worker state:
 
 ```text
-READY Ticket
-    -> fresh DSH Ticket Lead bootstraps
+GitHub Tickets + Blocked-by edges
+    -> compute ready + unclaimed frontier
+    -> apply configured active-Ticket capacity
+    -> create/verify dedicated branch + worktree
+    -> create one independent root DSH session/agent
+    -> send Ticket bootstrap
+    -> retain Ticket <-> session <-> branch/worktree binding
+    -> later reconcile closeout/failure/restart
+```
+
+Required properties:
+
+- **Deterministic frontier:** readiness comes only from declared Ticket state and blocker completion; no LLM prioritization or inferred dependency.
+- **Idempotent admission:** repeated reconcile or dispatcher restart must not create duplicate Ticket Leads for an already claimed/running Ticket.
+- **Independent roots:** parallel Tickets use separate root DSH sessions and mutable worktrees; they are not DSH Agent-Team members and do not share conversation state.
+- **Capacity is separate from existence:** the active-Ticket limit controls admitted workers; vLLM `max_seqs` is an inference ceiling rather than a session-count definition. Initial project default is 3 active Tickets unless deliberately reconfigured.
+- **Rollback:** failed worktree/session publication must not leave durable state falsely claiming that a worker exists.
+- **No successor authority in workers:** after Ticket closeout the dispatcher recomputes the whole frontier and starts newly ready work.
+
+The dispatcher may expose deterministic reconcile/status controls and local operational bindings. GitHub remains durable workflow truth; runtime binding state must be reconstructable/reconcilable rather than becoming a second project-management database.
+
+## 5. Ticket execution lifecycle
+
+```text
+Dispatcher admits READY Ticket
+    -> fresh DSH Ticket Lead independently verifies bootstrap
     -> fresh Codex Coder implements + committed tests
     -> DSH independently validates exact candidate
        -> ordinary implementation failure: bounded feedback to Codex
@@ -101,11 +130,12 @@ READY Ticket
        -> REQUEST_CHANGES: Codex -> DSH validation -> new exact-head review
        -> APPROVE current head: Ticket closeout gate
     -> durable closeout / authorized merge
+    -> dispatcher reconciles frontier
 ```
 
 Codex may run tests while developing, but DSH must independently rerun the Ticket acceptance surface. A worker-reported success is not independent acceptance evidence.
 
-## 5. CTO request protocol
+## 6. CTO request protocol
 
 GitHub is the durable mailbox. Browser/CDP communication may wake the `CTO` session, but request content, evidence, and verdicts belong on the Ticket or PR.
 
@@ -147,21 +177,21 @@ The CTO diagnoses or requests the next discriminating observation. DSH remains r
 
 Use when execution cannot proceed without changing/clarifying product, architecture, UX, or a human-owned gate. The durable answer must update the Ticket and, when appropriate, SPEC/ADR/design authority before implementation continues.
 
-## 6. Parallelism and scarce resources
+## 7. Parallelism and scarce resources
 
 The Ticket DAG expresses causal/logical dependencies only. Do not add a dependency merely because two independent Tickets need the same physical device or host.
 
-Shared mutable resources are scheduled separately. In particular, real-Rokid qualification is an exclusive lease: only one worker may perform a conflicting device test/install/debug sequence at a time. Other ready Tickets may continue host-side coding/testing while waiting for that lease.
+The dispatcher may admit multiple logically ready Tickets concurrently. Shared mutable resources are scheduled separately. In particular, real-Rokid qualification is an exclusive lease: only one worker may perform a conflicting device test/install/debug sequence at a time. Other ready Tickets may continue host-side coding/testing while waiting for that lease.
 
 Worker concurrency should follow the deployment's actual model/runtime capacity and evidence bottlenecks; capacity is a ceiling, not a requirement to keep every slot occupied.
 
-## 7. Evidence and exact-head discipline
+## 8. Evidence and exact-head discipline
 
 Evidence must identify what was actually tested: commit/head, relevant build variant, environment/device when material, reproduction/action, observed result, and limitations. Keep raw bulky artifacts out of ChatGPT context when a durable bounded reference is sufficient.
 
 The review unit is an exact Git commit, not "the branch approximately as reviewed". After an approved head changes, revalidate affected acceptance and obtain a new CTO review.
 
-## 8. Closeout, successor bootstrap, and archival
+## 9. Closeout, successor bootstrap, and archival
 
 The outgoing DSH Ticket Lead records a compact durable closeout on the Ticket/PR containing:
 
@@ -171,10 +201,10 @@ The outgoing DSH Ticket Lead records a compact durable closeout on the Ticket/PR
 - CTO verdict + reviewed SHA;
 - remaining uncertainty/deferrals.
 
-The milestone DAG determines the next ready frontier. The outgoing worker may launch a prescribed successor, but does not invent new scope or reorder the DAG.
+The outgoing worker does not choose or launch sibling/successor Tickets. The dispatcher reads the durable closeout/state, recomputes the Milestone frontier, and creates any newly admissible fresh Ticket Leads within capacity.
 
-A successor is a fresh DSH session with a fresh Codex thread. It reads `AGENTS.md`, its own Ticket, required linked authority, and dependency closeouts; it does not need the predecessor transcript. Archive/retire the predecessor once its closeout is durable and any required successor bootstrap has confirmed the needed context.
+A successor is a fresh DSH session with a fresh Codex thread. It reads `AGENTS.md`, its own Ticket, required linked authority, and dependency closeouts; it does not need the predecessor transcript. The predecessor may be archived/retired once its closeout is durable; successor creation is independent of predecessor liveness.
 
-## 9. TB0 transition
+## 10. TB0 transition
 
 TB0 established the ADB-only one-session text-loop MVP and its reproducible host/device-debug foundations. Its tracer and evidence documents remain historical/conditional references. New work should be planned as Milestones and GitHub Tickets rather than by editing a "current slice" section in `AGENTS.md`.
