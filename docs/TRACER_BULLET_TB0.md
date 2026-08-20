@@ -1,6 +1,6 @@
 # TRACER_BULLET_TB0 — one-session text round trip
 
-**Status:** H0, host-write, G0, I0, R0, A0, C0, D0, and D1 complete. Active gate: **TB0-M0 ADB-only MVP acceptance**. Physical input qualification (P0) was eliminated from the MVP by code2hack on 2026-08-19.  
+**Status:** H0, host-write, G0, I0, R0, A0, C0, D0, and D1 complete. **TB0-M0 ADB-only MVP acceptance passed; pending merge.** Physical input qualification (P0) was eliminated from the MVP by code2hack on 2026-08-19.  
 **Date:** 2026-08-20  
 **Repo:** `code2hack/dsh-glasses` (authoritative branch: `main`)  
 **Normative source:** `SPEC.md` revision 3 for product behavior. The MVP scope below may defer normative physical-input behavior without claiming that behavior implemented or qualified.
@@ -126,7 +126,10 @@ Frozen for TB0:
 > not also paste, switch mode, open a wheel, cut, Send, or otherwise perform its
 > ordinary action.
 
-M0 verifies this with synthetic debug controls.
+M0 verifies this with synthetic debug controls. In the implemented C0 Navigation
+surface, `RIGHT` word movement itself is outside C0; therefore the regression
+checks that the first `RIGHT` is wake-consumed and the second reaches the
+ordinary Navigation handler, not that a Navigation cursor physically moves.
 
 ## 4. Mandatory M0 acceptance scenario
 
@@ -162,7 +165,7 @@ Then:
 
 M0 also rechecks the hidden-HUD wake-only rule using
 `SECONDARY_DOUBLE` → hidden HUD → first `RIGHT` wake-only → second `RIGHT`
-ordinary movement.
+ordinary-handler dispatch.
 
 The detailed M0 matrix is `docs/TRACER_BULLET_TB0_M0.md`.
 
@@ -192,7 +195,7 @@ remain future work.
 
 ## 7. M0 evidence
 
-Fill:
+See:
 
 ```text
 docs/evidence/tb0-m0-adb-only-mvp-acceptance-2026-08-20.md
