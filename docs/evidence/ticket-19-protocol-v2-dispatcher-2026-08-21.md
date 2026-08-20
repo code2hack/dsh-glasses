@@ -3,7 +3,8 @@
 - Ticket: https://github.com/code2hack/dsh-glasses/issues/19
 - Manual bootstrap DSH agent: `dsh-glasses-Bootstrap-#19-DSH`
 - Paired persistent Codex thread: `dsh-glasses-Bootstrap-#19-Codex`
-- Base: `origin/main` @ `e3536f96f7c2cb32bc48236efdb35d2355a950d4`
+- Base: `origin/main` @ `8b45edb2a99f0be4615583ce9e16da4303b4c530` (rebased; includes PRs #18/#20/#21 — protocol v2 + startup-plan/hard-help mandates)
+- Tested implementation head: `b6ba392` on `workflow/ticket-19` (rebased onto `8b45edb`)
 - Branch / worktree: `workflow/ticket-19` / `/home/code2hack/Projects/glasses/dsh-glasses-t19`
 - Evidence date: 2026-08-21 (host `spark`, aarch64)
 
@@ -64,6 +65,13 @@ Out of scope: product/Rokid behavior, Milestone planning, LLM scheduling,
   with no valid token (no silent invention). Examples: `M1` → `M1`;
   `Bootstrap / protocol-v2 transition` → `Bootstrap` (declared first token);
   `Workflow bootstrap — …` → `Workflow`; missing section → rejection.
+- Current-protocol mandates carried in the dispatcher bootstrap/continuation
+  (AGENTS.md on main 8b45edb): DSH must request a ChatGPT startup `plan` through
+  `mcp-chatgpt` (project `dsh-glasses`, session `CTO`) and receive it before the
+  first production edit (Codex stays idle during startup planning); on hard/stuck
+  problems DSH MUST send one identical git-only debug request to BOTH ChatGPT and
+  Codex; dual PASS on the exact same head before closeout; durable
+  `dispatcher-closeout:` marker so the watchdog never re-wakes a finished Ticket.
 - `derivePairNames({project, milestone, number})` →
   `<project>-<milestone>-#<number>-DSH` and `<project>-<milestone>-#<number>-Codex`.
 - Manual #19 bootstrap exception: the bootstrap prompt itself fixes the token
@@ -78,7 +86,10 @@ Ticket + Milestone
                      bootstrapPrompt, codex: { threadId?, thinkingEffort }, status }
   -> git.createWorktree
   -> dsh.createAgent(DSH session)
-  -> codex.createThread(start + name/set + first turn = exact name + await idle)
+  -> codex.createThread(start + name/set + first turn = exact name
+       + wait seed TERMINAL/idle; fails publication otherwise; verified:
+       first prompt byte-exact, exactly one user turn, thread idle)
+  -> (same-name persistent thread already on the daemon -> REUSE it, never duplicate)
   -> local state save
   -> github.writeClaim (durable binding incl. names + codex threadId + milestone)
   -> dsh.wakeAgent(DSH starts immediately)
@@ -97,7 +108,11 @@ Per pass, for every unfinished admitted binding:
   Ticket (written by DSH at closeout, consistent with AGENTS.md closeout) OR the
   Ticket CLOSED. Completed bindings are disposed and never woken, and release capacity.
 - not live (restart) → reconstruct pair (resume same DSH session + same Codex thread,
-  no reseed) → wake once.
+  no reseed). Idempotency/identity gates: resume only when the persisted session's log
+  contains the binding worktree (a foreign orphan is voided `stale-session`, never
+  silently resumed); the admitted base SHA stored in the binding is preserved and never
+  re-resolved; the bootstrap is woken once per durable session — a session whose log
+  already contains the bootstrap sentinel is NOT re-woken after a restart.
 - live and `status === 'running'` → progressing, no wake.
 - live and `status === 'idle'` (quiesced) → resume/wake the SAME DSH session with the
   minimal recorded continuation instruction, at most once per heartbeat interval

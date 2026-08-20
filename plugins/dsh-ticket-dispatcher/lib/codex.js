@@ -277,7 +277,7 @@ export function createCodexAdapter({
   clientVersion = "0.1.0",
   commandTimeoutMs = 60_000,
   replyTimeoutMs = 600_000,
-  seedGraceMs = 60_000,
+  seedGraceMs = 300_000,
   clientFactory = (path, options) => new CodexControlClient(path, options),
 } = {}) {
   const daemonVersion = async () => {

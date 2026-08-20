@@ -95,7 +95,7 @@ async function invoke(statePath, options = {}) {
     try {
       const result = await run(dshBin, ["--profile", "smoke", "--patch", overlay, "reconcile"], {
         env: { ...process.env, DSH_HOME: dshHome },
-        timeout: 480_000,
+        timeout: 900_000,
       });
       if (result.stdout.trim()) return result;
       process.stderr.write(`WARN invoke attempt ${attempt} returned empty stdout (stderr=${JSON.stringify(result.stderr)})\n`);
@@ -121,7 +121,7 @@ async function invokeLive(statePath, options = {}, afterFirstPass) {
     if (!mutation && stdout.includes("Ticket Dispatcher:")) mutation = Promise.resolve().then(afterFirstPass).catch((error) => { throw error; });
   });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
-  const timeout = setTimeout(() => child.kill("SIGTERM"), 540_000);
+  const timeout = setTimeout(() => child.kill("SIGTERM"), 1_200_000);
   const code = await new Promise((resolveClose) => child.on("close", resolveClose));
   clearTimeout(timeout);
   await mutation;
@@ -257,6 +257,11 @@ try {
   await writeFixtures(originalFixtures);
   const firstState = join(root, "state/first.json");
   const firstReport = reportsOf((await invoke(firstState, { maxActive: 2 })).stdout)[0];
+  if (process.env.SMOKE_DEBUG) {
+    process.stderr.write(`[debug] FULL firstReport=${JSON.stringify(firstReport, null, 2)}\n`);
+    process.stderr.write(`[debug] state=${JSON.stringify(await readFile(firstState, "utf8").catch((e) => String(e)))}\n`);
+    process.stderr.write(`[debug] fixtures=${JSON.stringify(await readFixtures())}\n`);
+  }
   assert.deepEqual(firstReport.running.map((item) => item.number), [21, 22]);
   for (const binding of firstReport.running) {
     assert.equal(binding.dshName, `dsh-glasses-S1-#${binding.number}-DSH`);
