@@ -1,0 +1,26 @@
+{
+  "name": "dsh-ticket-dispatcher",
+  "version": "0.1.0",
+  "description": "Deterministic GitHub Ticket frontier dispatcher for dsh-glasses.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./core": "./lib/core.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke/dsh-smoke.mjs",
+    "typecheck": "node --check lib/*.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
