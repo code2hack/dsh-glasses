@@ -1,12 +1,12 @@
 ---
 name: Agent Ticket
-about: One vertical slice for a fresh DSH Ticket Lead + fresh Codex Coder
+about: One vertical slice for one fresh DSH + Codex pair
 labels: ready-for-agent
 ---
 
 ## Milestone
 
-<parent milestone>
+M1
 
 ## What to build
 
@@ -39,7 +39,7 @@ labels: ready-for-agent
 
 ## Evidence
 
-- <durable evidence required for CTO review>
+- <durable repository evidence paths required for ChatGPT + Codex review>
 
 ## Out of scope
 
