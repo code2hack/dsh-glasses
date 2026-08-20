@@ -27,7 +27,7 @@ When sources disagree, obey the higher authority and surface the inconsistency. 
 
 ## 2. Agents
 
-Only these agent names are normative: **ChatGPT**, **DSH**, and **Codex**. Do not use the old titles CTO, Ticket Lead/Leader, or Coder.
+The normative agent names are **ChatGPT**, **DSH**, and **Codex**.
 
 ### ChatGPT
 
