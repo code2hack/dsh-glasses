@@ -1,316 +1,162 @@
-# dsh-glasses implementation instructions
+# dsh-glasses agent instructions
 
-> **0. Worker Heartbeat Integrity Protocol (WHIP) — read and obey BEFORE
-> anything else.** These rules persist across rounds, context compaction, and
-> fresh sessions; silence is never permission to stop. If this project is
-> reopened in a new session, re-read this section first.
->
-> 1. **W — Work the todo.** Continue the highest-priority in-progress item every
->    round; update the todo list before and after each round.
-> 2. **H — Heartbeat, never stop.** There is no voluntary end while the mission
->    is open. Keep a poller/recorder alive; every round re-checks the ChatGPT
->    thread FIRST and acts on any new reply.
-> 3. **I — Inspect state.** The workspace, tool results, durable session state,
->    the origin branch, and the ChatGPT thread are authoritative — inspect,
->    never assume. The remote branch is the review authority.
-> 4. **P — Progress + proof.** Make concrete, verified progress each round and
->    record evidence (exact head, logs, durable/op correlation, diagnostics)
->    before claiming completion.
-> 5. **P — Poll the reply.** After ANY blocking ask to ChatGPT: poll ~30 s
->    (back off to ≤60 s while doing productive nonconflicting work), never rely
->    on event notifications alone, and act on the reply before anything else. A
->    usage-limit / "Internal Server Error" placeholder is NOT a reply — retry at
->    the next-lower thinking effort (Pro → xhigh → high → medium → low) per §17
->    until it lands. Don't send duplicates unless new evidence changes the
->    problem.
->
-> Legitimate endings ONLY: (a) an explicit stop/pause/handoff from code2hack;
-> (b) a genuine blocker escalated once while the session and poller stay alive;
-> (c) absolute completion — the program's final acceptance is merged, no pending
-> directive, and no unreplied blocking ask. Every other round ends with a short
-> status naming the next round's first action and a living todo.
+This file is the stable execution constitution for agent work in this repository. It must not carry current milestone, ticket, branch, or session state; GitHub owns live workflow state.
 
-Mandatory entry point for every implementation session. MVP-biased and lean: this
-file is operational, not production process.
+## 1. Authority
 
-## 1. Read order and authority
+Read in this order before changing code:
 
-Read before changing code: `AGENTS.md` (start at §0 WHIP) → `SPEC.md` →
-`docs/TRACER_BULLET_TB0.md` (when present) → the active evidence/seam-audit doc →
-source and tests.
+1. `AGENTS.md`.
+2. The GitHub Ticket assigned to this worker, including its blockers, acceptance criteria, gate, and linked design sources.
+3. Only the SPEC sections, accepted ADRs/design artifacts, dependency closeouts, and evidence explicitly relevant to that Ticket.
+4. Source and tests in the current checkout.
 
-Authority hierarchy:
+Authority is:
 
-```
-SPEC.md                         normative product behavior
-docs/TRACER_BULLET_TB0.md       active tracer-bullet scope
-accepted ADRs                   durable implementation decisions
-evidence documents              claims proven on real systems
-source and tests                current implementation
-Git history                     evidence only
+```text
+code2hack / explicit owner decision    product and human-gate authority
+SPEC.md                                normative product behavior
+accepted ADRs / approved design refs   durable architecture and UX decisions
+current GitHub Ticket                  execution scope and acceptance contract
+source + tests                         current implementation
+accepted evidence                      observed runtime/hardware facts
+Git history / old transcripts          context only
 ```
 
-Do not require CONTEXT.md, ADR directories, or issue-management documents until
-they actually exist.
+When sources disagree, obey the higher authority and surface the inconsistency. A ChatGPT or worker conversation is not durable authority until its decision is recorded in GitHub or the repository.
 
-## 2. Host roles
+## 2. Roles
 
-| Host | Role |
-| --- | --- |
-| **spark** (DGX GB10, aarch64) | DSH runtime; plugin development; DSH seam inspection; server-side tests; integration endpoint |
-| **u4090** (x86-64, RTX 4090) | first-priority Rokid build/install/debug host; USB ADB host; Android SDK/NDK; screenshots/logcat/UIAutomator/input tracing |
-| **GitHub origin** | shared source of truth between hosts |
+### Owner — code2hack
 
-Spark workers SSH to u4090 for all Rokid operations. Never copy source trees
-between hosts by hand — use Git branches/commits; APK transfer may use temporary
-staging. Use one persistent remote tmux session `dsh-glasses-adb` on u4090,
-`/opt/android-sdk/platform-tools/adb`, and temporary files only under
-`~/tmp/dsh-glasses-ADB`.
+Owns product-direction changes, explicit human-required gates, and final business decisions.
 
-## 3. Rokid ADB priority (u4090 first)
+### ChatGPT CTO — project-long endpoint
 
-The glasses is physically connected to u4090, so:
+Canonical logical CTO endpoint:
 
-1. SSH from Spark to u4090.
-2. Reuse/create tmux session `dsh-glasses-adb`.
-3. Probe u4090 USB ADB (`adb devices -l`); expect serial `1906092617103125`,
-   model `RG_glasses`.
-4. Verify `adb -s <serial> get-state` — never treat pingability or a discovered
-   port as a healthy connection.
-5. Only if USB is unavailable, use the adapted recovery route:
-   u4090 local LAN `:5555` → u4090 mDNS `_adb-tls-connect._tcp` → known
-   wireless-debugging endpoint → Spark local LAN (same sequence) → known
-   Tailscale ADB endpoint.
-6. Ask for manual intervention only after all routes fail or the target is
-   ambiguous.
+- `ChatGPT project = dsh-glasses`
+- `ChatGPT session = CTO`
 
-ADB remains development/debug tooling, **not** a product data transport.
+Owns product/architecture design, milestone contracts, tracer-bullet Ticket decomposition and dependency DAGs, hard-problem research, difficult bug diagnosis, and final candidate review. The CTO does not perform routine Ticket implementation, routine device operation, or worker scheduling.
 
-## 4. Tailscale recovery on Rokid (mandatory)
+DSH reaches ChatGPT through the existing DSH MCP server `chat-agent-bridge`, which operates the user's already logged-in ChatGPT web account through CDP in Chrome/Chromium. This is the communication transport, not another agent or source of project truth. DSH workers must target the exact logical endpoint above and must not select a same-named session outside the `dsh-glasses` ChatGPT project.
 
-Tailscale is already installed on the Rokid. Before declaring the glasses
-unavailable on the tailnet, the worker MUST use available ADB — preferably u4090
-USB ADB — to launch and enable Tailscale, then verify again.
+If `chat-agent-bridge` exposes opaque ChatGPT project/conversation identifiers or an exact conversation URL, those are machine-local routing metadata and may be pinned there for deterministic transport. They do not replace the explicit project/session identity above and do not belong in repository policy unless a future transport contract requires it.
 
-1. From Spark: `tailscale status --json`; `tailscale ping rokid` (peer
-   `100.87.122.122`).
-2. If absent/unreachable but ADB works, discover the package dynamically:
-   `adb -s <serial> shell pm list packages | grep -i tailscale` (never hardcode).
-3. Launch it: `adb -s <serial> shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`.
-4. Inspect UI via screenshot + `uiautomator dump`; if installed but switched
-   off, activate the connect control from the dump with `adb input` (no hardcoded
-   coordinates unless the firmware/UI is qualified).
-5. Handle a one-time VPN-consent dialog via ADB when unambiguous. If account
-   login or new-device authorization is required, request exactly that manual
-   action.
-6. Re-verify from Spark with `tailscale status` + `tailscale ping`.
+A CTO decision that changes durable product or architecture state must be written back to the appropriate Ticket, PR, SPEC, ADR, or approved design artifact before workers rely on it.
 
-MUST NOT: `pm clear` tailscale, uninstall it, remove the tailnet account, or
-replace its identity (destroys a useful configured route).
+### Ticket Dispatcher — deterministic non-LLM runtime
 
-## 5. Debug route vs product route
+Owns ready-frontier reconciliation and worker materialization only: read the declared Ticket DAG/status, admit ready unclaimed Tickets within configured capacity, create one dedicated branch/worktree and one independent root DSH Ticket Lead session per admitted Ticket, retain the Ticket↔session↔worktree binding, and retire/reconcile workers from durable GitHub state.
 
-- **u4090 USB ADB** = preferred development control/diagnostic route.
-- **Rokid ↔ Spark over Tailscale / trusted LAN** = TB0 product data route.
+The dispatcher does not create Tickets, choose product priority, invent dependencies, reinterpret gates, or perform Ticket work. Shared-device/resource scheduling is separate from logical DAG readiness.
 
-USB ADB on u4090 does NOT mean product traffic tunnels through ADB. For TB0:
-private Tailscale and trusted LAN are both acceptable; public Funnel is
-unnecessary; if Tailscale is expected but offline, activate it via ADB before
-abandoning that path.
+### DSH Ticket Lead — one fresh DSH agent per Ticket
 
-## 6. Minimal-safeguard MVP policy
+Owns execution of exactly one Ticket: bootstrap, Codex orchestration, independent validation, server/device operation, tracing, debugging, evidence, commits, pushes, PR preparation, CTO requests, and closeout/handoff.
 
-TB0/MVP optimize for the shortest functioning end-to-end path. Security
-architecture, compatibility layers, production migration, release hardening, and
-defensive features are NOT acceptance gates unless needed to prevent irreversible
-data loss or accidental public exposure. Do not add/block on: PAKE, mTLS,
-certificate rotation, QR enrollment, production pairing, key attestation, rate
-limiting, role matrices, encrypted-at-rest drafts, CSRF architecture, threat
-modeling, Funnel hardening, release signing, obfuscation, migration layers,
-exhaustive hostile-input testing.
+The Ticket Lead may make temporary instrumentation and narrow evidence-driven debug changes, but does not redesign product behavior, expand Ticket scope, select sibling work, or act as the Milestone scheduler. Product/architecture ambiguity is a CTO decision request.
 
-Use the simplest working development access: private tailnet/LAN + one static
-development credential if the TB0 design already uses one.
+### Codex Coder — one fresh Codex thread per Ticket
 
-Only four minimal safeguards are retained:
+Owns production-code changes and committed tests for the Ticket. Codex may run narrow developer checks while coding, but its results are not acceptance evidence. Codex does not own Ticket scope, product decisions, final validation, CTO approval, or merge authority.
 
-1. Never commit real credentials.
-2. Never expose an unauthenticated unrestricted DSH interface publicly.
-3. Never wipe/reset the device, Tailscale state, DSH home, or session history
-   without explicit instruction.
-4. Never claim hardware or recovery behavior that was not observed.
+## 3. Ticket is the unit of execution
 
-## 7. Debug variants only
+Default invariant:
 
-Use debug/debuggable Android variants by default: no release build, signing gate,
-certificate/hash ceremony, ProGuard/R8, store packaging, or release performance
-claim. Install with `adb install -r -t <debug-apk>` and verify the installed
-package/version afterward.
+```text
+1 Ticket = 1 fresh DSH Ticket Lead = 1 fresh Codex Coder
+         = 1 dedicated branch/worktree = 1 candidate PR
+```
 
-## 8. Tight hardware-debug loop
+A Ticket should be a narrow, independently verifiable vertical slice sized for a fresh context. Its `Blocked by` edges express logical dependencies only; shared hardware availability is a resource constraint, not a fake dependency edge.
 
-Never ask the user to describe anything visible through ADB. For hardware
-issues: inspect retained logs first; arm bounded timestamped captures; request
-or execute one exact interaction; collect logcat + state + screenshot + UI dump;
-correlate; add temporary uniquely-tagged instrumentation when the boundary is
-unclear; remove it after isolation. Do not indiscriminately clear logcat first.
-Use project tag `DSHGlasses` in native logs.
+The dispatcher normally establishes the Ticket claim, branch/worktree, session identity, and base SHA before waking the Ticket Lead. The Ticket Lead independently rechecks the durable Ticket and blocker state before implementation.
 
-## 9. DSH integration rules
+### Bootstrap
 
-- `dsh-glasses-plugin` stays out-of-tree where practical.
-- Depend on a pinned DSH revision (currently `@deepseek-ai/dsh@0.1.0-rc.7`).
-- Keep DSH-specific APIs behind one compatibility adapter.
-- Add behavior through documented plugin services/events.
-- Do not patch agent-loop merely for convenience.
-- Anything model-visible becomes reconstructable durable DSH content; provisional
-  Photo/Voice/Morse content must not enter the DSH log.
-- If upstream DSH itself must change, obey that checkout's own AGENTS.md.
+Before implementation, the Ticket Lead must:
 
-## 10. Stale-design ban
+1. Fetch `origin` and verify the assigned Ticket is on the ready frontier: every declared blocker is complete.
+2. Confirm the exact base SHA and its dedicated branch/worktree; never reuse another active Ticket's mutable checkout.
+3. Read the Ticket and every required linked authority/evidence source.
+4. Inspect the relevant current implementation and tests.
+5. Start one fresh Codex Coder with only the Ticket scope and required context.
 
-Do not drift back toward Poker-Dealer architecture: no Fold6/Dealer companion;
-no direct dependency on Poker-Dealer; no card-pile model; no boundary-driven
-Navigation/Input transition; no terminal/tmux backend; no stock DSH Web UI inside
-the glasses WebView; no client-created/closed/attached/detached/reordered tabs;
-no raw DSH event schema exposed to the glasses; no DSH provider credentials on
-the glasses; no full-resolution photo retained after staging; no cloud/glasses
-ASR for the accepted Voice design; no LLM-based Morse completion; no public
-Funnel requirement for TB0.
+Bootstrap is complete only when the worker can state the Ticket, base SHA, blockers, required gate, acceptance criteria, and worktree/branch without guessing.
 
-## 11. Work and branch discipline
+## 4. Execution loop
 
-- Fetch origin and record the base SHA before work.
-- One dedicated branch per active slice (current: `tb0/adb-only-mvp-acceptance`).
-- Do not rewrite another worker's branch; do not force-push main.
-- Keep commits narrow; commit documentation separately from exploratory code.
-- GitHub remote is shared truth (not an uncommitted host worktree).
-- Before handoff: push the branch and report exact commit SHA, tests, hardware
-  evidence, and remaining uncertainty.
+Use this loop until the Ticket completion gate is satisfied:
 
-## 12. Evidence without bureaucracy
+```text
+Codex candidate
+    -> DSH inspects diff
+    -> DSH independently builds/tests/operates real systems as required
+    -> ordinary code defect: return bounded findings to Codex
+    -> hard/ambiguous failure: capture a tight repro + bounded evidence and request CTO diagnosis
+    -> acceptance passes: commit/push exact candidate and prepare/update PR
+    -> request CTO review of the exact head SHA
+    -> REQUEST_CHANGES: loop through Codex + independent validation again
+    -> APPROVE on current head: evaluate Ticket completion gate
+```
 
-A hardware/behavior claim needs: exact commit, APK variant, device
-serial/model/fingerprint, host used, command or physical interaction, relevant
-bounded logs, observed result, known limitation. No approval matrices or release
-evidence for TB0/MVP.
+Prefer tight, falsifiable debugging loops. Traces, structured instrumentation, logs, state readback, and deterministic reproduction are primary evidence; screenshots supplement visual bugs rather than replacing machine-observable facts.
 
-## 13. ChatGPT and worker responsibility split
+## 5. CTO communication
 
-ChatGPT is the primary owner of project planning, implementation design,
-production-code changes, code review, and merge decisions. The worker is the
-primary executor for builds, tests, server/device operation, evidence capture,
-and debugging.
+GitHub is the durable DSH <-> CTO mailbox. `chat-agent-bridge` is the existing CDP/MCP transport used to send a wake/message to and read from the logged-in ChatGPT account. It must target `ChatGPT project = dsh-glasses`, `ChatGPT session = CTO`, and it must not become the canonical store for requests, evidence, or decisions.
 
-The worker MAY make small, evidence-driven debug fixes and temporary
-instrumentation needed to isolate or verify a defect, but MUST NOT independently
-redesign the architecture, change accepted product behavior, or expand scope.
-Nontrivial implementation changes must be sent to ChatGPT for planning/coding or
-review before merge.
+Use only three blocking CTO request kinds:
 
-If the worker cannot confidently fix a bug, it MUST send ChatGPT a compact bug
-report containing:
+- **review** — exact candidate PR/head is acceptance-ready;
+- **debug** — a tight hard-bug packet needs CTO analysis;
+- **decision** — Ticket execution requires a product/architecture/user decision.
 
-- exact branch and commit;
-- host, device, build variant, and relevant runtime versions;
-- minimal reproduction steps;
-- expected and actual behavior;
-- bounded tracer/log evidence and the exact timestamps involved;
-- current hypothesis and attempted fixes;
-- the smallest concrete question or patch request.
+Every request must have a unique request id and identify the Ticket, exact relevant head SHA, concise question/verdict needed, and bounded evidence references. The durable CTO response belongs on the PR/Ticket and must identify the request; code review must identify the reviewed head SHA.
 
-The primary debugging methods are dedicated tracers, structured instrumentation,
-and logs. A screenshot is supporting evidence, not a substitute for traces or
-logs. For a visual defect, collect the screenshot together with UI hierarchy,
-lifecycle/input logs, network state, and other relevant machine-observable facts.
+If the branch changes after CTO approval, the old approval is stale and a new review is required.
 
-## 14. Mandatory ChatGPT polling and non-stop rule
+## 6. Completion gate
 
-Whenever a worker sends ChatGPT a question, bug report, code-review request, or
-other blocking request, it MUST start a timer-driven polling heartbeat for the
-reply. Event-driven notification MAY supplement polling but MUST NOT be the only
-mechanism.
+A Ticket is complete only when all are true:
 
-Default behavior:
+- every acceptance criterion is demonstrably PASS;
+- every required automated, runtime, hardware, or human gate is satisfied;
+- the final candidate is committed and pushed;
+- required evidence is durable and references the exact tested implementation;
+- ChatGPT CTO has approved the exact current head SHA;
+- no unresolved blocker or requested change remains;
+- the worktree is clean except for explicitly documented external/runtime artifacts.
 
-- poll approximately every 30 seconds while blocked;
-- polling MAY back off to at most 60 seconds while productive nonconflicting work
-  continues;
-- continue all independent tests, evidence collection, and diagnosis between
-  polls;
-- after a reply arrives, acknowledge it and apply or test it promptly;
-- do not send duplicate questions unless new evidence materially changes the
-  problem.
+Do not merge by default. Merge only when the Ticket/CTO/owner explicitly authorizes it under the current workflow.
 
-Silence, a lost event, a tool timeout, or an unavailable reply is not permission
-to stop. Without an explicit instruction from **code2hack** to stop, pause, or
-hand off, the worker MUST NOT voluntarily end the task or terminate its working
-session. If fully blocked, keep the session alive, preserve state, continue the
-heartbeat, and investigate alternate evidence paths.
+## 7. Closeout and handoff
 
-## 15. Autonomous server and real-hardware operation
+Closeout is a durable GitHub artifact, not a transcript summary. Record at minimum:
 
-The worker MUST fully operate server and real-Rokid testing/debugging itself.
-This includes SSH, builds, installs, launches, process control, permissions,
-network/Tailscale recovery, ADB input, logcat, system-state collection,
-UIAutomator dumps, screenshots, service health checks, disposable-service
-restarts, and evidence recording.
+- final candidate SHA and PR;
+- acceptance results;
+- required evidence locations;
+- CTO review request/verdict and reviewed SHA;
+- any residual uncertainty or deliberately deferred behavior.
 
-Do not ask code2hack to tap controls, read or describe the display, run terminal
-commands, collect logs, restart services, toggle Tailscale, reinstall the APK, or
-perform another device/server action while any verified ADB route to the Rokid is
-available. Use u4090 USB ADB first, then the documented fallback routes.
+The milestone DAG determines the next ready frontier. The outgoing worker does not invent, reorder, or spawn sibling/successor work. After durable closeout, the dispatcher recomputes the frontier and materializes newly ready Tickets.
 
-The only ordinary escalation threshold is that the Rokid is unavailable through
-all verified ADB routes after the recovery procedure in this file. If ADB is
-healthy but an exact physical interaction cannot be automated, record that item
-as not yet hardware-qualified and continue every other available test; do not
-interrupt code2hack unless code2hack explicitly requests or offers a manual
-interaction.
+A successor uses a fresh DSH session and fresh Codex thread, bootstraps from current `origin/main` (or the explicitly specified base), its own Ticket, linked authorities, and completed dependency closeouts. Do not require it to replay the predecessor transcript. Archive/retire the predecessor after its closeout is durable; successor creation is dispatcher-owned rather than predecessor-owned.
 
-## 16. Communication identity
+## 8. Git, hosts, and hard guardrails
 
-- Messages from a DSH worker begin with `[spark:dsh:<exact-session-id>]`.
-- Other coding workers: `[<host>:<worker-kind>:<session-or-thread-id>]`.
-- Messages without a valid prefix are treated as coming directly from the user.
+- GitHub `origin` is shared truth across hosts. Transfer source through Git; do not hand-copy source trees between Spark and u4090.
+- One worker owns one active Ticket branch/worktree. Never rewrite another worker's branch and never force-push `main`.
+- **spark** is the DSH/plugin/server host. **u4090** is the first-priority Android/Rokid build, USB-ADB, screenshot, logcat, UIAutomator, and input-tracing host.
+- Use debug builds for development Tickets unless the Ticket explicitly requires release qualification.
+- Never commit real credentials or real disposable session IDs.
+- Never expose an unauthenticated unrestricted DSH interface publicly.
+- Never wipe/reset the Rokid, Tailscale identity, DSH home/session history, or another durable environment without explicit owner authority.
+- Never claim hardware/runtime behavior that was not observed on the stated build/device/environment.
+- For DSH integration, follow `SPEC.md` section 5: keep DSH internals behind the project adapter, pin the supported DSH revision, and extend through documented services/events rather than patching the agent loop for convenience.
 
-## 17. ChatGPT thinking-effort policy
-
-- **Usage-limit fallback (mandatory):** when a ChatGPT reply is blocked by a
-  usage limit at a given thinking effort (e.g. "You've hit your limit"), do NOT
-  keep polling/re-sending at that same limited effort. Retry the same pending
-  request at the next-lower thinking effort (Pro → xhigh → high → medium → low)
-  until the thread accepts it.
-- **Effort by request type:**
-  - Implementation requests (and any runtime/execution ask) → always use
-    **xhigh**, whether or not "Pro" is available.
-  - Planning and fixing hard bugs → **Pro** is acceptable, and is the only case
-    where Pro should be chosen.
-- These rules also govern which thinking-effort state the worker selects in the
-  thread before sending, and which effort it retries at after a limit.
-
-## Current slice state
-
-- TB0-I0 merged in PR #7.
-- TB0-R0 merged in PR #8.
-- TB0-A0 merged in PR #9.
-- TB0-C0 merged in PR #10 (one-session product text loop, accepted 2026-08-19).
-- TB0-D0 merged in PR #11 (reproducible disposable runtime, accepted 2026-08-19).
-- TB0-D1 merged in PR #12 (reproducible Rokid debug provisioning, accepted 2026-08-19).
-- TB0-P0 physical qualification ELIMINATED from the MVP per code2hack (2026-08-19).
-- Active slice: `tb0/adb-only-mvp-acceptance` (TB0-M0, ADB-only MVP acceptance).
-- Base merge: `97dbec9f759efd4581dbb19c355aa5328f45793b`.
-- Never commit a real session ID — configure sessions only via
-  `DSH_GLASSES_TB0_SESSION_ID`.
-
-## Hosted model services (outside TB0, user-deployed)
-
-- Vision "eyes": `lfm2.5-vl-3b` via vLLM on **spark2** (`192.168.100.11:8887`,
-  alt NIC `192.168.101.11:8887`; OpenAI-compatible `/v1/chat/completions`,
-  `/v1/models`; images as base64 `image_url` data URLs). Verified with real
-  image inference. Do not redeploy.
-- ASR: `nemotron-3.5-asr-streaming-0.6b` via **NeMo-Speech.cpp** on **spark**
-  `127.0.0.1:8886` (`/health` ok; OpenAI-style `/v1/audio/transcriptions`
-  multipart file, `/v1/audio/diarizations`, `/v1/realtime`,
-  `/v1/audio/speech`).
-- Keep both isolated from TB0 and from the resident DSH/text-serving stack.
+For a Ticket that touches TB0 runtime/Rokid debug infrastructure, read the relevant `docs/TRACER_BULLET_TB0_*.md`, `docs/dev/*`, and `docs/evidence/*` files named by the Ticket before operating that path. Historical TB0 documents are references, not default startup reading for unrelated work.
