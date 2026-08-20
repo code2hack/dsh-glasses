@@ -42,11 +42,11 @@ M1
 - <durable repository evidence paths required for ChatGPT + Codex review>
 
 <!-- Protocol reminder:
-     - After local bootstrap/inspection and before first production edits, DSH must
-       ask ChatGPT for a concrete repository-grounded implementation plan and
-       receive the reply. Codex stays idle for startup planning.
-     - If DSH becomes stuck on a hard problem, it must ask BOTH ChatGPT and Codex
-       for help using the same bounded git-only debug request. -->
+     1. After local bootstrap/inspection and before first production edits, DSH
+        MUST ask ChatGPT for a concrete repository-grounded implementation plan
+        and receive the reply. Codex stays idle for startup planning.
+     2. If DSH becomes stuck on a hard problem, it MUST ask BOTH ChatGPT and
+        Codex for help using the same bounded git-only debug request. -->
 
 ## Out of scope
 
