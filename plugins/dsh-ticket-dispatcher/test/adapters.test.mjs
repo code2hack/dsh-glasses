@@ -70,3 +70,40 @@ test("git adapter replaces a conflicting dispatcher-owned worktree path", async 
   assert.equal(await adapter.worktreeUsable(binding), true);
   await assert.rejects(adapter.createWorktree({ ...binding, worktree: join(root, "outside") }), /outside dispatcher root/);
 });
+
+test("resolveBase with fetch=true rejects on a failed configured-origin fetch instead of using a stale origin/main", async (t) => {
+  const { root, repo, git, baseSha } = await scratchRepo(t);
+  // origin/main is resolvable locally, but stale relative to the configured origin.
+  await git("update-ref", "refs/remotes/origin/main", baseSha);
+  // An origin IS configured, but its URL is unreachable, so `git fetch origin` must fail.
+  await git("remote", "add", "origin", join(root, "does-not-exist"));
+  const adapter = createGitAdapter(repo, join(root, "worktrees"));
+
+  await assert.rejects(adapter.resolveBase({ baseRef: "origin/main", fetch: true }), /fetch/i);
+  // Explicit fetch=false permits resolving the intentionally local/stale ref.
+  assert.equal(await adapter.resolveBase({ baseRef: "origin/main", fetch: false }), baseSha);
+});
+
+test("resolveBase with fetch=true returns the fetched remote head, never a stale local origin/main", async (t) => {
+  const { root, repo, git, baseSha } = await scratchRepo(t);
+  // A reachable remote whose main is ahead of the local stale origin/main.
+  const remote = join(root, "remote");
+  await exec("git", ["init", "--quiet", "-b", "main", remote]);
+  const remoteGit = (...args) => exec("git", args, { cwd: remote });
+  await remoteGit("config", "user.name", "Remote");
+  await remoteGit("config", "user.email", "remote@example.invalid");
+  await writeFile(join(remote, "file"), "remote\n");
+  await remoteGit("add", "file");
+  await remoteGit("commit", "--quiet", "-m", "fresh remote");
+  const remoteHead = (await remoteGit("rev-parse", "HEAD")).stdout.trim();
+
+  await git("update-ref", "refs/remotes/origin/main", baseSha);
+  await git("remote", "add", "origin", remote);
+  const adapter = createGitAdapter(repo, join(root, "worktrees"));
+
+  assert.notEqual(remoteHead, baseSha);
+  // Before any fetch, the local tracking ref is stale: explicit fetch=false keeps it.
+  assert.equal(await adapter.resolveBase({ baseRef: "origin/main", fetch: false }), baseSha);
+  // With fetch=true the tracking ref is refreshed to the remote head, never stale.
+  assert.equal(await adapter.resolveBase({ baseRef: "origin/main", fetch: true }), remoteHead);
+});

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { createFixtureGithubAdapter, createGitAdapter } from "../lib/adapters.js";
+import { createStateStore } from "../lib/state.js";
 import { createDispatcher } from "../lib/dispatcher.js";
 import { claimBody, collapseClaimMarkers, voidClaimBody } from "../lib/core.js";
+
+const run = promisify(execFile);
 
 const BASE = "71059429be3d6f95ef9625adf5dea52db2cd51d2";
 const NEXT = "e3f6cdbfe49cc295753859e3c7b600785885aa45";
@@ -287,4 +296,62 @@ test("a pre-marker publishing crash retries instead of becoming a false claim", 
   const report = await h.dispatcher.reconcile();
   assert.equal(report.running[0].number, 1);
   assert.notEqual(report.running[0].sessionId, "session-crashed");
+});
+
+test("a failed configured-origin fetch with a resolvable stale origin/main admits no Ticket", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-fetch-gate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repo = join(root, "repo");
+  await run("git", ["init", "--quiet", repo]);
+  const git = (...args) => run("git", args, { cwd: repo });
+  await git("config", "user.name", "Dispatcher");
+  await git("config", "user.email", "dispatcher@example.invalid");
+  await writeFile(join(repo, "file"), "base\n");
+  await git("add", "file");
+  await git("commit", "--quiet", "-m", "base");
+  const base = (await git("rev-parse", "HEAD")).stdout.trim();
+
+  // origin/main is resolvable locally but STALE, and a configured origin exists
+  // whose fetch fails. With fetch=true the pass must fail instead of admitting
+  // a Ticket from the stale ref.
+  await git("update-ref", "refs/remotes/origin/main", base);
+  await git("remote", "add", "origin", join(root, "does-not-exist"));
+
+  const fixtures = join(root, "fixtures.json");
+  await writeFile(fixtures, JSON.stringify({
+    tickets: [{ number: 7, state: "OPEN", url: "https://example.test/issues/7", blockers: [], blockerStates: {} }],
+    claims: [],
+  }, null, 2));
+  const worktrees = join(root, "worktrees");
+  await mkdir(worktrees, { recursive: true });
+
+  const created = [];
+  const dsh = {
+    isLive: () => false,
+    async createAgent(binding) { created.push(binding.number); },
+    async resumeAgent() {},
+    async disposeAgent() {},
+  };
+  const dispatcher = createDispatcher({
+    github: createFixtureGithubAdapter(fixtures),
+    git: createGitAdapter(repo, worktrees),
+    dsh,
+    stateStore: createStateStore(join(root, "state.json")),
+    repoRoot: repo,
+    worktreeRoot: worktrees,
+    baseSha: "",
+    baseRef: "origin/main",
+    fetch: true,
+    maxActive: 3,
+    sessionProbe: async () => true,
+  });
+
+  const report = await dispatcher.reconcile();
+  assert.ok(report.resolutionError, "resolutionError must be set on fetch failure");
+  assert.match(report.resolutionError, /fetch/i);
+  assert.deepEqual(report.running, [], "no Ticket may be admitted from the stale ref");
+  assert.deepEqual(report.ready, [7], "the Ticket stays on the ready frontier");
+  assert.deepEqual(created, [], "no agent/worktree may be created");
+  assert.equal((await readFile(fixtures, "utf8")).includes("dispatcher-claim:"), false, "no durable claim may be written");
+  assert.equal((await readFile(join(root, "state.json"), "utf8")).includes("claimed"), false, "local state must hold no claimed binding");
 });

@@ -18,6 +18,9 @@ Install or link this package into a DSH profile that mounts `@deepseek-ai/dsh-ba
         repoRoot: /absolute/path/to/dsh-glasses
         baseRef: origin/main
         stayAlive: true
+        # Required for automatic Ticket execution: deliver the bootstrap prompt
+        # to each admitted/resumed Ticket Lead and start its model turns.
+        wakeAgents: true
 ```
 
 The package must resolve its DSH peers from the running deployment. For a linked source checkout, link the deployment's `node_modules/@deepseek-ai` scope into this package's `node_modules`, as the smoke script does.
@@ -29,7 +32,7 @@ dsh --profile dispatcher --patch overlay.yml reconcile --stay-alive --interval-m
 dsh --profile dispatcher --patch overlay.yml reconcile --max-passes 3 --base-ref origin/main
 ```
 
-The command prints stable JSON followed by a stable human summary for every pass. `status` and ordinary `reconcile` are one-shot. `stayAlive: true` loops sequentially without overlapping passes; `maxPasses: N` provides the same loop with a deterministic cap. Agent creation, resume, and session flush do not invoke an LLM. Set `wakeAgents: true` only when created or resumed agents should receive their recorded bootstrap prompts and start model turns.
+The command prints stable JSON followed by a stable human summary for every pass. `status` and ordinary `reconcile` are one-shot. `stayAlive: true` loops sequentially without overlapping passes; `maxPasses: N` provides the same loop with a deterministic cap. Agent creation, resume, and session flush do not invoke an LLM. `wakeAgents` defaults to `false` (create/claim/report only, no model turn). **Automatic Ticket execution requires `wakeAgents: true`:** each newly admitted or resumed Ticket Lead then receives its recorded bootstrap prompt and starts model turns. The production workflow profile above therefore slips it explicitly; keep the safe default only for manual, LLM-free admission inspect.
 
 ## Configuration
 
@@ -40,13 +43,13 @@ The command prints stable JSON followed by a stable human summary for every pass
 | `worktreeRoot` | sibling `dsh-glasses-tickets` | dedicated Ticket worktree parent |
 | `baseRef` / `DISPATCHER_BASE_REF` / `--base-ref` | `origin/main` | ref resolved once when a pass has new admissions |
 | `baseSha` / `DISPATCHER_BASE_SHA` / `--base-sha` | empty | exact 40-character override for deterministic CI/smoke runs |
-| `fetch` / `DISPATCHER_FETCH` / `--fetch`, `--no-fetch` | `true` | failure-tolerant `git fetch origin` before ref resolution when `origin` exists |
+| `fetch` / `DISPATCHER_FETCH` / `--fetch`, `--no-fetch` | `true` | fetch `origin` before ref resolution when `origin` is configured; a failed fetch fails that admission pass (`resolutionError`, no admission) instead of falling back to a stale local `origin/main`. Only explicit `fetch: false` permits resolving an intentionally local/stale ref |
 | `statePath` / `DISPATCHER_STATE_PATH` | `$XDG_STATE_HOME/dsh-glasses/ticket-dispatcher/state.json` | private local binding state |
 | `maxActive` / `DISPATCHER_MAX_ACTIVE` / `--max-active` | `3` | active Ticket ceiling |
 | `intervalMs` / `DISPATCHER_INTERVAL_MS` / `--interval-ms` | `60000` | delay between sequential live passes |
 | `maxPasses` / `DISPATCHER_MAX_PASSES` / `--max-passes` | `0` | live-pass cap; zero is unlimited with `stayAlive` |
 | `stayAlive` / `--stay-alive` | `false` | continuously reconcile rather than run one pass |
-| `wakeAgents` | `false` | send the bootstrap followup after durable claim publication |
+| `wakeAgents` | `false` | send the bootstrap followup after durable claim publication; **`true` is required for automatic Ticket execution** |
 | `fixturesPath` | empty | offline test/smoke Ticket and marker store |
 
 `gh` must already be authenticated for the target host; no token is read from configuration or committed. The adapter recognizes issue bodies containing the Ticket contract's `## What to build` heading and parses references only from `## Blocked by`. Pull requests may satisfy blockers but are not dispatched as Tickets.

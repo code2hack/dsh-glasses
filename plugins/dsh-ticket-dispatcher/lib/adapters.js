@@ -36,10 +36,16 @@ export function createGitAdapter(repoRoot, worktreeRoot = resolve(repoRoot, "../
   return {
     async resolveBase({ baseSha, baseRef, fetch }) {
       if (baseSha) return baseSha;
-      if (fetch) try {
-        await run("git", ["remote", "get-url", "origin"], repoRoot);
-        await run("git", ["fetch", "--quiet", "origin"], repoRoot).catch(() => {});
-      } catch {}
+      if (fetch) {
+        let originConfigured = false;
+        try {
+          await run("git", ["remote", "get-url", "origin"], repoRoot);
+          originConfigured = true;
+        } catch {}
+        // With fetch=true and a configured origin, a failed fetch must fail this
+        // admission pass instead of silently resolving a stale local origin/main.
+        if (originConfigured) await run("git", ["fetch", "--quiet", "origin"], repoRoot);
+      }
       try {
         const resolved = (await run("git", ["rev-parse", `${baseRef}^{commit}`], repoRoot)).trim();
         if (/^[0-9a-f]{40}$/i.test(resolved)) return resolved;
