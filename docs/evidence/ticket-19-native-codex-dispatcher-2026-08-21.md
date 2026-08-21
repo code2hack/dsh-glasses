@@ -22,7 +22,7 @@ Completion markers are source-bound and trusted-writer enforced **with a fail-cl
 | — | CTO round 1 (`dsht19-review-1`) | r1 evidence | blockers → resolved (`b06d65a`) |
 | — | Fresh Codex round 2 | r2 evidence | REQUEST_CHANGES → resolved |
 | — | CTO round 2 (`dsht19-review-2`) | r2 evidence | blockers → resolved (`2130879`) |
-| — | CTO round 3 (`dsht19-review-3`) | HEAD `423ae86` | readiness → plan reconciling |
+| — | CTO round 3 (`dsht19-review-3`) | HEAD `423ae86` | REQUEST_CHANGES — 3 blockers → addressed (`b06d65a`) |
 | — | Fresh Codex round 3 | HEAD `509c112` | 3 findings → resolved (`56556eb`) |
 | — | CTO round 4 (`dsht19-review-4`) | HEAD `1bbc524` | 1 blocker (CLOSED invalid-Milestone crash) → fixed (`464734d`, `509c112`, `56556eb`) |
 | — | Fresh Codex round 4 | HEAD `509c112` | 5 findings → all fixed (`56556eb`) |
@@ -33,8 +33,8 @@ Completion markers are source-bound and trusted-writer enforced **with a fail-cl
 | R4 | CTO `dsht19-progress-R4` | sequential unit contracts (72/72) | PASS |
 | R5 | CTO `dsht19-progress-R5` | sequential smoke matrix + full real smoke PASS | PASS |
 | R6 | CTO `dsht19-progress-R6` | README sequential rewrite | PASS |
-| R7 | this document + PR #25 body | current draft | PENDING |
-| R8 | commit + push #19 changes | final candidate head | PENDING |
+| R7 | evidence rewrite + PR #25 body | docs-only | PASS |
+| R8 | integration commit + push `a888e2c` | pushed head; 72/72 + typecheck + full smoke PASS; PR #25 mergeable/clean | PASS |
 | R9 | full validation on final head + fresh Codex final review | §R9 | PENDING |
 
 Every CTO verdict above is recorded against the exact head at the time of review; a production-code change invalidates any earlier PASS for the new exact head. GitHub/PR remains the durable authority for all of the above.
@@ -86,11 +86,11 @@ The Phase 6 probe commits the acceptance-ready candidate before any exact-head C
 
 ## 3. Production configuration note
 
-Run the dispatcher as its own DSH profile (not inside the `web`/`headless` bundles) and set the `completionAuthors` allowlist (e.g. `completionAuthors: ['code2hack']`) so real GitHub marker writes are authorized for known writers; without it the real adapter is fail-closed (no marker writes; only CLOSED issue retires). Heartbeat interval default is exactly 120s.
+Run the dispatcher as its own DSH profile (not inside the `web`/`headless` bundles) and set the `completionAuthors` allowlist (e.g. `completionAuthors: ['code2hack']`) so real GitHub marker writes are authorized for known writers; without it the real adapter is fail-closed — **no completion marker is accepted/authorized** (the adapter may still post a comment, but it is not treated as terminal) and only the CLOSED issue state retires a Ticket. Heartbeat interval default is exactly 120s.
 
 ## 4. Files changed in this branch (final candidate)
 
-`docs/AGENTS.md`, `docs/WORKFLOW.md`, `.github/ISSUE_TEMPLATE/agent-ticket.md` (workflow-delta merge `0da5ee2`, docs-only), `plugins/dsh-ticket-dispatcher/{lib/core.js, README.md, test/core.test.mjs, test/smoke/dsh-smoke.mjs}` + new `plugins/dsh-ticket-dispatcher/test/smoke/sequential-helper-probe.mjs`, plus this evidence, on `workflow/ticket-19` for PR #25. The delta merge explicitly left `plugins/` untouched; all sequential-helper behavior changes were introduced by this Ticket on top of the pinned authority.
+`AGENTS.md`, `docs/WORKFLOW.md`, `.github/ISSUE_TEMPLATE/agent-ticket.md` (workflow-delta merge `0da5ee2`, docs-only), `plugins/dsh-ticket-dispatcher/{lib/core.js, README.md, test/core.test.mjs, test/smoke/dsh-smoke.mjs}` + new `plugins/dsh-ticket-dispatcher/test/smoke/sequential-helper-probe.mjs`, plus this evidence, on `workflow/ticket-19` for PR #25. The delta merge explicitly left `plugins/` untouched; all sequential-helper behavior changes were introduced by this Ticket on top of the pinned authority.
 
 ---
 ## Appendix A — Historical evidence (superseded, preserved for audit)
