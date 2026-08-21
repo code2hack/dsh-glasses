@@ -119,7 +119,7 @@ async function codex(ctx, agent, label, task) {
 }
 
 // ── Scripted ChatGPT stand-in (disposable, deterministic) ────────────────────
-const CHECKPOINT_FIELDS = ["todo-item:", "status:", "head:", "result:", "validation:", "evidence:", "next:"];
+const CHECKPOINT_FIELDS = ["ticket:", "todo-item:", "status:", "head:", "result:", "validation:", "evidence:", "next:"];
 
 function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
   const kind = profile.chat[label];
@@ -218,10 +218,26 @@ async function probe(ctx, config) {
     try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: w, encoding: "utf8" }).trim(); }
     catch { return "(no git head)"; }
   };
+  // Model of the DSH apply/fix+validate step of a COMPLETE helper loop: after a
+  // technical non-PASS verdict the DSH applies the finding, records it durably
+  // (out-of-worktree so the committed exact-head candidate stays pristine), and
+  // validates; only then may the next loop/request proceed.
+  let applies = 0;
+  const applyFinding = (chain, loop) => {
+    applies += 1;
+    const marker = join(worktree, "..", ".sq-applied-" + chain + ".log");
+    try {
+      const prev = existsSync(marker) ? readFileSync(marker, "utf8") : "";
+      writeFileSync(marker, prev + "applied chain=" + chain + " loop=" + loop + "\n");
+    } catch {}
+    record("apply", "dsh", chain + "-" + String(loop));
+    console.log("SQP event apply chain=" + chain + " loop=" + loop + " count=" + applies);
+  };
   // Completed-item checkpoint: authority requires status = completed and an
   // exact head (SHA + working-tree state), not a placeholder/in_progress row.
   const checkpointTask = (item) => [
     "PROGRESS CHECKPOINT for Ticket #" + config.number,
+    "ticket: #" + config.number,
     "todo-item: " + JSON.stringify(item),
     "status: completed",
     "head: " + headShaOf(worktree) + " (worktree state: candidate release-note.txt + DONE, permitted)",
@@ -372,6 +388,9 @@ async function probe(ctx, config) {
       chatCalls.push(dbg);
       record("debug-loop", "chatgpt", String(loop + 1));
       if (dbg.verdict === "PASS") { resolved = true; break; }
+      // A COMPLETE loop ends only when the DSH has applied the finding and
+      // validated it; only a still-non-passing result may start the next loop.
+      applyFinding("hard-chain", loop);
       loop += 1;
     }
     if (!resolved) {
@@ -411,7 +430,10 @@ async function probe(ctx, config) {
     record("review-blocked", "chatgpt", "-");
     if (existsSync(donePath))
       throw new Error("blocking scenario: DONE must NOT exist while REQUEST_CHANGES stands");
+    applyFinding("review-final", 0); // DSH applies the finding (writes the gate)
     setAcceptanceReady();
+    // validate: the finding is applied and the gate now reads exactly REQUIRE
+    if (!gateMet()) throw new Error("blocking scenario: apply step must bring the candidate to the required gate");
     const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true));
     chatCalls.push(rev2);
     if (rev2.verdict !== "PASS")
@@ -445,6 +467,9 @@ async function probe(ctx, config) {
         chatCalls.push(rev);
         if (rev.verdict === "PASS") { finalVerdict = "PASS"; break; }
         if (rev.verdict === "UNAVAILABLE") break; // objective unavailability escalates NOW to fresh Codex
+        // COMPLETE loop: apply the finding, validate, then (still non-passing)
+        // request the next ChatGPT loop.
+        applyFinding("review-final", loop);
         nonPass += 1;
         loop += 1;
       }
@@ -507,6 +532,10 @@ async function probe(ctx, config) {
     const debugLoops = events.filter((e) => e.startsWith("debug-loop:chatgpt:")).length;
     if (debugLoops !== 3)
       throw new Error("hard chain must run EXACTLY 3 ChatGPT loops; saw " + debugLoops);
+    if (applies !== 3)
+      throw new Error("each of the 3 hard-chain loops must be COMPLETE (apply/fix+validate between loops); applies=" + applies);
+    if (!events.some((e) => e.startsWith("apply:dsh:hard-chain-")))
+      throw new Error("apply/fix steps after hard-chain REQUEST_CHANGES must be ledgered");
     if (events.filter((e) => e === "checkpoint:chatgpt:after-chain").length !== 1)
       throw new Error("after the escalated chain resolves, ordinary interactions must return to ChatGPT-first");
     if (!events.some((e) => e.startsWith("debug-resolved:codex") || e.startsWith("debug-escalated-unavailable:codex")))
@@ -516,7 +545,11 @@ async function probe(ctx, config) {
     const codexReviews = codexCalls.filter((c) => c && c.kind === "review-final").length;
     if (codexReviews !== 1)
       throw new Error("after 3 non-pass ChatGPT loops the final review must go to fresh Codex exactly once; saw " + codexReviews);
+    if (applies !== 3)
+      throw new Error("each of the 3 final-review loops must be COMPLETE (apply/fix+validate between loops); applies=" + applies);
   }
+  if (scenario === "blocking-request-changes" && applies !== 1)
+    throw new Error("the blocking fix must be modeled as one apply/fix+validate step; applies=" + applies);
   if (scenario === "blocking-request-changes") {
     if (!events.some((e) => e === "review-blocked:chatgpt:-"))
       throw new Error("the blocking REQUEST_CHANGES must have been observed (and DONE withheld) before completion");
