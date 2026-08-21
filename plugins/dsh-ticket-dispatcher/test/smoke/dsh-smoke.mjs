@@ -633,7 +633,7 @@ try {
     // Progress checkpoint: first-line helper objectively UNAVAILABLE -> the
     // SAME checkpoint escalates to REAL fresh Codex exactly once; after that
     // the ordinary code path returns to ChatGPT-first.
-    { name: "checkpoint-unavail-codex", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=1/, /SQP event codex kind=checkpoint attempt=/, /final=PASS/] },
+    { name: "checkpoint-unavail-codex", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=1/, /SQP event codex kind=checkpoint/, /final=PASS/] },
     // Hard problem: EXACTLY 3 ChatGPT loops then fresh Codex, NO 4th; afterward
     // an ordinary interaction returns to ChatGPT-first (scoped escalation).
     { name: "three-loops-chain", expectDone: true, overlay: "overlay-sq.yml", assert: [] },
