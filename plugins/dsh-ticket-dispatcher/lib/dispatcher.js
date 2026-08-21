@@ -19,7 +19,7 @@ function milestoneValid(ticket) {
   return typeof ticket?.milestone === "string" && MILESTONE_PATTERN.test(ticket.milestone);
 }
 
-const DURABLE_KEYS = ["number", "status", "name", "sessionId", "branch", "worktree", "baseSha", "milestone", "bootstrapPrompt", "reason", "pendingReason", "error", "completedBy", "head", "recovered"];
+const DURABLE_KEYS = ["number", "status", "name", "sessionId", "branch", "worktree", "baseSha", "milestone", "bootstrapPrompt", "reason", "pendingReason", "error", "completedBy", "head", "recovered", "bootstrapped"];
 
 /** Strip per-pass runtime signals so durable state holds only the reconstruct-
  * ed Ticket <-> DSH identity and lifecycle status projection. */
@@ -197,9 +197,19 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
           // Loaded but quiescent while its Ticket is unfinished: wake the
           // SAME bound session with a minimal continuation instruction.
           if (dsh.wakeAgent) {
+            // The FIRST successful wake for a freshly created session MUST
+            // carry the full v2 bootstrap: if an earlier bootstrap wake
+            // failed (transient transport error), a later pass retries the
+            // full bootstrap, never silently degrading the agent to a
+            // continuation prompt it was never bootstrapped with.
+            const prompt = binding.bootstrapped === false ? (binding.bootstrapPrompt || continuationPrompt(binding)) : continuationPrompt(binding);
             try {
-              await dsh.wakeAgent(binding, continuationPrompt(binding));
+              await dsh.wakeAgent(binding, prompt);
               binding.woke = (binding.woke ?? 0) + 1;
+              if (binding.bootstrapped !== true) {
+                binding.bootstrapped = true;
+                state.tickets[String(binding.number)] = durableProjection({ ...binding });
+              }
             } catch (error) {
               binding.wakeError = error instanceof Error ? error.message : String(error);
             }
@@ -238,13 +248,20 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
           await invalidate(state, binding, "invalid-claim", publication);
           continue;
         }
-        // This is a RECONNECTED existing Ticket Lead: give it the minimal
-        // continuation instruction (the full bootstrap was already delivered
-        // at first admission).
+        // RECONNECTED existing Ticket Lead. The full bootstrap is normally
+        // already delivered (first admission), so deliver the minimal
+        // continuation — UNLESS the bootstrap was never successfully woken
+        // (bootstrapped !== true), in which case the full bootstrap is
+        // retried so the agent is never left running without its protocol.
         if (dsh.wakeAgent) {
+          const prompt = binding.bootstrapped === false ? (binding.bootstrapPrompt || continuationPrompt(binding)) : continuationPrompt(binding);
           try {
-            await dsh.wakeAgent(binding, continuationPrompt(binding));
+            await dsh.wakeAgent(binding, prompt);
             binding.woke = (binding.woke ?? 0) + 1;
+            if (binding.bootstrapped !== true) {
+              binding.bootstrapped = true;
+              state.tickets[String(binding.number)] = durableProjection({ ...binding });
+            }
           } catch (error) {
             binding.wakeError = error instanceof Error ? error.message : String(error);
           }
@@ -305,7 +322,7 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
           await stateStore.save(state);
           await github.writeClaim(binding);
           published = true;
-          state.tickets[String(ticket.number)] = durableProjection({ ...binding, status: "claimed" });
+          state.tickets[String(ticket.number)] = durableProjection({ ...binding, status: "claimed", bootstrapped: false });
           binding.status = "claimed";
           binding.live = true;
         } catch (error) {
@@ -317,7 +334,12 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
         if (published && dsh.wakeAgent) {
           try {
             await dsh.wakeAgent(binding, binding.bootstrapPrompt);
+            binding.bootstrapped = true;
+            state.tickets[String(ticket.number)] = durableProjection({ ...binding, status: "claimed", bootstrapped: true });
           } catch (error) {
+            // Keep bootstrapped:false so a later pass retries the FULL
+            // bootstrap instead of silently demoting to a continuation prompt
+            // the fresh agent never received (protocol requirement 2/4/6).
             binding.wakeError = error instanceof Error ? error.message : String(error);
           }
         }

@@ -31,7 +31,10 @@ function harness(options = {}) {
     sharedSessions = new Set(),
     agentStatuses = new Map(),
     wakeAgents = false,
+    failFirstWakes = 0,
+    createdAsRunning = true,
   } = options;
+  let wakeBudget = failFirstWakes;
   let state = structuredClone(initialState ?? { schemaVersion: 2, tickets: {} });
   let saves = 0;
   let refSha = options.refSha ?? BASE;
@@ -88,7 +91,7 @@ function harness(options = {}) {
       if (fail === "agent") throw new Error("agent fault");
       live.add(binding.sessionId);
       sharedSessions.add(binding.sessionId);
-      agentStatuses.set(binding.sessionId, "running");
+      agentStatuses.set(binding.sessionId, createdAsRunning ? "running" : "idle");
     },
     async resumeAgent(binding) {
       calls.push(`resume:${binding.number}`);
@@ -102,7 +105,11 @@ function harness(options = {}) {
       agentStatuses.set(binding.sessionId, "idle");
     },
     ...(wakeAgents
-      ? { async wakeAgent(binding, message) { calls.push(`wake:${binding.number}`); wakes.push(`${binding.number}:${message}`); } }
+      ? { async wakeAgent(binding, message) {
+          calls.push(`wake:${binding.number}`);
+          if (wakeBudget > 0) { wakeBudget -= 1; throw new Error("transport down"); }
+          wakes.push(`${binding.number}:${message}`);
+        } }
       : {}),
   };
   const stateStore = {
@@ -164,7 +171,7 @@ test("dispatcher bindings, claim markers, and reports carry no Codex lifecycle s
   const persisted = h.state().tickets[String(binding.number)];
   assert.ok(!("codex" in persisted), "no Codex lifecycle field may be persisted");
   assert.deepEqual(Object.keys(persisted).sort(), [
-    "baseSha", "bootstrapPrompt", "branch", "milestone", "name", "number", "sessionId", "status", "worktree",
+    "baseSha", "bootstrapPrompt", "bootstrapped", "branch", "milestone", "name", "number", "sessionId", "status", "worktree",
   ]);
   assert.match(h.durableClaims[0], /"name":"dsh-glasses-M1-#1-DSH"/);
 });
@@ -356,6 +363,32 @@ test("a pre-marker publishing crash retries instead of becoming a false claim", 
   assert.equal(report.running[0].number, 1);
   assert.notEqual(report.running[0].sessionId, "session-crashed");
   assert.equal(report.running[0].sessionId, NAME(1));
+});
+
+test("a failed bootstrap wake is retried with the FULL bootstrap, never silently demoted to a continuation prompt", async () => {
+  const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
+    maxActive: 1,
+    wakeAgents: true,
+    failFirstWakes: 1,
+    // A failed first wake leaves the created agent idle (never started), so a
+    // later pass observes it live-but-quiescent — the exact scenario that
+    // must retry the FULL bootstrap, not degrade to a continuation prompt.
+    createdAsRunning: false,
+  });
+  const first = await h.dispatcher.reconcile(); // admission bootstrap wake throws
+  assert.equal(h.calls.filter((c) => c.startsWith("wake:")).length, 1, "first pass attempted the bootstrap wake");
+  assert.equal(h.wakes.length, 0, "the bootstrap wake failed (transport down)");
+  assert.equal(first.running.length, 1);
+  const second = await h.dispatcher.reconcile(); // next pass: agent loaded, never bootstrapped
+  const h2 = h.wakes[0];
+  assert.ok(h2, "second pass must wake the SAME agent");
+  assert.match(h2, /mcp-chatgpt|subagent_codex/, "second pass must deliver the FULL v2 bootstrap, not a continuation");
+  const third = await h.dispatcher.reconcile(); // now bootstrapped
+  const h3 = h.wakes[1];
+  assert.ok(h3, "third pass must wake again");
+  assert.doesNotMatch(h3, /mcp-chatgpt|subagent_codex/, "after a successful bootstrap, only the minimal continuation is sent");
+  assert.match(h3, /Continue Ticket #1/, "continuation prompt is for the SAME session");
 });
 
 test("a CLOSED Ticket with an invalid/empty declared Milestone and an existing claim retires without crashing (CTO finding)", async () => {
