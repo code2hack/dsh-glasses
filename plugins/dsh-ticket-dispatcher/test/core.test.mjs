@@ -193,3 +193,63 @@ test("a completion marker is authoritative only with an exact 40-hex head SHA an
     { number: 15, sessionId: binding.sessionId, head: "a".repeat(40), pr: "https://example.test/pr/15", status: "complete" },
   ]);
 });
+
+// ── Sequential-helper protocol (fe547f22 workflow delta) ─────────────────────
+
+test("generated bootstrap encodes the strict sequential helper contract (ChatGPT first, Codex escalation only, no parallel, per-item checkpoints, final-review routing)", () => {
+  const prompt = bootstrapPrompt({ number: 21, milestone: "M1", name: "dsh-glasses-M1-#21-DSH", url: "https://github.com/code2hack/dsh-glasses/issues/21", baseSha: "c".repeat(40), branch: "workflow/ticket-21", worktree: "/w/ticket-21" });
+  // First-line / no-parallel
+  assert.match(prompt, /ChatGPT FIRST/);
+  assert.match(prompt, /NEVER requested in parallel/);
+  assert.match(prompt, /fresh native Codex subagent as escalation/);
+  // Helper-produced detailed ordered plan + to-do before first edit
+  assert.match(prompt, /DETAILED ORDERED implementation\+validation plan with a checkable to-do list/);
+  assert.match(prompt, /before the first production edit/);
+  assert.match(prompt, /make ONE bounded attempt to ask ChatGPT/);
+  // Codex only if ChatGPT unavailable; self-plan only if both unavailable
+  assert.match(prompt, /If ChatGPT is objectively UNAVAILABLE, ask a fresh native Codex subagent/);
+  assert.match(prompt, /DSH may produce its own plan ONLY if BOTH helpers are unavailable/);
+  // Mandatory per-item progress checkpoints (with fields) routed ChatGPT-first
+  assert.match(prompt, /after EVERY completed to-do item, send a progress checkpoint/);
+  assert.match(prompt, /identifying the ticket, todo-item, status, head, result, validation, evidence, and the next item/);
+  assert.match(prompt, /Route every checkpoint ChatGPT-first/);
+  // One complete loop definition + three-loop escalation + return to ChatGPT-first
+  assert.match(prompt, /One complete ChatGPT loop is:/);
+  assert.match(prompt, /After exactly THREE unsuccessful ChatGPT loops on the same chain/);
+  assert.match(prompt, /instead of starting a fourth ChatGPT loop for that chain/);
+  assert.match(prompt, /once the escalated chain resolves, ordinary interactions return to ChatGPT-first/);
+  // Hard-problem ChatGPT-first
+  assert.match(prompt, /Hard problems: ask ChatGPT FIRST/);
+  // Final review: ChatGPT-first, PASS suppresses Codex, unavailability escalates, third loop escalates
+  assert.match(prompt, /ask ChatGPT to review the exact head/);
+  assert.match(prompt, /the reviewer gate is satisfied — do NOT invoke Codex/);
+  assert.match(prompt, /If ChatGPT is unavailable, ask a fresh Codex subagent for the exact-head review/);
+  assert.match(prompt, /after the third unsuccessful ChatGPT review loop, escalate the exact candidate to fresh Codex/);
+  assert.match(prompt, /both helpers are unavailable, you may complete only when every non-review acceptance requirement passes and no unresolved known blocking finding remains/);
+  // Blocking is not UNAVAILABLE
+  assert.match(prompt, /is NOT unavailability and must be addressed/);
+  // Codex fresh/self-contained/non-mutating
+  assert.match(prompt, /fresh one-shot native DSH subagent/);
+  assert.match(prompt, /never this DSH conversation history/);
+  assert.match(prompt, /inspect\/reason\/report only; do not modify the Ticket worktree/);
+  assert.match(prompt, /the dispatcher stores no Codex lifecycle state/);
+});
+
+test("generated bootstrap no longer contains any dual-helper instruction", () => {
+  const prompt = bootstrapPrompt({ number: 22, milestone: "Bootstrap", name: "dsh-glasses-Bootstrap-#22-DSH", url: "u22", baseSha: "d".repeat(40), branch: "b", worktree: "w" });
+  for (const stale of ["attempt it against BOTH", "Two PASSes are preferred", "PASS + UNAVAILABLE, UNAVAILABLE + PASS", "best-effort redundant helpers", "redundant helpers", "use both results if both respond"]) {
+    assert.equal(prompt.includes(stale), false, `stale dual-helper wording must be gone: ${stale}`);
+  }
+});
+
+test("continuation prompt instructs re-checking current durable authority + active plan/checkpoint state and the strict chain", () => {
+  const c = continuationPrompt({ number: 19, name: "dsh-glasses-Bootstrap-#19-DSH" });
+  assert.match(c, /Continue Ticket #19/);
+  assert.match(c, /dsh-glasses-Bootstrap-#19-DSH/);
+  assert.match(c, /Re-check the CURRENT durable AGENTS\.md and docs\/WORKFLOW\.md/);
+  assert.match(c, /active helper-produced plan and your completed\/remaining to-do and checkpoint state/);
+  assert.match(c, /STRICT sequential helper chain: ChatGPT FIRST/);
+  assert.match(c, /Never request ChatGPT and Codex in parallel/);
+  assert.match(c, /ChatGPT PASS -> no Codex/);
+  assert.match(c, /TicketComplete/);
+});

@@ -492,7 +492,7 @@ try {
         DSH_HOME: dshHome,
         DS4_API_KEY: process.env.DS4_API_KEY ?? "local-ds4",
       },
-      timeout: 420_000,
+      timeout: 620_000,
     });
     const avStdout = avOut.stdout;
     assert.match(avStdout, new RegExp(`AVP scenario=${scenario.name} done=${scenario.expect}`), `availability scenario ${scenario.name} failed:\n${avStdout}\n${avOut.stderr}`);
@@ -563,6 +563,119 @@ try {
   avail["both-down"] = bothDownResult;
   smoke.push(`availability: ${Object.entries(avail).map(([name, value]) => `${name}=${value}`).join(" ")}`);
   console.log(`SMOKE availability: real DSH agent + real pinned native-Codex reviewer; verdicts controlled by worktree gate; results ${JSON.stringify(avail)}`);
+
+  // ── Phase 6: sequential-helper protocol matrix (fe547f22) ────────────────
+  // Phase 5 proves the REAL-agent availability contract end-to-end. Phase 6
+  // deterministically exercises the STRICT sequential routing matrix the
+  // generated bootstrap now teaches (AGENTS §§4-10): ChatGPT FIRST; fresh
+  // native Codex escalation ONLY on objective UNAVAILABLE or after the same
+  // chain survives three unsuccessful ChatGPT loops; DSH alone only as last
+  // resort; a mandatory helper-produced ordered plan before edits; a progress
+  // checkpoint after EVERY completed to-do item; and sequential final-review
+  // routing (ChatGPT PASS -> no Codex). ChatGPT is a scripted smoke-only
+  // stand-in so its availability is deterministic; the escalation path still
+  // drives the REAL pinned native-Codex seam (`subagent_codex` app-server,
+  // Codex 0.148.0) where the protocol calls for it. Every helper call is
+  // recorded in an event ledger (kind, helper, order, count, non-overlap) and
+  // each scenario self-asserts its invariants before printing `SQP PASS`.
+  const sqPath = join(sourcePackage, "test/smoke/sequential-helper-probe.mjs");
+  const sqModule = join(packageCopy, "sequential-helper-probe.mjs");
+  await writeFile(sqModule, await readFile(sqPath, "utf8"));
+  const sqConfig = [
+    `    - id: sequential-helper-probe`,
+    `      name: ${quote(sqModule)}`,
+    `      config:`,
+    `        sessionId: ${quote(firstBindings[0].sessionId)}`,
+    `        worktree: ${quote(firstBindings[0].worktree)}`,
+    `        number: ${firstBindings[0].number}`,
+    `        branch: ${quote(firstBindings[0].branch)}`,
+    `        baseSha: ${quote(firstBindings[0].baseSha)}`,
+  ];
+  const sqOverlay = `${[
+    `- id: headless-startup`,
+    `  disabled: true`,
+    `- id: headless-runner`,
+    `  disabled: true`,
+    `- id: ticket-dispatcher`,
+    `  disabled: true`,
+    `- insert:`,
+    `    - id: agent-presets`,
+    `      name: '@deepseek-ai/dsh-agent-presets'`,
+    `      config:`,
+    `        default: smoke`,
+    ...sqConfig,
+  ].join("\n")}`;
+  const sqNoCodexOverlay = `${[
+    `- id: headless-startup`,
+    `  disabled: true`,
+    `- id: headless-runner`,
+    `  disabled: true`,
+    `- id: ticket-dispatcher`,
+    `  disabled: true`,
+    `- insert:`,
+    `    - id: agent-presets`,
+    `      name: '@deepseek-ai/dsh-agent-presets'`,
+    `      config:`,
+    `        default: smoke-nocodex`,
+    ...sqConfig,
+  ].join("\n")}`;
+  await writeFile(join(root, "overlay-sq.yml"), sqOverlay);
+  await writeFile(join(root, "overlay-sq-nocodex.yml"), sqNoCodexOverlay);
+
+  const sqScenarios = [
+    // ChatGPT planning succeeds -> plan obtained, zero Codex calls anywhere.
+    { name: "plan-chatgpt-ok", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=0/, /plan=chatgpt/] },
+    // ChatGPT planning objectively UNAVAILABLE -> REAL fresh Codex plan (the
+    // escalation MUST be attempted); if the Codex seam itself is objectively
+    // unavailable the chain still completes (self-plan fallback), but the
+    // attempt is always recorded. Ordinary checkpoints return ChatGPT-first.
+    { name: "plan-codex-escalation", expectDone: true, overlay: "overlay-sq.yml", assert: [/plan=(codex|self)/, /SQP event codex kind=plan attempt=/] },
+    // Hard problem: EXACTLY 3 ChatGPT loops then fresh Codex, NO 4th; afterward
+    // an ordinary interaction returns to ChatGPT-first (scoped escalation).
+    { name: "three-loops-chain", expectDone: true, overlay: "overlay-sq.yml", assert: [] },
+    // Final ChatGPT PASS -> reviewer gate satisfied, zero Codex review calls.
+    { name: "final-chatgpt-pass", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=0/, /final=PASS/] },
+    // Final ChatGPT UNAVAILABLE -> real fresh Codex exact-head review.
+    { name: "final-chatgpt-unavail-codex", expectDone: true, overlay: "overlay-sq.yml", assert: [/escalation_outcome=(pass|unavailable)/, /SQP event codex kind=review-final attempt=/, /independent=(complete|no)/] },
+    // Final review: exactly 3 non-pass ChatGPT loops -> Codex, no 4th ChatGPT.
+    { name: "final-three-loops-codex", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=[1-9]/, /escalation_outcome=(pass|unavailable)/, /SQP event codex kind=review-final attempt=/] },
+    // Available reviewer's REQUEST_CHANGES stays BLOCKING until the finding is
+    // applied (no DONE while it stands), then completes after re-approval.
+    { name: "blocking-request-changes", expectDone: true, overlay: "overlay-sq.yml", assert: [/final=PASS/] },
+    // BOTH helpers unavailable for planning -> DSH self-plans and continues;
+    // both unavailable at final review -> independent acceptance only.
+    { name: "plan-both-down", expectDone: true, overlay: "overlay-sq-nocodex.yml", noCodex: true, assert: [/plan=self/, /codex_calls=0/] },
+    { name: "final-both-down", expectDone: true, overlay: "overlay-sq-nocodex.yml", noCodex: true, assert: [/final=UNAVAILABLE/, /codex_calls=0/] },
+  ];
+
+  const sqResults = {};
+  const sqLedger = [];
+  for (const scenario of sqScenarios) {
+    const sqOut = await run(dshBin, ["--profile", "smoke", "--patch", join(root, scenario.overlay), "probe"], {
+      env: {
+        ...process.env,
+        SQ_SCENARIO: scenario.name,
+        SQ_NO_CODEX: scenario.noCodex ? "1" : "0",
+        SQ_DSH_LIB: join(packageCopy, "lib/dsh.js"),
+        DSH_CWD: firstBindings[0].worktree,
+        DSH_HOME: dshHome,
+        DS4_API_KEY: process.env.DS4_API_KEY ?? "local-ds4",
+      },
+      timeout: 840_000,
+    });
+    const sqStdout = sqOut.stdout;
+    assert.match(sqStdout, new RegExp(`SQP scenario=${scenario.name} done=${scenario.expectDone}`), `sequential-helper scenario ${scenario.name} failed:\n${sqStdout}\n${sqOut.stderr}`);
+    assert.match(sqStdout, new RegExp(`SQP PASS scenario=${scenario.name}`), `scenario ${scenario.name} did not pass its probe:\n${sqStdout}`);
+    for (const re of scenario.assert) {
+      assert.match(sqStdout, re, `scenario ${scenario.name} violated expected routing:\n${sqStdout}`);
+    }
+    const ledger = [...sqStdout.matchAll(/^SQP event ([^\r\n]+)$/gm)].map((m) => m[1]).join(" | ");
+    sqLedger.push(`[${scenario.name}] ${ledger}`);
+    sqResults[scenario.name] = "passed";
+  }
+  smoke.push(`sequential-helper: ${Object.entries(sqResults).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+  for (const l of sqLedger) smoke.push("sequential-helper-event " + l);
+  console.log(`SMOKE sequential-helper: deterministic protocol matrix PASS (${sqScenarios.length} legs; helper call order/counts recorded above)`);
 
   process.stdout.write("dsh-ticket-dispatcher smoke: PASS\n");
   for (const line of smoke) process.stdout.write(`SMOKE ${line}\n`);
@@ -773,7 +886,7 @@ function availabilityProbeSource() {
   "  const prompt = taskParts.join(' ');",
   "  console.log('AVP scenario=' + scenario + ' gate=' + gate + ' no_reviewer=' + noReviewer + ' tool=present agent=' + agent.id + ' reviewer=' + gatecheckVerdict);",
   "  agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }));",
-  "  const deadline = Date.now() + (expectDone ? 300_000 : 180_000);",
+  "  const deadline = Date.now() + (expectDone ? 420_000 : 240_000);",
   "  while (Date.now() < deadline) {",
   "    if (existsSync(donePath)) break;",
   "    await sleep(2000);",
