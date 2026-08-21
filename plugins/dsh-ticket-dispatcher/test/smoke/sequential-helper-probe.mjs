@@ -417,12 +417,25 @@ async function probe(ctx, config) {
     else record("checkpoint", "chatgpt", "after-chain");
   }
 
-  // ── FINAL REVIEW (sequential ChatGPT-first) ──────────────────────────────
+  // ── FINAL REVIEW (sequential ChatGPT-first; exact-head protocol) ─────────
   let finalVerdict = "PENDING";
+  // Exact-head semantics apply to EACH final-review request regardless of which
+  // helper receives it: the acceptance-ready candidate is committed and its HEAD
+  // identified BEFORE the request, and the request names that committed head.
+  let lastReviewHead = null;
+  const prepareFinalHead = () => {
+    const h = commitCandidate(worktree, config.number);
+    lastReviewHead = h;
+    console.log("SQP event commit head=" + h + " kind=final-review-candidate");
+    return h;
+  };
   if (profile.expectFinal === "fix-gate") {
     // Available reviewer's technical REQUEST_CHANGES is BLOCKING: candidate NOT
     // yet acceptance-ready -> REQUEST_CHANGES, NO DONE while it stands; then
     // DSH applies the finding (sets the exact gate), re-reviews, and completes.
+    // The reviewer's technical verdict is requested against the committed HEAD
+    // of the not-yet-approved candidate (exact-head semantics for every review).
+    prepareFinalHead();
     const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet()));
     chatCalls.push(rev1);
     if (rev1.verdict !== "REQUEST_CHANGES")
@@ -434,6 +447,9 @@ async function probe(ctx, config) {
     setAcceptanceReady();
     // validate: the finding is applied and the gate now reads exactly REQUIRE
     if (!gateMet()) throw new Error("blocking scenario: apply step must bring the candidate to the required gate");
+    // Re-commit the acceptance-ready candidate and identify its new HEAD before
+    // the re-review (the earlier head was the not-yet-approved candidate).
+    prepareFinalHead();
     const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true));
     chatCalls.push(rev2);
     if (rev2.verdict !== "PASS")
@@ -443,14 +459,16 @@ async function probe(ctx, config) {
     // Acceptance-ready exact candidate pushed BEFORE any review request.
     setAcceptanceReady();
     if (profile.expectFinal === "chatgpt-pass" || profile.expectFinal === "independent") {
+      // Exact-head protocol applies to the ChatGPT-first request too.
+      const head1 = prepareFinalHead();
       const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true));
       chatCalls.push(rev);
       if (rev.verdict === "PASS") finalVerdict = "PASS";
       else if (rev.verdict === "UNAVAILABLE" && !noCodex) {
-        commitCandidate(worktree, config.number);
+        const head2 = prepareFinalHead();
         const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
-          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
+          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " candidate committed head " + head2 + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
         ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
@@ -459,6 +477,9 @@ async function probe(ctx, config) {
         finalVerdict = rev.verdict === "UNAVAILABLE" ? "UNAVAILABLE" : "BLOCKED";
       }
     } else if (profile.expectFinal === "codex") {
+      // Every ChatGPT loop here also reviews the committed exact head; the
+      // candidate is committed and its HEAD identified before the first request.
+      prepareFinalHead();
       const loopCount = Number(profile.chat["review-final-count"] || 3);
       let loop = 0;
       let nonPass = 0;
@@ -474,10 +495,13 @@ async function probe(ctx, config) {
         loop += 1;
       }
       if (finalVerdict !== "PASS") {
-        commitCandidate(worktree, config.number);
+        // applies write only out-of-worktree markers, so the committed release-note
+        // still reads exactly REQUIRE; ensure the exact head is identified before
+        // the escalated exact-head review (no-op if nothing changed).
+        const headN = prepareFinalHead();
         const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
-          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt contains EXACTLY " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
+          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " candidate committed head " + headN + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt at that committed head contains EXACTLY " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
         ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
@@ -496,6 +520,8 @@ async function probe(ctx, config) {
 
   const independentComplete =
     profile.gateIndependent && finalVerdict === "UNAVAILABLE" && gateMet();
+  if ((finalVerdict === "PASS" || independentComplete) && !lastReviewHead)
+    throw new Error("exact-head final-review protocol violated: no committed candidate head was identified before the final review");
   const done = finalVerdict === "PASS" || independentComplete;
   if (done) writeFileSync(donePath, "");
   console.log(
