@@ -370,6 +370,27 @@ test("an OPEN Ticket without a deterministically valid Milestone is never admitt
   assert.deepEqual(report.ready, []);
 });
 
+test("a native GitHub milestone OBJECT never substitutes for a declared ## Milestone section", async () => {
+  // Real GitHub Issues API returns milestone as an object (or null). Per the
+  // declared-section authority, an object must not rescue a Ticket whose body
+  // lacks a valid `## Milestone` section: it is invalidMilestone, never
+  // admitted, and its identity cannot crash dshName.
+  // The dispatcher must reject a native GitHub milestone OBJECT defensively
+  // even if an adapter ever passed one through (the harness injects raw
+  // records, bypassing normalizeIssues; the declared-section normalization
+  // itself is covered by the adapter unit tests, and #8 carries the
+  // contract-string milestone the normalizer would produce from its body).
+  const records = [
+    { number: 7, state: "OPEN", milestone: { title: "Bootstrap" }, blockers: [], url: "u7", body: "no milestone section here" },
+    { number: 8, state: "OPEN", milestone: "Bootstrap", blockers: [], url: "u8", body: "## Milestone\nBootstrap\n\n## What to build\nx" },
+  ];
+  const h = harness({ records, maxActive: 2 });
+  const report = await h.dispatcher.reconcile();
+  assert.deepEqual(report.invalidMilestone, [7]);
+  assert.deepEqual(report.running.map((x) => x.number), [8]);
+  assert.deepEqual(report.ready, []);
+});
+
 test("an existing claim on an invalid-Milestone Ticket cannot abort the pass (dshName guard)", async () => {
   // Regression for the reviewer finding: claim reconciliation previously called
   // dshName() on a Ticket whose declared Milestone is invalid; dshName throws,

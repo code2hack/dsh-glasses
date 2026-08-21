@@ -198,18 +198,25 @@ export function normalizeIssues(issues) {
 /**
  * Completion markers are only authoritative when they are (a) posted on the
  * Ticket's OWN issue (self-declared `ticket` must equal the source issue) and
- * (b) authored by a trusted terminal-marker writer when `completionAuthors`
- * is configured. Cross-issue or foreign-commenter markers must never retire an
- * unfinished Ticket. Markers that fail either check are ignored.
+ * (b) authored by a trusted terminal-marker writer. For the REAL GitHub
+ * adapter (`requireAuthor`) the check FAILS CLOSED: with an empty allowlist
+ * NO marker is authorized (only the CLOSED issue state retires a Ticket), so
+ * an arbitrary same-issue commenter on a public repository cannot retire an
+ * unfinished Ticket; production therefore configures `completionAuthors` to
+ * the DSH closeout identity. The offline fixture store is disposable
+ * operator-owned state and trusts its own records (allowlist optional).
  */
-export function bindSourceCompletions(entries, completionAuthors = []) {
+export function bindSourceCompletions(entries, completionAuthors = [], { requireAuthor = false } = {}) {
   const records = new Map();
   for (const entry of entries) {
     const body = typeof entry === "string" ? entry : entry?.body;
     const marker = collapseCompleteMarkers([body])[0];
     if (!marker) continue;
     if (marker.number !== entry?.issue && entry?.issue !== undefined) continue;
-    if (typeof entry === "object" && entry && Array.isArray(completionAuthors) && completionAuthors.length && !completionAuthors.includes(entry.author)) continue;
+    if (typeof entry === "object" && entry) {
+      if (requireAuthor && (!Array.isArray(completionAuthors) || completionAuthors.length === 0)) continue;
+      if (Array.isArray(completionAuthors) && completionAuthors.length && !completionAuthors.includes(entry.author)) continue;
+    }
     records.set(marker.number, marker);
   }
   return [...records.values()].sort(byNumber);
@@ -235,10 +242,11 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses", completion
       return collapseClaimMarkers(entries.map((entry) => entry.body));
     },
     async listCompletions(ticketNumbers) {
-      // Enforce the source-issue binding and the trusted-writer allowlist for
-      // terminal markers; a marker on the wrong issue or from an untrusted
-      // commenter cannot retire this Ticket.
-      return bindSourceCompletions(await commentsOf(ticketNumbers), completionAuthors);
+      // REAL GitHub: terminal markers are source-bound AND trusted-writer
+      // enforced with a FAIL-CLOSED default (empty allowlist authorizes no
+      // marker). A marker on the wrong issue, from an untrusted commenter, or
+      // without an allowlist can never retire this Ticket.
+      return bindSourceCompletions(await commentsOf(ticketNumbers), completionAuthors, { requireAuthor: true });
     },
     async writeClaim(binding) {
       const body = `${CLAIM_PREFIX} ${JSON.stringify({ schemaVersion: 2, ticket: binding.number, name: binding.name, sessionId: binding.sessionId, branch: binding.branch, worktree: binding.worktree, baseSha: binding.baseSha })}`;

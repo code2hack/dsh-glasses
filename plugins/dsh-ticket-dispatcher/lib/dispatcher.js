@@ -1,7 +1,11 @@
 import { bindingNames, bootstrapPrompt, classify, continuationPrompt, dshName, stableReport } from "./core.js";
 
 function milestoneValid(ticket) {
-  return ticket.state !== "OPEN" || Boolean(ticket.milestone);
+  // Declared-section authority + crash-safety across every layer: only a plain
+  // non-empty STRING milestone makes a Ticket admissible. A native GitHub
+  // milestone OBJECT (or a missing value) is invalid — never a fallback — and
+  // can never reach dshName as `[object Object]`.
+  return ticket.state !== "OPEN" || (typeof ticket.milestone === "string" && Boolean(ticket.milestone));
 }
 
 const DURABLE_KEYS = ["number", "status", "name", "sessionId", "branch", "worktree", "baseSha", "milestone", "bootstrapPrompt", "reason", "pendingReason", "error", "completedBy", "head", "recovered"];

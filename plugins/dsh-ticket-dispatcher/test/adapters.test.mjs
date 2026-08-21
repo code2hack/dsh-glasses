@@ -200,6 +200,20 @@ test("a completion marker is authoritative only on its own issue, and only from 
   assert.deepEqual(await adapter.listCompletions([7]), [], "only source-bound + trusted completions count");
 });
 
+test("the REAL GitHub adapter completion gate is fail-closed: an empty allowlist authorizes no marker", async () => {
+  const marker = `ticket-complete: ${JSON.stringify({ schemaVersion: 1, ticket: 7, sessionId: "dsh-glasses-M1-#7-DSH", head: "c".repeat(40) })}`;
+  const sameIssue = { issue: 7, author: "anyone-on-the-public-repo", body: marker };
+  // Fixture/offline mode (requireAuthor=false) trusts its own operator-owned
+  // store: the same-issue record is authoritative even without an allowlist.
+  assert.equal(bindSourceCompletions([sameIssue], [])[0].number, 7, "fixture store trusts its own records");
+  // REAL GitHub mode (requireAuthor=true) FAILS CLOSED: with the default empty
+  // allowlist, no marker retires the Ticket — only the CLOSED issue state can.
+  assert.deepEqual(bindSourceCompletions([sameIssue], [], { requireAuthor: true }), [], "fail-closed: untrusted/allowlist-less markers cannot retire a Ticket");
+  // Configuring the trusted closeout writer restores authoritative completion.
+  assert.equal(bindSourceCompletions([sameIssue], ["anyone-on-the-public-repo"], { requireAuthor: true })[0].number, 7, "allowlisted writer authorizes completion");
+  assert.deepEqual(bindSourceCompletions([sameIssue], ["someone-else"], { requireAuthor: true }), [], "untrusted allowlisted-out writer still cannot retire");
+});
+
 test("fixture adapter persists completion markers and normalizes Ticket Milestones from issue bodies", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "dispatcher-fixture-"));
   t.after(() => rm(root, { recursive: true, force: true }));
