@@ -281,7 +281,12 @@ async function probe(ctx, config) {
   // prior phase left behind so each scenario reviews a pristine candidate.
   rmSync(donePath, { force: true });
   try { execFileSync("git", ["checkout", "--", "."], { cwd: worktree, stdio: "pipe" }); } catch {}
-  try { execFileSync("git", ["clean", "-f", "--", "release-note.txt", "DONE"], { cwd: worktree, stdio: "pipe" }); } catch {}
+  // FULL deterministic baseline: discard every tracked modification AND remove
+  // ALL untracked strays (e.g. the real agent's uncommitted evidence file from
+  // the availability phase, which would otherwise look like a forbidden delta
+  // to an exact-head native-Codex review). The probe owns release-note.txt and
+  // DONE outright and rewrites them below, so nothing needed survives the clean.
+  try { execFileSync("git", ["clean", "-fdq", "--", "."], { cwd: worktree, stdio: "pipe" }); } catch {}
   writeFileSync(notePath, "PLACEHOLDER-NOT-APPROVED");
 
   // ── PLAN (mandatory helper-produced ordered plan before edits) ───────────
