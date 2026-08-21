@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import z from "@deepseek-ai/schemastery";
-import { createFixtureGithubAdapter, createGitAdapter, createGithubAdapter, createSessionProbe, removeOrphanSession } from "./adapters.js";
+import { createFixtureGithubAdapter, createGitAdapter, createGithubAdapter, createSessionProbe } from "./adapters.js";
 import { DEFAULT_INTERVAL_MS, DEFAULT_MAX_ACTIVE, formatReport } from "./core.js";
 import { createDispatcher } from "./dispatcher.js";
 import { createDshAdapter } from "./dsh.js";
@@ -73,7 +73,6 @@ async function run(ctx, config) {
     maxActive: options.maxActive,
     intervalMs: options.intervalMs,
     sessionProbe: createSessionProbe(dshHome),
-    sessionCleanup: dshHome ? (binding) => removeOrphanSession(dshHome, binding) : undefined,
   });
   const emit = (report) => process.stdout.write(formatReport(report));
   if (options.command === "reconcile" && (options.stayAlive || options.maxPasses > 0)) {

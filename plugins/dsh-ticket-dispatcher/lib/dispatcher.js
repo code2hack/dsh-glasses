@@ -14,7 +14,7 @@ function durableProjection(binding) {
   return projection;
 }
 
-export function createDispatcher({ github, git, dsh, stateStore, repoRoot, worktreeRoot, baseSha = "", baseRef = "origin/main", fetch = true, maxActive, intervalMs = 120_000, resources = {}, sessionProbe = async () => ({ status: "unknown" }), sessionCleanup, uuid = () => `session-${Math.random().toString(16).slice(2)}` }) {
+export function createDispatcher({ github, git, dsh, stateStore, repoRoot, worktreeRoot, baseSha = "", baseRef = "origin/main", fetch = true, maxActive, intervalMs = 120_000, resources = {}, sessionProbe = async () => ({ status: "unknown" }), uuid = () => `session-${Math.random().toString(16).slice(2)}` }) {
   const reportOptions = { heartbeatMs: intervalMs };
 
   async function refreshState(state) {
@@ -26,7 +26,14 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       const local = state.tickets[key];
       if (marker.status === "void") {
         if (!local || local.sessionId === marker.sessionId) state.tickets[key] = durableProjection({ ...local, ...marker, status: "failed" });
-      } else if (local?.sessionId === marker.sessionId && ["claimed", "running", "voiding"].includes(local.status)) {
+      } else if (
+        local?.sessionId === marker.sessionId &&
+        (["claimed", "running", "voiding", "collision"].includes(local.status) || (local.status === "failed" && local.reason === "collision-cleared"))
+      ) {
+        // A claim marker alone must not clobber a durable terminal state
+        // (identity collision, or a collision that the operator cleared):
+        // local status wins, otherwise the marker re-claims the binding and
+        // undoes the watchdog's decision every pass.
         state.tickets[key] = durableProjection({ ...marker, ...local });
       } else {
         state.tickets[key] = durableProjection(marker);
@@ -40,7 +47,7 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
     // are computed fresh here and are never written back to durable state.
     const sessions = new Map();
     for (const [key, durable] of Object.entries(state.tickets)) {
-      if (!["claimed", "running", "publishing", "voiding", "failed", "complete"].includes(durable.status)) continue;
+      if (!["claimed", "running", "publishing", "voiding", "failed", "collision", "complete"].includes(durable.status)) continue;
       const binding = { ...durable };
       const ticket = byNumber.get(binding.number);
       if (!binding.bootstrapPrompt && ticket) binding.bootstrapPrompt = bootstrapPrompt({ ...ticket, ...binding });
@@ -59,6 +66,14 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       binding.sessionPersisted = binding.sessionProbe.status === "persisted";
       binding.live = dsh.isLive?.(binding) === true;
       binding.progressing = dsh.isProgressing?.(binding) === true;
+      // A durable identity-collision binding is non-retriable while the
+      // conflicting persisted session exists. When that session log is gone
+      // (probe no longer reports a collision), demote to a failed tombstone so
+      // the Ticket becomes re-admissible under the same deterministic id.
+      if (durable.status === "collision" && binding.sessionProbe.status !== "collision") {
+        binding.status = "failed";
+        binding.reason = "collision-cleared";
+      }
       const closed = ticket?.state === "CLOSED";
       const completeMarker = completedByTicket.get(binding.number);
       if (closed || (completeMarker && completeMarker.sessionId === binding.sessionId)) {
@@ -73,8 +88,8 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
     view.invalid = [
       ...(view.invalid ?? []),
       ...Object.values(state.tickets)
-        .filter((binding) => ["failed", "voiding"].includes(binding.status) && binding.reason)
-        .map(({ number, reason }) => ({ number, reason })),
+        .filter((binding) => (["failed", "voiding", "collision"].includes(binding.status) && binding.reason) || binding.status === "collision")
+        .map(({ number, reason }) => ({ number, reason: reason ?? "identity-collision" })),
     ];
     view.invalidMilestone = tickets
       .filter((ticket) => ticket.state === "OPEN" && !milestoneValid(ticket))
@@ -142,8 +157,13 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
         if (probe.status === "collision") {
           // A persisted session for this deterministic id lives only under a
           // different worktree key; resume would refuse the mismatched cwd.
-          // Fail closed as an identity collision; re-admission relocates it.
-          await invalidate(state, binding, "identity-collision");
+          // Per the accepted CTO design this is NON-retriable: mark the
+          // binding durably as an identity collision, keep the claim marker
+          // and every session log untouched, and do not create or resume
+          // anything. A later pass re-admits automatically only after the
+          // collision clears (probe no longer reports a collision).
+          await dsh.disposeAgent?.(binding).catch(() => {});
+          state.tickets[String(binding.number)] = durableProjection({ ...binding, status: "collision", reason: "identity-collision", live: false, progressing: false });
           continue;
         }
         if (probe.status === "missing") {
@@ -165,9 +185,12 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
           await invalidate(state, binding, "invalid-claim", publication);
           continue;
         }
+        // This is a RECONNECTED existing Ticket Lead: give it the minimal
+        // continuation instruction (the full bootstrap was already delivered
+        // at first admission).
         if (dsh.wakeAgent) {
           try {
-            await dsh.wakeAgent(binding, binding.bootstrapPrompt);
+            await dsh.wakeAgent(binding, continuationPrompt(binding));
             binding.woke = (binding.woke ?? 0) + 1;
           } catch (error) {
             binding.wakeError = error instanceof Error ? error.message : String(error);
@@ -198,21 +221,30 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
           baseSha: resolvedBase,
           bootstrapPrompt: bootstrapPrompt({ ...ticket, ...names, name, baseSha: resolvedBase }),
         };
+        // Probe the deterministic persisted session BEFORE materializing
+        // anything. Deterministic ids are shared with the persisted session
+        // log: a persisted session under the expected worktree survives a
+        // crash between session flush and claim publication and is resumed;
+        // an identity collision is a non-retriable tombstone (no deletion).
+        const probe = (await sessionProbe(binding)) ?? { status: "unknown" };
+        if (probe.status === "collision") {
+          // The same deterministic id persists only under a different
+          // worktree key with no durable claim. Per the accepted CTO design
+          // this is NON-retriable: record the terminal collision tombstone,
+          // create nothing, delete nothing. After the collided session log is
+          // removed elsewhere, a later pass re-admits the same id fresh.
+          state.tickets[String(ticket.number)] = durableProjection({ ...binding, status: "collision", reason: "identity-collision" });
+          await stateStore.save(state);
+          continue;
+        }
         let publication;
         let agentCreated = false;
         let published = false;
         try {
           publication = await git.createWorktree(binding);
-          // Deterministic ids are shared with the persisted session log. If a
-          // persisted session already exists under the expected worktree
-          // (crash between session flush and claim publication), resume it
-          // instead of colliding. A session left under an older base's
-          // worktree key is removed so the same id never collides again.
-          const probe = (await sessionProbe(binding)) ?? { status: "unknown" };
           if (probe.status === "persisted") {
             await dsh.resumeAgent(binding);
           } else {
-            if (probe.status === "collision") await sessionCleanup?.(binding);
             await dsh.createAgent(binding);
           }
           agentCreated = true;

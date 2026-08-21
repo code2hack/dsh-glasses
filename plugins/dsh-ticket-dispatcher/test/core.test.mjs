@@ -103,8 +103,8 @@ test("claim tombstones suppress only their matching durable session", () => {
     { number: 15, sessionId: first.sessionId, name: first.name, status: "void", reason: "stale-session" },
   ]);
   assert.equal(collapseClaimMarkers([claimBody(first), claimBody(second), voidClaimBody(first, "stale-session")])[0].sessionId, "revision-session");
-  assert.deepEqual(collapseCompleteMarkers([completeBody(first, {}), "irrelevant", completeBody(first, { head: "h".repeat(40) })]), [
-    { number: 15, sessionId: first.sessionId, head: "h".repeat(40), pr: "", status: "complete" },
+  assert.deepEqual(collapseCompleteMarkers([completeBody(first, {}), "irrelevant", completeBody(first, { head: "c".repeat(40) })]), [
+    { number: 15, sessionId: first.sessionId, head: "c".repeat(40), pr: "", status: "complete" },
   ]);
 });
 
@@ -170,4 +170,24 @@ test("report exposes DSH identity, heartbeat, and no Codex lifecycle fields", ()
 
 test("the configured heartbeat default is exactly 120 seconds", () => {
   assert.equal(DEFAULT_INTERVAL_MS, 120_000);
+});
+
+
+test("a completion marker is authoritative only with an exact 40-hex head SHA and must not retire a session with a malformed head", () => {
+  const binding = { number: 15, name: "dsh-glasses-M1-#15-DSH", sessionId: "dsh-glasses-M1-#15-DSH", branch: "b", worktree: "w", baseSha: "a".repeat(40) };
+  const valid = completeBody(binding, { head: "a".repeat(40), pr: "https://example.test/pr/15" });
+  assert.equal(parseCompleteMarker(valid)?.head, "a".repeat(40));
+  // missing head, non-hex head, and short heads are all rejected: the marker
+  // parse returns undefined so the dispatcher never retires the binding on it.
+  for (const bad of [
+    `${COMPLETE_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: 15, sessionId: binding.sessionId })}`,
+    `${COMPLETE_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: 15, sessionId: binding.sessionId, head: "h".repeat(40) })}`,
+    `${COMPLETE_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: 15, sessionId: binding.sessionId, head: "abc123" })}`,
+    `${COMPLETE_PREFIX} ${JSON.stringify({ schemaVersion: 1, ticket: 15, sessionId: binding.sessionId, head: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF" })}`,
+  ]) {
+    assert.equal(parseCompleteMarker(bad), undefined, `malformed marker must be ignored: ${bad}`);
+  }
+  assert.deepEqual(collapseCompleteMarkers([valid, `${COMPLETE_PREFIX} not-json-at-all`]), [
+    { number: 15, sessionId: binding.sessionId, head: "a".repeat(40), pr: "https://example.test/pr/15", status: "complete" },
+  ]);
 });

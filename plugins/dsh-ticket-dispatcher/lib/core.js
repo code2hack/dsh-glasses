@@ -54,7 +54,7 @@ export function classify(tickets, bindings = {}, maxActive = DEFAULT_MAX_ACTIVE)
   const blocked = [];
 
   for (const ticket of [...tickets].sort(byNumber)) {
-    if (!open(ticket) || ["claimed", "running", "voiding", "complete"].includes(bindings[ticket.number]?.status)) continue;
+    if (!open(ticket) || ["claimed", "running", "voiding", "complete", "collision"].includes(bindings[ticket.number]?.status)) continue;
     const blocking = ticket.blockers.filter((number) => (ticket.blockerStates?.[number] ?? states.get(number)) !== "CLOSED");
     if (blocking.length) blocked.push({ number: ticket.number, blocking });
     else ready.push({ number: ticket.number });
@@ -156,8 +156,13 @@ export function parseCompleteMarker(body = "") {
   if (!body.startsWith(`${COMPLETE_PREFIX} `)) return undefined;
   try {
     const value = JSON.parse(body.slice(COMPLETE_PREFIX.length + 1));
+    // A completion marker is only authoritative when it names the bound DSH
+    // identity AND an exact 40-character head SHA (the machine contract from
+    // the accepted CTO design). A malformed marker must not retire a session:
+    // it is ignored so the watchdog can keep supervising the binding.
     if (value.schemaVersion !== 1 || !Number.isInteger(value.ticket) || !value.sessionId) return undefined;
-    return { number: value.ticket, sessionId: value.sessionId, head: value.head ?? "", pr: value.pr ?? "", status: "complete" };
+    if (typeof value.head !== "string" || !/^[0-9a-f]{40}$/i.test(value.head)) return undefined;
+    return { number: value.ticket, sessionId: value.sessionId, head: value.head, pr: typeof value.pr === "string" ? value.pr : "", status: "complete" };
   } catch {
     return undefined;
   }

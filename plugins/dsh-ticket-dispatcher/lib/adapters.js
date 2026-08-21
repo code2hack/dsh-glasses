@@ -108,18 +108,6 @@ export async function probeSession(dshHome, binding) {
   return dirs.length ? { status: "collision", dirs } : { status: "missing" };
 }
 
-/** Remove persisted invocations of a deterministic session id that live under
- * worktree keys other than the bound worktree's. Admission uses this before
- * creating a fresh agent so the same deterministic id never collides with a
- * stale session left under an older base's worktree. */
-export async function removeOrphanSession(dshHome, binding) {
-  const probe = await probeSession(dshHome, binding);
-  if (probe.status === "collision") {
-    for (const dir of probe.dirs) await rm(dir, { recursive: true, force: true });
-  }
-  return probe;
-}
-
 export function createSessionProbe(dshHome) {
   return (binding) => probeSession(dshHome, binding);
 }

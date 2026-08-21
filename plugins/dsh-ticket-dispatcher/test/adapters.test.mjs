@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createFixtureGithubAdapter, createGitAdapter, encodeSegment, normalizeIssues, parseJqLines, probeSession, projectKey, removeOrphanSession } from "../lib/adapters.js";
+import { createFixtureGithubAdapter, createGitAdapter, encodeSegment, normalizeIssues, parseJqLines, probeSession, projectKey } from "../lib/adapters.js";
 
 const exec = promisify(execFile);
 
@@ -145,9 +145,10 @@ test("probe reports persisted, missing, collision, and unknown faithfully", asyn
   assert.equal(collided.status, "collision");
   assert.deepEqual(collided.dirs, [ip(cwdA)]);
 
-  await removeOrphanSession(root, other);
-  assert.equal((await probeSession(root, other)).status, "missing");
-  assert.equal((await probeSession(root, binding)).status, "missing");
+  // The collision is NON-destructive by design: the collided session log is
+  // left in place (no recursive delete), so the session history survives.
+  assert.equal((await probeSession(root, other)).status, "collision");
+  assert.equal((await probeSession(root, binding)).status, "persisted");
 });
 
 test("fixture adapter persists completion markers and normalizes Ticket Milestones from issue bodies", async (t) => {

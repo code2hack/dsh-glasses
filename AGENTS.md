@@ -337,15 +337,13 @@ A successor gets a fresh named DSH session in its own branch/worktree. It reads 
 
 For a Ticket that touches TB0 runtime/Rokid debug infrastructure, read the relevant `docs/TRACER_BULLET_TB0_*.md`, `docs/dev/*`, and `docs/evidence/*` files named by the Ticket before operating that path. Historical TB0 documents are conditional references, not default startup reading for unrelated work.
 
-## 12. Native-Codex transition guard
+## 12. Native Codex and deterministic DSH identity
 
-VALIDATED by Bootstrap Ticket #19 against the pinned DSH deployment; automatic Ticket execution is now enabled (dispatcher `wakeAgents` defaults to `true`). Evidence: `docs/evidence/ticket-19-validation-2026-08-20.md` (unit suite, typecheck, real-DSH + real-native-Codex smoke) and the PR that raises `plugins/dsh-ticket-dispatcher` + pinned workflow composition to the current native-Codex protocol.
+The pinned deployment runs automatic Ticket execution through the dispatcher (`wakeAgents` defaults to `true`) with these standing rules; no per-Ticket/live state belongs in this file.
 
-Everything below was verified and is under test:
-
-- named persistent DSH admission/restart/watchdog behavior (exact identity `dsh-glasses-<milestone>-#<n>-DSH`, no duplicates on reconcile/restart, restart reconstructs the same session and worktree);
-- generated DSH bootstrap contains the bounded ChatGPT-plan attempt before code plus availability fallback before any production edit;
-- native Codex subagent capability is available to admitted DSH agents (fresh one-shot `subagent_codex` invocations in the Ticket worktree, non-mutating, no persistent Codex lifecycle);
-- hard-debug and final review attempt ChatGPT + fresh native Codex but do not deadlock when either/both are unavailable (`UNAVAILABLE` is not a blocker; technical `UNPASSED`/`REQUEST_CHANGES` findings are);
-- the dispatcher watchdog respects live/progressing, wakes a quiescent unfinished session with a minimal continuation, and never re-wakes a completed binding;
-- existing deterministic frontier, moving-base, rollback, failed-fetch, identity-collision, and resource-separation guarantees remain intact under the 120-second default heartbeat.
+- **Identity is exact and durable.** Every admission binds name = sessionId = `dsh-glasses-<milestone>-#<n>-DSH` from the Ticket's declared `## Milestone`, backed by a reconstructable branch/worktree and a persisted session. Only Ticket↔DSH identity is stored.
+- **Bootstrap before code.** Each new Ticket Lead must first attempt ONE bounded repository-grounded plan request to the exact endpoint `mcp-chatgpt ; ChatGPT project = dsh-glasses ; ChatGPT session = CTO` before the first production edit, then proceed on its own bounded plan if ChatGPT is unavailable.
+- **Availability fallback, never deadlock.** ChatGPT and native Codex are best-effort redundant helpers. `UNAVAILABLE` is recorded only on objective failure and never blocks a Ticket; a returned technical verdict (`UNPASSED` / `REQUEST_CHANGES` / blocking finding) is not `UNAVAILABLE` and must be addressed. Both unavailable ⇒ DSH continues alone.
+- **Codex is request-scoped, not a worker.** Every native Codex invocation is a fresh one-shot `subagent_codex` in the Ticket worktree, self-contained (never this DSH conversation), non-mutating unless asked, with no persisted Codex session/thread on the dispatcher side.
+- **Watchdog.** Live+progressing ⇒ no-op. Quiescent unfinished ⇒ wake the same session with a minimal continuation. Completed (closed or matching `ticket-complete:` marker carrying the exact 40-hex head SHA) ⇒ never re-woken. Restart reconstructs the same binding. Conflicting persisted sessions are non-retriable identity collisions left in place (never deleted by the dispatcher).
+- **Completion.** A Ticket is complete only against its durable `ticket-complete:` marker recording the exact head; validation/rollout history and live workflow state live in GitHub, `docs/WORKFLOW.md`, and `docs/evidence/`, not here.

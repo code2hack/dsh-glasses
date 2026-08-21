@@ -231,6 +231,19 @@ try {
     "",
   ].join("\n")}`);
 
+  // ── Pinned-deployment report: which exact DSH/Codex composition ran ──────
+  const pinned = [];
+  for (const bundle of ["dsh-base", "dsh-session-persistence-jsonl", "dsh-subagent-codex", "dsh-tool-subagent", "dsh-agent-presets"]) {
+    const manifest = join(profile, "node_modules/@deepseek-ai", bundle, "package.json");
+    const version = existsSync(manifest) ? JSON.parse(await readFile(manifest, "utf8")).version : "missing";
+    assert.ok(version && version !== "missing", `pinned bundle ${bundle} must resolve a version`);
+    pinned.push(`${bundle}=${version}`);
+  }
+  const codexVersion = (await run("codex", ["--version"], { env: process.env })).stdout.trim().split(/\s+/).pop() || "unknown";
+  assert.match(codexVersion, /\d+\./, `codex version must resolve, got ${codexVersion}`);
+  smoke.push(`pinned: ${pinned.join(" ")} codex=${codexVersion}`);
+  console.log(`SMOKE pinned: dsh/Codex deployment = ${pinned.join(" ")} codex=${codexVersion}`);
+
   // ── Phase 1: real DSH lifecycle, named admission, no duplicate, restart ───
   const originalFixtures = {
     tickets: [21, 22].map((number) => ticketIssue(number)),

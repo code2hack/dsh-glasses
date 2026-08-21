@@ -435,6 +435,24 @@ test("watchdog wakes a loaded quiescent session only once per pass and never wak
   assert.equal(h.calls.includes("dispose:2"), true);
 });
 
+test("a malformed completion marker (missing/bad head SHA) must NOT retire a binding, so the watchdog keeps supervising it", async () => {
+  const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/w", baseSha: BASE };
+  const h = harness({
+    durableClaims: [claimBody(binding)],
+    sharedWorktrees: new Set([binding.worktree]),
+    sharedSessions: new Set([binding.sessionId]),
+    agentStatuses: new Map([[NAME(1), "idle"]]),
+    initialLive: [NAME(1)],
+    wakeAgents: true,
+    maxActive: 1,
+    durableCompletions: ["ticket-complete: {\"schemaVersion\":1,\"ticket\":1,\"sessionId\":\"dsh-glasses-M1-#1-DSH\",\"head\":\"not-a-real-head\"}"],
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.deepEqual(report.completed, [], "malformed marker must not retire the binding");
+  assert.equal(report.running[0].sessionId, NAME(1));
+  assert.equal(h.calls.filter((call) => call.startsWith("wake:")).length, 1, "watchdog must keep waking the still-active Ticket Lead");
+});
+
 test("a closed Ticket is retired, never woken, and releases capacity", async () => {
   const records = [
     { number: 1, state: "CLOSED", milestone: "M1", blockers: [], url: "u1" },
@@ -457,9 +475,10 @@ test("a closed Ticket is retired, never woken, and releases capacity", async () 
   assert.equal(h.calls.includes("dispose:1"), true);
 });
 
-test("a persisted-session identity collision under another worktree fails closed as an identity-collision, then re-admission relocates it", async () => {
-  const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/old", baseSha: BASE };
+test("a persisted-session identity collision is a non-retriable terminal state: no resume, no claim void, no session deletion", async () => {
+  const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/moved", baseSha: BASE };
   const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
     durableClaims: [claimBody(binding)],
     sharedWorktrees: new Set([binding.worktree]),
     sessionProbe: async () => ({ status: "collision", dirs: ["/other/session-dir"] }),
@@ -469,21 +488,54 @@ test("a persisted-session identity collision under another worktree fails closed
   assert.deepEqual(first.running, []);
   assert.deepEqual(first.invalid, [{ number: 1, reason: "identity-collision" }]);
   assert.equal(h.calls.includes("resume:1"), false);
-  // On re-admission the same deterministic id is recreated (no duplicate guard regression).
-  const cleanedUp = [];
-  const h2 = harness({
-    durableClaims: h.durableClaims,
-    sharedWorktrees: new Set([binding.worktree]),
-    sessionProbe: async (b) => {
-      if (cleanedUp.length === 0 && b.sessionId === NAME(1)) return { status: "collision", dirs: ["/other/session-dir"] };
-      return cleanedUp.includes(b.sessionId) ? { status: "missing" } : { status: "missing" };
-    },
-    sessionCleanup: async (b) => { cleanedUp.push(b.sessionId); },
+  assert.equal(h.calls.some((call) => call.startsWith("void:1:")), false, "claim marker must be preserved");
+  assert.equal(h.calls.some((call) => call.startsWith("agent:1:")), false, "no fresh agent may be created");
+  const durable = h.state().tickets["1"];
+  assert.equal(durable.status, "collision");
+  assert.equal(durable.reason, "identity-collision");
+  // A repeated pass does not thrash: still terminal, still no create/resume.
+  const second = await h.dispatcher.reconcile();
+  assert.deepEqual(second.invalid, [{ number: 1, reason: "identity-collision" }]);
+  assert.equal(h.calls.filter((call) => call.startsWith("agent:")).length, 0);
+  assert.equal(h.calls.filter((call) => call.startsWith("resume:")).length, 0);
+});
+
+test("an unclaimed Ticket whose deterministic id persists under another worktree becomes a durable terminal collision without deleting the orphan", async () => {
+  const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
+    durableClaims: [],
+    sessionProbe: async () => ({ status: "collision", dirs: ["/old/worktree/ticket-1-old"] }),
     maxActive: 1,
   });
-  const second = await h2.dispatcher.reconcile();
-  assert.equal(cleanedUp.includes(NAME(1)), true);
+  const report = await h.dispatcher.reconcile();
+  assert.deepEqual(report.running, []);
+  assert.deepEqual(report.invalid, [{ number: 1, reason: "identity-collision" }]);
+  const durable = h.state().tickets["1"];
+  assert.equal(durable.status, "collision");
+  assert.equal(durable.sessionId, NAME(1));
+  assert.equal(h.calls.includes("worktree:1"), false, "nothing may be created while the orphan persists");
+  assert.equal(h.calls.includes("agent:1"), false);
+  assert.equal(h.durableClaims.length, 0);
+});
+
+test("a cleared identity collision re-admits the same deterministic id without ever auto-admitting into an active collision", async () => {
+  let mode = "collision";
+  const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/fresh", baseSha: BASE };
+  const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
+    durableClaims: [claimBody(binding)],
+    sessionProbe: async () => (mode === "collision" ? { status: "collision", dirs: ["/other/session-dir"] } : { status: "missing" }),
+    maxActive: 1,
+  });
+  const first = await h.dispatcher.reconcile();
+  assert.deepEqual(first.invalid, [{ number: 1, reason: "identity-collision" }]);
+  // Human/operator action removes the collided session log; a later pass must
+  // detect the cleared collision and re-admit with the SAME deterministic id.
+  mode = "missing";
+  const second = await h.dispatcher.reconcile();
+  assert.equal(second.running.length, 1);
   assert.equal(second.running[0].sessionId, NAME(1));
+  assert.equal(h.calls.includes("agent:1"), true);
 });
 
 test("a failed configured-origin fetch with a resolvable stale origin/main admits no Ticket", async (t) => {
