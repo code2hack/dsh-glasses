@@ -358,6 +358,23 @@ test("a pre-marker publishing crash retries instead of becoming a false claim", 
   assert.equal(report.running[0].sessionId, NAME(1));
 });
 
+test("a CLOSED Ticket with an invalid/empty declared Milestone and an existing claim retires without crashing (CTO finding)", async () => {
+  const legacy = { number: 9, name: "dsh-glasses-#9-DSH", sessionId: "dsh-glasses-#9-DSH", branch: "workflow/ticket-9", worktree: "/tickets/ticket-9", baseSha: BASE };
+  for (const bad of ["", "M 1", "   "]) {
+    const h = harness({
+      records: [{ number: 9, state: "CLOSED", milestone: bad, blockers: [], url: "u9" }],
+      durableClaims: [claimBody(legacy)],
+      maxActive: 2,
+    });
+    const report = await h.dispatcher.reconcile(); // must not throw
+    const durable = h.state().tickets["9"];
+    assert.equal(durable.status, "complete");
+    assert.equal(durable.completedBy, "closed");
+    assert.equal(report.completed.some((b) => b.number === 9), true, "CLOSED Ticket must be reported completed, never re-woken");
+    assert.ok(!h.calls.some((c) => c.startsWith("wakeAgent:")), "CLOSED Tickets are never woken");
+  }
+});
+
 test("an OPEN Ticket without a deterministically valid Milestone is never admitted and is reported", async () => {
   const records = [
     { number: 5, state: "OPEN", milestone: undefined, blockers: [], url: "u5" },

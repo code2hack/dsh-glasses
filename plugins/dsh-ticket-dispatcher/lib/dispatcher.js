@@ -7,12 +7,16 @@ import { bindingNames, bootstrapPrompt, classify, continuationPrompt, dshName, s
 const MILESTONE_PATTERN = /^[A-Za-z0-9][\w.-]*$/;
 
 function milestoneValid(ticket) {
-  // Declared-section authority + crash-safety across every layer: only a
-  // plain non-empty STRING matching the identity charset is admissible. A
-  // native GitHub milestone OBJECT, a missing value, or a malformed string
-  // ("", "M 1", " ") is invalid — never a fallback — and can never reach
-  // dshName (which throws on anything that fails the pattern).
-  return ticket.state !== "OPEN" || (typeof ticket.milestone === "string" && MILESTONE_PATTERN.test(ticket.milestone));
+  // Declared-section authority + crash-safety across every layer, with
+  // validity INDEPENDENT of Ticket state: the CLOSED state is handled
+  // elsewhere strictly as terminal retirement (never through dshName). Only a
+  // plain non-empty STRING matching the exact dshName identity charset is
+  // valid for ANY ticket. An invalid milestone — native GitHub milestone
+  // OBJECT, missing value, "", "M 1", " " — is never a fallback and can never
+  // reach dshName (which throws on anything that fails the pattern), so
+  // claim reconciliation and bootstrapPrompt reconstruction of a CLOSED
+  // invalid-milestone Ticket cannot abort the pass before it is retired.
+  return typeof ticket?.milestone === "string" && MILESTONE_PATTERN.test(ticket.milestone);
 }
 
 const DURABLE_KEYS = ["number", "status", "name", "sessionId", "branch", "worktree", "baseSha", "milestone", "bootstrapPrompt", "reason", "pendingReason", "error", "completedBy", "head", "recovered"];
@@ -35,6 +39,17 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
     for (const marker of markers) {
       const key = String(marker.number);
       const local = state.tickets[key];
+      // A CLOSED source Ticket is terminal on GitHub itself: regardless of
+      // whether its declared milestone is valid, whether its claim matches the
+      // deterministic id, or whether dshName would throw, it retires directly
+      // to a durable `complete` tombstone. This guarantees a CLOSED Ticket
+      // can never abort reconciliation through dshName and is never re-woken
+      // (CTO finding: CLOSED invalid-Milestone + existing claim).
+      const closedTicket = byNumber.get(marker.number)?.state === "CLOSED";
+      if (closedTicket) {
+        state.tickets[key] = durableProjection({ ...local, ...marker, status: "complete", completedBy: "closed" });
+        continue;
+      }
       if (marker.status === "void") {
         if (!local || local.sessionId === marker.sessionId) state.tickets[key] = durableProjection({ ...local, ...marker, status: "failed" });
       } else if (
