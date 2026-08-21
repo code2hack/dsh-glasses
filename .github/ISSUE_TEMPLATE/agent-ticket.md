@@ -39,23 +39,26 @@ M1
 
 ## Evidence
 
-- <durable repository evidence paths required for review and reviewer-availability records>
+- <durable repository evidence paths required for planning/progress/review records>
 
 <!-- Protocol reminder:
      - Ticket Dispatcher creates one persistent named DSH session only.
-     - After local bootstrap/inspection and before first production edits, DSH
-       MUST make a bounded attempt to ask ChatGPT for a concrete repository-
-       grounded implementation plan. If ChatGPT is unavailable, DSH records the
-       reason, self-plans within durable authority, and proceeds.
-     - If DSH becomes stuck on a hard problem, it should attempt BOTH ChatGPT and
-       a fresh native Codex subagent using the same bounded git-only debug task.
-       One available helper is sufficient; if both are unavailable, DSH continues
-       independently.
-     - Final review uses bounded exact-head attempts to ChatGPT and fresh Codex.
-       Two PASSes are preferred, not mandatory. PASS+UNAVAILABLE or even
-       UNAVAILABLE+UNAVAILABLE is allowed when every non-review acceptance gate
-       passes and no available reviewer has an unresolved blocking finding.
-     - Codex invocations are ephemeral and must not modify the Ticket worktree. -->
+     - Before first production edits, DSH MUST obtain a detailed ordered
+       implementation/validation plan + to-do list. Ask ChatGPT first. Only if
+       ChatGPT is unavailable may DSH ask fresh native Codex. DSH may self-plan
+       only when BOTH ChatGPT and Codex are unavailable.
+     - After EVERY completed to-do item, DSH MUST report completion to the helper
+       chain: ChatGPT first; Codex only if ChatGPT is unavailable or that unresolved
+       chain has already escalated after three unsuccessful ChatGPT loops; both
+       unavailable -> record and continue.
+     - DSH NEVER requests ChatGPT and Codex in parallel for the same workflow step.
+     - For a hard problem or final review, ChatGPT is always first-line. Codex is
+       escalation only when ChatGPT is unavailable or the same problem/review chain
+       remains unresolved after three complete ChatGPT loops.
+     - If ChatGPT PASSes final exact-head review, DO NOT summon Codex.
+     - Codex invocations are fresh/ephemeral and must not modify the Ticket worktree.
+     - If the required helper path is unavailable, DSH may continue independently,
+       but known valid blocking findings and all non-review acceptance gates remain. -->
 
 ## Out of scope
 
