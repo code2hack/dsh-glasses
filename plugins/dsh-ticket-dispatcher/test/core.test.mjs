@@ -128,7 +128,7 @@ test("generated bootstrap names the exact DSH identity and required protocol", (
   assert.match(prompt, /subagent_codex/);
 });
 
-test("generated bootstrap requires the exact ChatGPT endpoint, plan-before-edit, dual help, dual review, and availability fallback", () => {
+test("generated bootstrap requires the exact ChatGPT endpoint, plan-before-edit, strict sequential helper chain (escalation-only Codex), and availability fallback", () => {
   const prompt = bootstrapPrompt({ number: 3, milestone: "M1", name: "dsh-glasses-M1-#3-DSH", url: "https://github.com/code2hack/dsh-glasses/issues/3", baseSha: "a".repeat(40), branch: "workflow/ticket-3", worktree: "/w/ticket-3" });
   assert.match(prompt, /mcp-chatgpt/);
   assert.match(prompt, /ChatGPT project = dsh-glasses/);

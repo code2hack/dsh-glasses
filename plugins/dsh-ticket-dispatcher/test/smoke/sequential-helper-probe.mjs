@@ -116,7 +116,9 @@ async function codex(ctx, agent, label, task) {
 }
 
 // ── Scripted ChatGPT stand-in (disposable, deterministic) ────────────────────
-function chatScript(ctx, agent, label, profile, loop, gateMet) {
+const CHECKPOINT_FIELDS = ["todo-item:", "status:", "head:", "result:", "validation:", "evidence:", "next:"];
+
+function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
   const kind = profile.chat[label];
   if (kind === "unavailable") {
     console.log("SQP event chatgpt kind=" + label + " verdict=UNAVAILABLE loop=" + loop);
@@ -147,6 +149,14 @@ function chatScript(ctx, agent, label, profile, loop, gateMet) {
     return verdict === "PASS"
       ? { verdict: "PASS", raw: "PASS" }
       : { verdict: "REQUEST_CHANGES", raw: "REQUEST_CHANGES " + REQUIRE };
+  }
+  if (label === "checkpoint" && typeof task === "string") {
+    // Protocol: a progress checkpoint MUST carry the full field set (ticket,
+    // todo-item, status, head, result, validation, evidence, next). The
+    // scripted ChatGPT stands in as the first-line helper and verifies receipt.
+    const missing = CHECKPOINT_FIELDS.filter((f) => !task.includes(f));
+    if (missing.length)
+      throw new Error("progress checkpoint to first-line helper missing fields: " + missing.join(", ") + " (task=" + JSON.stringify(task).slice(0, 240) + ")");
   }
   console.log("SQP event chatgpt kind=" + label + " verdict=ok loop=" + loop);
   return { verdict: "ok", raw: "ok" };
@@ -189,6 +199,30 @@ async function probe(ctx, config) {
   const note = () => {
     try { return readFileSync(notePath, "utf8"); } catch { return null; }
   };
+  // Protocol: ChatGPT and Codex are NEVER requested in parallel for the same
+  // step. Mechanical assertion: every helper interaction goes through
+  // guarded(), which fails the scenario if a second helper call starts while
+  // another is still in flight (the probe structurally awaits each call, so
+  // this trips only on a regression that introduces concurrency).
+  let busy = null;
+  const overlap = [];
+  const guarded = async (label, fn) => {
+    if (busy !== null) overlap.push(label + "-while-" + busy);
+    busy = label;
+    try { return await fn(); } finally { busy = null; }
+  };
+  const checkpointTask = (item) => [
+    "PROGRESS CHECKPOINT for Ticket #" + config.number,
+    "todo-item: " + JSON.stringify(item),
+    "status: in_progress",
+    "head: " + worktree,
+    "result: completed " + JSON.stringify(item),
+    "validation: scenario gate + probe ledger",
+    "evidence: release-note.txt candidate",
+    "next: continue remaining items, then final review",
+    "The ONLY permitted uncommitted paths are release-note.txt and DONE; ignore those. " +
+      "Inspect/reason/report only; do not modify the Ticket worktree.",
+  ].join(" ");
   const setAcceptanceReady = () => writeFileSync(notePath, REQUIRE);
   const gateMet = () => note() !== null && String(note()).trim() === REQUIRE;
 
@@ -202,6 +236,11 @@ async function probe(ctx, config) {
     "plan-codex-escalation": {
       chat: { plan: "unavailable", checkpoint: "ok", "review-final": "pass" },
       planSource: "codex", expectFinal: "chatgpt-pass",
+    },
+    "checkpoint-unavail-codex": {
+      chat: { plan: "plan", checkpoint: "unavailable", "review-final": "pass" },
+      planSource: "chatgpt", expectFinal: "chatgpt-pass",
+      checkpointEscalationCodex: true, singlePlan: true,
     },
     "three-loops-chain": {
       chat: { plan: "plan", checkpoint: "ok", debug: "nonpass-n", "debug-count": "3", "review-final": "pass" },
@@ -248,18 +287,18 @@ async function probe(ctx, config) {
   // ── PLAN (mandatory helper-produced ordered plan before edits) ───────────
   let plan = null;
   let planSource = "unknown";
-  const planChat = chatScript(ctx, agent, "plan", profile, 0, false);
+  const planChat = await guarded("chatgpt-plan", async () => chatScript(ctx, agent, "plan", profile, 0, false));
   chatCalls.push(planChat);
   if (planChat.verdict === "ok" && planChat.plan) {
-    plan = planChat.plan;
+    plan = profile.singlePlan ? [planChat.plan[0]] : planChat.plan;
     planSource = "chatgpt";
   } else {
     record("plan", "unavailable", "-");
     if (!noCodex) {
-      const planCodex = await codex(
+      const planCodex = await guarded("codex-plan", () => codex(
         ctx, agent, "plan",
         "PLANNING: produce a concise ordered two-item implementation+validation to-do list that satisfies the gate string " + JSON.stringify(REQUIRE) + " in release-note.txt in worktree " + JSON.stringify(worktree) + " The ONLY permitted uncommitted paths are release-note.txt and DONE; ignore those. Inspect/reason/report only; do not modify the Ticket worktree. End your answer with the word PLANNED."
-      );
+      ));
       codexCalls.push(planCodex);
       if (planCodex.verdict !== "UNAVAILABLE") {
         plan = ["item A (codex plan)", "item B (codex validate)"];
@@ -281,14 +320,16 @@ async function probe(ctx, config) {
   for (const item of plan) {
     const state = note() || "";
     writeFileSync(notePath, state + "\n-- done: " + item);
-    const cp = chatScript(ctx, agent, "checkpoint", profile, 0, false);
+    const task = checkpointTask(item);
+    const cp = await guarded("chatgpt-checkpoint", async () => chatScript(ctx, agent, "checkpoint", profile, 0, false, task));
     chatCalls.push(cp);
     if (cp.verdict === "UNAVAILABLE") {
       if (!noCodex) {
-        await codex(
-          ctx, agent, "checkpoint:" + item,
-          "PROGRESS CHECKPOINT for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ". Completed to-do item: " + JSON.stringify(item) + " The ONLY permitted uncommitted paths are release-note.txt and DONE; ignore those. Inspect/reason/report only; do not modify the Ticket worktree. End with CHECKPOINTED."
-        );
+        // Same-chain escalation: the checkpooint helper call objectively
+        // unavailable -> the SAME progress-checkpoint is routed to fresh Codex.
+        await guarded("codex-checkpoint", () => codex(
+          ctx, agent, "checkpoint:" + item, task
+        ));
         codexCalls.push({ kind: "checkpoint", verdict: "ok" });
         record("checkpoint", "codex", item);
       } else {
@@ -304,7 +345,7 @@ async function probe(ctx, config) {
     let loop = 0;
     let resolved = false;
     while (loop < 3 && !resolved) {
-      const dbg = chatScript(ctx, agent, "debug", profile, loop, false);
+      const dbg = await guarded("chatgpt-debug", async () => chatScript(ctx, agent, "debug", profile, loop, false));
       chatCalls.push(dbg);
       record("debug-loop", "chatgpt", String(loop + 1));
       if (dbg.verdict === "PASS") { resolved = true; break; }
@@ -312,17 +353,17 @@ async function probe(ctx, config) {
     }
     if (!resolved) {
       // NO fourth ChatGPT loop: escalate the SAME chain to REAL fresh Codex.
-      const dbgCodex = await codex(
+      const dbgCodex = await guarded("codex-debug-escalate", () => codex(
         ctx, agent, "debug-escalate",
         "DEBUG/RESOLVE for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ": inspect the current state and resolve the previously-unresolved hard problem (gate string " + JSON.stringify(REQUIRE) + ") The ONLY permitted uncommitted paths are release-note.txt and DONE; ignore those. Inspect/reason/report only; do not modify the Ticket worktree. End with PASS only if the gate is satisfiable, else REQUEST_CHANGES."
-      );
+      ));
       codexCalls.push(dbgCodex);
       if (dbgCodex.verdict === "PASS") record("debug-resolved", "codex", "-");
       else record("debug-escalated-blocking", "codex", "-");
     }
     // After the escalated chain resolves, ordinary interactions return to
     // ChatGPT-first (escalation is scoped to the unresolved chain only).
-    const after = chatScript(ctx, agent, "checkpoint", profile, 0, true);
+    const after = await guarded("chatgpt-checkpoint", async () => chatScript(ctx, agent, "checkpoint", profile, 0, true, checkpointTask("post-escalation resume")));
     chatCalls.push(after);
     if (after.verdict === "UNAVAILABLE") record("checkpoint", "self", "after-chain");
     else record("checkpoint", "chatgpt", "after-chain");
@@ -334,7 +375,7 @@ async function probe(ctx, config) {
     // Available reviewer's technical REQUEST_CHANGES is BLOCKING: candidate NOT
     // yet acceptance-ready -> REQUEST_CHANGES, NO DONE while it stands; then
     // DSH applies the finding (sets the exact gate), re-reviews, and completes.
-    const rev1 = chatScript(ctx, agent, "review-final", profile, 0, gateMet());
+    const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet()));
     chatCalls.push(rev1);
     if (rev1.verdict !== "REQUEST_CHANGES")
       throw new Error("blocking scenario: reviewer must first return REQUEST_CHANGES against the non-ready candidate");
@@ -342,7 +383,7 @@ async function probe(ctx, config) {
     if (existsSync(donePath))
       throw new Error("blocking scenario: DONE must NOT exist while REQUEST_CHANGES stands");
     setAcceptanceReady();
-    const rev2 = chatScript(ctx, agent, "review-final", profile, 1, true);
+    const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true));
     chatCalls.push(rev2);
     if (rev2.verdict !== "PASS")
       throw new Error("blocking scenario: after applying the finding the reviewer must PASS");
@@ -351,15 +392,15 @@ async function probe(ctx, config) {
     // Acceptance-ready exact candidate pushed BEFORE any review request.
     setAcceptanceReady();
     if (profile.expectFinal === "chatgpt-pass" || profile.expectFinal === "independent") {
-      const rev = chatScript(ctx, agent, "review-final", profile, 0, true);
+      const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true));
       chatCalls.push(rev);
       if (rev.verdict === "PASS") finalVerdict = "PASS";
       else if (rev.verdict === "UNAVAILABLE" && !noCodex) {
         commitCandidate(worktree, config.number);
-        const revCodex = await codex(
+        const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
           "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
-        );
+        ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
         finalVerdict = revCodex.verdict === "PASS" ? "PASS" : (revCodex.verdict === "UNAVAILABLE" && profile.gateIndependent ? "UNAVAILABLE" : "BLOCKED");
@@ -371,7 +412,7 @@ async function probe(ctx, config) {
       let loop = 0;
       let nonPass = 0;
       while (loop < loopCount && nonPass < loopCount) {
-        const rev = chatScript(ctx, agent, "review-final", profile, loop, true);
+        const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, loop, true));
         chatCalls.push(rev);
         if (rev.verdict === "PASS") { finalVerdict = "PASS"; break; }
         if (rev.verdict === "UNAVAILABLE") break; // objective unavailability escalates NOW to fresh Codex
@@ -380,10 +421,10 @@ async function probe(ctx, config) {
       }
       if (finalVerdict !== "PASS") {
         commitCandidate(worktree, config.number);
-        const revCodex = await codex(
+        const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
           "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt contains EXACTLY " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
-        );
+        ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
         finalVerdict = revCodex.verdict === "PASS" ? "PASS" : (revCodex.verdict === "UNAVAILABLE" && profile.gateIndependent ? "UNAVAILABLE" : "BLOCKED");
@@ -391,6 +432,13 @@ async function probe(ctx, config) {
     }
   }
   record("review-final", finalVerdict, "-");
+
+  // Never-parallel assertion: any helper call overlapping another fails the
+  // scenario (ChatGPT and Codex are never requested in parallel for the same
+  // planning/progress/debug/review step).
+  if (overlap.length)
+    throw new Error("helper calls overlapped concurrently: " + overlap.join("; ") + " -> ChatGPT and Codex must never be in flight at once");
+  console.log("SQP event concurrency non_overlap=true max_concurrent=1");
 
   const independentComplete =
     profile.gateIndependent && finalVerdict === "UNAVAILABLE" && gateMet();
@@ -414,6 +462,15 @@ async function probe(ctx, config) {
   }
   if (scenario === "plan-both-down" && planSource !== "self")
     throw new Error("both helpers unavailable -> DSH self-plan required");
+  if (scenario === "checkpoint-unavail-codex") {
+    const cpCodex = codexCalls.filter((c) => c && c.kind === "checkpoint").length;
+    if (cpCodex !== 1)
+      throw new Error("a progress checkpoint whose first-line helper call is objectively UNAVAILABLE must escalate that SAME checkpoint to fresh Codex exactly once; saw " + cpCodex);
+    if (codexCalls.length !== cpCodex)
+      throw new Error("checkpoint escalation scenario: ONLY the checkpoint escalates (final review stays ChatGPT-first on PASS); codex_calls=" + codexCalls.length);
+    if (!events.some((e) => e.startsWith("checkpoint:codex:")))
+      throw new Error("checkpoint->Codex escalation must be recorded in the ledger");
+  }
   if (scenario === "three-loops-chain") {
     const debugLoops = events.filter((e) => e.startsWith("debug-loop:chatgpt:")).length;
     if (debugLoops !== 3)

@@ -630,6 +630,10 @@ try {
     // unavailable the chain still completes (self-plan fallback), but the
     // attempt is always recorded. Ordinary checkpoints return ChatGPT-first.
     { name: "plan-codex-escalation", expectDone: true, overlay: "overlay-sq.yml", assert: [/plan=(codex|self)/, /SQP event codex kind=plan attempt=/] },
+    // Progress checkpoint: first-line helper objectively UNAVAILABLE -> the
+    // SAME checkpoint escalates to REAL fresh Codex exactly once; after that
+    // the ordinary code path returns to ChatGPT-first.
+    { name: "checkpoint-unavail-codex", expectDone: true, overlay: "overlay-sq.yml", assert: [/codex_calls=1/, /SQP event codex kind=checkpoint attempt=/, /final=PASS/] },
     // Hard problem: EXACTLY 3 ChatGPT loops then fresh Codex, NO 4th; afterward
     // an ordinary interaction returns to ChatGPT-first (scoped escalation).
     { name: "three-loops-chain", expectDone: true, overlay: "overlay-sq.yml", assert: [] },
@@ -666,6 +670,10 @@ try {
     const sqStdout = sqOut.stdout;
     assert.match(sqStdout, new RegExp(`SQP scenario=${scenario.name} done=${scenario.expectDone}`), `sequential-helper scenario ${scenario.name} failed:\n${sqStdout}\n${sqOut.stderr}`);
     assert.match(sqStdout, new RegExp(`SQP PASS scenario=${scenario.name}`), `scenario ${scenario.name} did not pass its probe:\n${sqStdout}`);
+    // Universal protocol invariant: ChatGPT and Codex are never in flight in
+    // parallel -- every leg (including no-codex legs) must record the probe's
+    // mechanical non-overlap guard as green.
+    assert.match(sqStdout, /SQP event concurrency non_overlap=true/, `scenario ${scenario.name} must assert helper non-overlap:\n${sqStdout}`);
     for (const re of scenario.assert) {
       assert.match(sqStdout, re, `scenario ${scenario.name} violated expected routing:\n${sqStdout}`);
     }
