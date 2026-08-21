@@ -122,19 +122,28 @@ async function codex(ctx, agent, label, task) {
 const CHECKPOINT_FIELDS = ["ticket:", "todo-item:", "status:", "head:", "result:", "validation:", "evidence:", "next:"];
 const REVIEW_HEAD_RE = /candidate committed head [0-9a-f]{40}/;
 const REVIEW_TOKEN_RE = /preparation-token \d+/;
-function verifyReviewTask(task) {
+function verifyReviewTask(task, expectHead, expectToken) {
   if (typeof task !== "string" || !REVIEW_HEAD_RE.test(task) || !REVIEW_TOKEN_RE.test(task))
     throw new Error("a final-review request must name an EXACTLY-once-prepared committed candidate head and its per-request preparation token");
+  if (typeof expectHead === "string" && !task.includes("candidate committed head " + expectHead))
+    throw new Error("review receiver must verify the request carries the EXACT committed head minted by the immediately-preceding preparation; expected " + expectHead);
+  if (typeof expectToken === "number" && !task.includes("preparation-token " + expectToken))
+    throw new Error("review receiver must verify the request carries the EXACT per-request token minted by the immediately-preceding preparation; expected " + expectToken);
 }
 
-function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
+function chatScript(ctx, agent, label, profile, loop, gateMet, task, expectHead, expectToken) {
+  // Exact-head discipline: EVERY final-review request — whether it yields PASS,
+  // technical REQUEST_CHANGES, or objective UNAVAILABLE — must carry the exact
+  // committed head and per-request preparation token minted by the preparation
+  // that IMMEDIATELY preceded it. The receiver verifies equality BEFORE it
+  // produces any verdict, so an orphaned/stale/unprepared request cannot pass.
+  if (label === "review-final") verifyReviewTask(task, expectHead, expectToken);
   const kind = profile.chat[label];
   if (kind === "unavailable") {
     console.log("SQP event chatgpt kind=" + label + " verdict=UNAVAILABLE loop=" + loop);
     return { verdict: "UNAVAILABLE", raw: "" };
   }
   if (kind === "pass") {
-    if (label === "review-final") verifyReviewTask(task);
     console.log("SQP event chatgpt kind=" + label + " verdict=PASS loop=" + loop);
     return { verdict: "PASS", raw: "PASS" };
   }
@@ -143,7 +152,6 @@ function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
     return { verdict: "ok", plan: ["item A (implementation)", "item B (validation)"] };
   }
   if (kind === "nonpass-n") {
-    if (label === "review-final") verifyReviewTask(task);
     const non = Number(profile.chat[label + "-count"] || 1);
     const rc = loop < non;
     console.log(
@@ -155,7 +163,6 @@ function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
       : { verdict: "PASS", raw: "PASS" };
   }
   if (kind === "gate") {
-    if (label === "review-final") verifyReviewTask(task);
     const verdict = gateMet ? "PASS" : "REQUEST_CHANGES";
     console.log("SQP event chatgpt kind=" + label + " verdict=" + verdict + " loop=" + loop);
     return verdict === "PASS"
@@ -459,7 +466,7 @@ async function probe(ctx, config) {
     // of the not-yet-approved candidate (exact-head semantics for every review).
     bindRequest();
     const g1 = prepareFinalHead();
-    const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet(), reviewTaskFor(g1, "Verify release-note.txt at that committed head.")));
+    const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet(), reviewTaskFor(g1, "Verify release-note.txt at that committed head."), g1.head, g1.token));
     chatCalls.push(rev1);
     if (rev1.verdict !== "REQUEST_CHANGES")
       throw new Error("blocking scenario: reviewer must first return REQUEST_CHANGES against the non-ready candidate");
@@ -474,7 +481,7 @@ async function probe(ctx, config) {
     // the re-review (the earlier head was the not-yet-approved candidate).
     bindRequest();
     const g2 = prepareFinalHead();
-    const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true, reviewTaskFor(g2, "Verify release-note.txt at that committed head.")));
+    const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true, reviewTaskFor(g2, "Verify release-note.txt at that committed head."), g2.head, g2.token));
     chatCalls.push(rev2);
     if (rev2.verdict !== "PASS")
       throw new Error("blocking scenario: after applying the finding the reviewer must PASS");
@@ -487,7 +494,7 @@ async function probe(ctx, config) {
       // preparation immediately before this request, token minted and carried.
       bindRequest();
       const head1 = prepareFinalHead();
-      const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true, reviewTaskFor(head1, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + ".")));
+      const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true, reviewTaskFor(head1, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + "."), head1.head, head1.token));
       chatCalls.push(rev);
       if (rev.verdict === "PASS") finalVerdict = "PASS";
       else if (rev.verdict === "UNAVAILABLE" && !noCodex) {
@@ -512,7 +519,7 @@ async function probe(ctx, config) {
       while (loop < loopCount && nonPass < loopCount) {
         bindRequest();
         const hi = prepareFinalHead();
-        const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, loop, true, reviewTaskFor(hi, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + ".")));
+        const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, loop, true, reviewTaskFor(hi, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + "."), hi.head, hi.token));
         chatCalls.push(rev);
         if (rev.verdict === "PASS") { finalVerdict = "PASS"; break; }
         if (rev.verdict === "UNAVAILABLE") break; // objective unavailability escalates NOW to fresh Codex

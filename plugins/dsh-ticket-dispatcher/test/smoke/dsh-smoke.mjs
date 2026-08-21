@@ -674,10 +674,26 @@ try {
     // parallel -- every leg (including no-codex legs) must record the probe's
     // mechanical non-overlap guard as green.
     assert.match(sqStdout, /SQP event concurrency non_overlap=true/, `scenario ${scenario.name} must assert helper non-overlap:\n${sqStdout}`);
-    // Universal exact-head invariant: every final-review request must be
-    // immediately preceded by a committed candidate-head preparation (the
-    // probe also asserts one preparation per request internally).
-    assert.match(sqStdout, /kind=final-review-candidate[^\n]*\nSQP event (?:chatgpt kind=review-final|codex kind=review-final)/, `scenario ${scenario.name} must place a committed exact head immediately before every review request:\n${sqStdout}`);
+    // Universal exact-head invariant, STRICTLY per request: walk the probe's
+    // raw event stream and require that EVERY final-review request -- PASS,
+    // technical REQUEST_CHANGES, or objective UNAVAILABLE, ChatGPT or Codex --
+    // is immediately preceded by exactly one committed candidate-head
+    // preparation (the probe also asserts one preparation per request
+    // internally). An existential match would let later unprepared/orphan
+    // review events slip through; this walk cannot.
+    {
+      const lines = [...sqStdout.matchAll(/^SQP event ([^\r\n]+)$/gm)].map((m) => m[1]);
+      let reviews = 0;
+      for (let i = 0; i < lines.length; i += 1) {
+        if (!/(chatgpt kind=review-final|codex kind=review-final)/.test(lines[i])) continue;
+        reviews += 1;
+        const prev = i > 0 ? lines[i - 1] : "";
+        if (!prev.includes("kind=final-review-candidate"))
+          throw new Error(`scenario ${scenario.name}: review request ${reviews} at event ${i} is NOT immediately preceded by a committed exact-head preparation (stale/orphan/unprepared):\n` + lines.join("\n"));
+      }
+      if (reviews < 1)
+        throw new Error(`scenario ${scenario.name} made no final-review request:\n${sqStdout}`);
+    }
     for (const re of scenario.assert) {
       assert.match(sqStdout, re, `scenario ${scenario.name} violated expected routing:\n${sqStdout}`);
     }
