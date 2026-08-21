@@ -45,8 +45,11 @@ function textOf(result) {
 }
 
 function verdictOf(raw) {
-  if (/\bPASS\b|APPROVED/i.test(raw)) return "PASS";
+  // Blocking verdicts first: a real reviewer may legitimately write
+  // "REQUEST_CHANGES: validation does not PASS" -- that is a REQUEST_CHANGES,
+  // not a PASS, and must never be swallowed by a naive PASS-first match.
   if (/\bREQUEST_CHANGES\b/i.test(raw)) return "REQUEST_CHANGES";
+  if (/\bPASS\b|APPROVED/i.test(raw)) return "PASS";
   return "OTHER";
 }
 
@@ -211,11 +214,17 @@ async function probe(ctx, config) {
     busy = label;
     try { return await fn(); } finally { busy = null; }
   };
+  const headShaOf = (w) => {
+    try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: w, encoding: "utf8" }).trim(); }
+    catch { return "(no git head)"; }
+  };
+  // Completed-item checkpoint: authority requires status = completed and an
+  // exact head (SHA + working-tree state), not a placeholder/in_progress row.
   const checkpointTask = (item) => [
     "PROGRESS CHECKPOINT for Ticket #" + config.number,
     "todo-item: " + JSON.stringify(item),
-    "status: in_progress",
-    "head: " + worktree,
+    "status: completed",
+    "head: " + headShaOf(worktree) + " (worktree state: candidate release-note.txt + DONE, permitted)",
     "result: completed " + JSON.stringify(item),
     "validation: scenario gate + probe ledger",
     "evidence: release-note.txt candidate",
@@ -330,13 +339,22 @@ async function probe(ctx, config) {
     chatCalls.push(cp);
     if (cp.verdict === "UNAVAILABLE") {
       if (!noCodex) {
-        // Same-chain escalation: the checkpooint helper call objectively
+        // Same-chain escalation: the checkpoint helper call objectively
         // unavailable -> the SAME progress-checkpoint is routed to fresh Codex.
-        await guarded("codex-checkpoint", () => codex(
+        // The REAL verdict is kept (never a synthetic success): a blocking
+        // REQUEST_CHANGES fails the leg; both-helpers-unavailable is recorded
+        // durably per protocol and the DSH continues.
+        const cpx = await guarded("codex-checkpoint", () => codex(
           ctx, agent, "checkpoint:" + item, task
         ));
-        codexCalls.push({ kind: "checkpoint", verdict: "ok" });
-        record("checkpoint", "codex", item);
+        codexCalls.push({ kind: "checkpoint", verdict: cpx.verdict });
+        if (cpx.verdict === "REQUEST_CHANGES")
+          throw new Error("escalated checkpoint returned REQUEST_CHANGES but the finding was not applied: " + JSON.stringify(item));
+        if (cpx.verdict === "UNAVAILABLE") {
+          record("checkpoint", "self", item); // both helpers unavailable: record durably, continue
+        } else {
+          record("checkpoint", "codex", item);
+        }
       } else {
         record("checkpoint", "self", item); // both unavailable: record durably, continue
       }
@@ -364,7 +382,13 @@ async function probe(ctx, config) {
       ));
       codexCalls.push(dbgCodex);
       if (dbgCodex.verdict === "PASS") record("debug-resolved", "codex", "-");
-      else record("debug-escalated-blocking", "codex", "-");
+      else if (dbgCodex.verdict === "UNAVAILABLE") record("debug-escalated-unavailable", "codex", "-");
+      else {
+        // A KNOWN blocking finding remains after escalation: the chain is NOT
+        // resolved, so DONE must not be claimed.
+        record("debug-escalated-blocking", "codex", "-");
+        throw new Error("escalated Codex left the hard chain unresolved (REQUEST_CHANGES): a known blocking finding remains and DONE must not be claimed");
+      }
     }
     // After the escalated chain resolves, ordinary interactions return to
     // ChatGPT-first (escalation is scoped to the unresolved chain only).
@@ -468,13 +492,16 @@ async function probe(ctx, config) {
   if (scenario === "plan-both-down" && planSource !== "self")
     throw new Error("both helpers unavailable -> DSH self-plan required");
   if (scenario === "checkpoint-unavail-codex") {
-    const cpCodex = codexCalls.filter((c) => c && c.kind === "checkpoint").length;
-    if (cpCodex !== 1)
-      throw new Error("a progress checkpoint whose first-line helper call is objectively UNAVAILABLE must escalate that SAME checkpoint to fresh Codex exactly once; saw " + cpCodex);
-    if (codexCalls.length !== cpCodex)
+    const cpEsc = codexCalls.filter((c) => c && c.kind === "checkpoint").length;
+    if (cpEsc !== 1)
+      throw new Error("a progress checkpoint whose first-line helper call is objectively UNAVAILABLE must escalate that SAME checkpoint to fresh Codex exactly once (attempt recorded); saw " + cpEsc);
+    if (codexCalls.length !== cpEsc)
       throw new Error("checkpoint escalation scenario: ONLY the checkpoint escalates (final review stays ChatGPT-first on PASS); codex_calls=" + codexCalls.length);
-    if (!events.some((e) => e.startsWith("checkpoint:codex:")))
-      throw new Error("checkpoint->Codex escalation must be recorded in the ledger");
+    const cpV = (codexCalls.find((c) => c && c.kind === "checkpoint") || {}).verdict;
+    if (cpV === "REQUEST_CHANGES")
+      throw new Error("escalated checkpoint's blocking finding must not be discarded/claimed as ok");
+    if (!events.some((e) => e.startsWith("checkpoint:codex:") || e.startsWith("checkpoint:self:")))
+      throw new Error("checkpoint->Codex escalation must be recorded in the ledger (codex verdict or both-unavailable durable record)");
   }
   if (scenario === "three-loops-chain") {
     const debugLoops = events.filter((e) => e.startsWith("debug-loop:chatgpt:")).length;
@@ -482,8 +509,8 @@ async function probe(ctx, config) {
       throw new Error("hard chain must run EXACTLY 3 ChatGPT loops; saw " + debugLoops);
     if (events.filter((e) => e === "checkpoint:chatgpt:after-chain").length !== 1)
       throw new Error("after the escalated chain resolves, ordinary interactions must return to ChatGPT-first");
-    if (!events.some((e) => e.startsWith("debug-resolved:codex") || e.startsWith("debug-escalated-blocking:codex")))
-      throw new Error("after 3 unsuccessful ChatGPT loops the SAME chain must escalate to fresh Codex");
+    if (!events.some((e) => e.startsWith("debug-resolved:codex") || e.startsWith("debug-escalated-unavailable:codex")))
+      throw new Error("after 3 unsuccessful ChatGPT loops the SAME chain must escalate to fresh Codex and either resolve or record both-helper-unavailable");
   }
   if (scenario === "final-three-loops-codex") {
     const codexReviews = codexCalls.filter((c) => c && c.kind === "review-final").length;
