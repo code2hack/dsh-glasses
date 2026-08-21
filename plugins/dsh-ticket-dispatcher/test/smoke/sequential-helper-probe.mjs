@@ -120,6 +120,12 @@ async function codex(ctx, agent, label, task) {
 
 // ── Scripted ChatGPT stand-in (disposable, deterministic) ────────────────────
 const CHECKPOINT_FIELDS = ["ticket:", "todo-item:", "status:", "head:", "result:", "validation:", "evidence:", "next:"];
+const REVIEW_HEAD_RE = /candidate committed head [0-9a-f]{40}/;
+const REVIEW_TOKEN_RE = /preparation-token \d+/;
+function verifyReviewTask(task) {
+  if (typeof task !== "string" || !REVIEW_HEAD_RE.test(task) || !REVIEW_TOKEN_RE.test(task))
+    throw new Error("a final-review request must name an EXACTLY-once-prepared committed candidate head and its per-request preparation token");
+}
 
 function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
   const kind = profile.chat[label];
@@ -128,6 +134,7 @@ function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
     return { verdict: "UNAVAILABLE", raw: "" };
   }
   if (kind === "pass") {
+    if (label === "review-final") verifyReviewTask(task);
     console.log("SQP event chatgpt kind=" + label + " verdict=PASS loop=" + loop);
     return { verdict: "PASS", raw: "PASS" };
   }
@@ -136,6 +143,7 @@ function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
     return { verdict: "ok", plan: ["item A (implementation)", "item B (validation)"] };
   }
   if (kind === "nonpass-n") {
+    if (label === "review-final") verifyReviewTask(task);
     const non = Number(profile.chat[label + "-count"] || 1);
     const rc = loop < non;
     console.log(
@@ -147,6 +155,7 @@ function chatScript(ctx, agent, label, profile, loop, gateMet, task) {
       : { verdict: "PASS", raw: "PASS" };
   }
   if (kind === "gate") {
+    if (label === "review-final") verifyReviewTask(task);
     const verdict = gateMet ? "PASS" : "REQUEST_CHANGES";
     console.log("SQP event chatgpt kind=" + label + " verdict=" + verdict + " loop=" + loop);
     return verdict === "PASS"
@@ -423,20 +432,34 @@ async function probe(ctx, config) {
   // helper receives it: the acceptance-ready candidate is committed and its HEAD
   // identified BEFORE the request, and the request names that committed head.
   let lastReviewHead = null;
+  let prepareCount = 0;
+  let reviewRequests = 0;
+  // ONE preparation immediately before EACH review request: commit the
+  // candidate (no-op when unchanged), identify its HEAD, and mint a strictly
+  // increasing per-request preparation token. The request that follows carries
+  // both; the scripted receiver and the completion invariant prove exactly one
+  // preparation per review request.
   const prepareFinalHead = () => {
+    prepareCount += 1;
     const h = commitCandidate(worktree, config.number);
     lastReviewHead = h;
-    console.log("SQP event commit head=" + h + " kind=final-review-candidate");
-    return h;
+    console.log("SQP event commit head=" + h + " kind=final-review-candidate token=" + prepareCount);
+    return { head: h, token: prepareCount };
   };
+  const reviewTaskFor = (info, directive) =>
+    "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number +
+    " candidate committed head " + info.head + " preparation-token " + info.token +
+    " worktree " + JSON.stringify(worktree) + " " + directive;
+  const bindRequest = () => { reviewRequests += 1; };
   if (profile.expectFinal === "fix-gate") {
     // Available reviewer's technical REQUEST_CHANGES is BLOCKING: candidate NOT
     // yet acceptance-ready -> REQUEST_CHANGES, NO DONE while it stands; then
     // DSH applies the finding (sets the exact gate), re-reviews, and completes.
     // The reviewer's technical verdict is requested against the committed HEAD
     // of the not-yet-approved candidate (exact-head semantics for every review).
-    prepareFinalHead();
-    const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet()));
+    bindRequest();
+    const g1 = prepareFinalHead();
+    const rev1 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, gateMet(), reviewTaskFor(g1, "Verify release-note.txt at that committed head.")));
     chatCalls.push(rev1);
     if (rev1.verdict !== "REQUEST_CHANGES")
       throw new Error("blocking scenario: reviewer must first return REQUEST_CHANGES against the non-ready candidate");
@@ -449,8 +472,9 @@ async function probe(ctx, config) {
     if (!gateMet()) throw new Error("blocking scenario: apply step must bring the candidate to the required gate");
     // Re-commit the acceptance-ready candidate and identify its new HEAD before
     // the re-review (the earlier head was the not-yet-approved candidate).
-    prepareFinalHead();
-    const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true));
+    bindRequest();
+    const g2 = prepareFinalHead();
+    const rev2 = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 1, true, reviewTaskFor(g2, "Verify release-note.txt at that committed head.")));
     chatCalls.push(rev2);
     if (rev2.verdict !== "PASS")
       throw new Error("blocking scenario: after applying the finding the reviewer must PASS");
@@ -459,16 +483,19 @@ async function probe(ctx, config) {
     // Acceptance-ready exact candidate pushed BEFORE any review request.
     setAcceptanceReady();
     if (profile.expectFinal === "chatgpt-pass" || profile.expectFinal === "independent") {
-      // Exact-head protocol applies to the ChatGPT-first request too.
+      // Exact-head protocol applies to the ChatGPT-first request too: one
+      // preparation immediately before this request, token minted and carried.
+      bindRequest();
       const head1 = prepareFinalHead();
-      const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true));
+      const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, 0, true, reviewTaskFor(head1, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + ".")));
       chatCalls.push(rev);
       if (rev.verdict === "PASS") finalVerdict = "PASS";
       else if (rev.verdict === "UNAVAILABLE" && !noCodex) {
+        bindRequest();
         const head2 = prepareFinalHead();
         const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
-          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " candidate committed head " + head2 + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
+          reviewTaskFor(head2, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE)) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
         ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
@@ -477,14 +504,15 @@ async function probe(ctx, config) {
         finalVerdict = rev.verdict === "UNAVAILABLE" ? "UNAVAILABLE" : "BLOCKED";
       }
     } else if (profile.expectFinal === "codex") {
-      // Every ChatGPT loop here also reviews the committed exact head; the
-      // candidate is committed and its HEAD identified before the first request.
-      prepareFinalHead();
+      // Every ChatGPT loop request here is ALSO an exact-head review: one
+      // preparation immediately before EACH request (fresh per-request token).
       const loopCount = Number(profile.chat["review-final-count"] || 3);
       let loop = 0;
       let nonPass = 0;
       while (loop < loopCount && nonPass < loopCount) {
-        const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, loop, true));
+        bindRequest();
+        const hi = prepareFinalHead();
+        const rev = await guarded("chatgpt-review", async () => chatScript(ctx, agent, "review-final", profile, loop, true, reviewTaskFor(hi, "Verify release-note.txt at that committed head contains EXACTLY the gate string " + JSON.stringify(REQUIRE) + ".")));
         chatCalls.push(rev);
         if (rev.verdict === "PASS") { finalVerdict = "PASS"; break; }
         if (rev.verdict === "UNAVAILABLE") break; // objective unavailability escalates NOW to fresh Codex
@@ -496,12 +524,13 @@ async function probe(ctx, config) {
       }
       if (finalVerdict !== "PASS") {
         // applies write only out-of-worktree markers, so the committed release-note
-        // still reads exactly REQUIRE; ensure the exact head is identified before
-        // the escalated exact-head review (no-op if nothing changed).
+        // still reads exactly REQUIRE; one more preparation immediately before the
+        // escalated exact-head review (no-op commit, fresh token).
+        bindRequest();
         const headN = prepareFinalHead();
         const revCodex = await guarded("codex-review", () => codex(
           ctx, agent, "review-final",
-          "FINAL EXACT-HEAD REVIEW for Ticket #" + config.number + " candidate committed head " + headN + " worktree " + JSON.stringify(worktree) + ". Verify release-note.txt at that committed head contains EXACTLY " + JSON.stringify(REQUIRE) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
+          reviewTaskFor(headN, "Verify release-note.txt at that committed head contains EXACTLY " + JSON.stringify(REQUIRE)) + carve + " Inspect/reason/report only; do not modify the Ticket worktree."
         ));
         codexCalls.push(revCodex);
         escalationOutcome = revCodex.verdict === "UNAVAILABLE" ? "unavailable" : "pass";
@@ -522,6 +551,12 @@ async function probe(ctx, config) {
     profile.gateIndependent && finalVerdict === "UNAVAILABLE" && gateMet();
   if ((finalVerdict === "PASS" || independentComplete) && !lastReviewHead)
     throw new Error("exact-head final-review protocol violated: no committed candidate head was identified before the final review");
+  if (finalVerdict === "PASS" || independentComplete) {
+    if (reviewRequests < 1)
+      throw new Error("exact-head final-review protocol: at least one review request must have been made");
+    if (prepareCount !== reviewRequests)
+      throw new Error("exact-head final-review protocol: every review request must be immediately preceded by exactly one candidate-head preparation; prepareCount=" + prepareCount + " reviewRequests=" + reviewRequests);
+  }
   const done = finalVerdict === "PASS" || independentComplete;
   if (done) writeFileSync(donePath, "");
   console.log(
