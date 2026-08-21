@@ -11,9 +11,7 @@ ChatGPT project = dsh-glasses
 Milestone N
 ├── Ticket #A
 │   └── dsh-glasses-MN-#A-DSH               persistent Ticket executor
-│       ├── Codex subagent invocation        fresh hard-debug specialist
-│       ├── Codex subagent invocation        fresh exact-head reviewer
-│       └── ...                              fresh per request
+│       └── fresh Codex subagent             escalation only
 ├── Ticket #B
 │   └── dsh-glasses-MN-#B-DSH
 └── Ticket Dispatcher                        deterministic DSH lifecycle glue
@@ -22,68 +20,127 @@ Milestone N
 Lifetime rule:
 
 ```text
-ChatGPT = project-long persistent intelligence
+ChatGPT = project-long persistent first-line helper
 DSH     = Ticket-long persistent executor
-Codex   = request-long ephemeral specialist
+Codex   = request-long ephemeral escalation helper
 ```
 
-`ChatGPT` is the protocol agent name; `CTO` is the exact concrete persistent ChatGPT session name. DSH reaches ChatGPT through the existing DSH MCP plugin `mcp-chatgpt`.
+DSH reaches ChatGPT through `mcp-chatgpt` at exactly:
 
-Codex is not pre-created and has no Ticket-long conversation. DSH invokes the native Codex subagent on demand. Each invocation is fresh, operates in the parent DSH Ticket workspace, receives a self-contained task, and returns a result to DSH.
+```text
+ChatGPT project = dsh-glasses
+ChatGPT session = CTO
+```
+
+Codex is never pre-created. Every `subagent_codex` invocation is fresh, uses the parent DSH Ticket worktree, receives a self-contained task, and returns its result to DSH.
 
 ## 2. Responsibilities
 
 ### ChatGPT
 
-ChatGPT owns product/architecture decisions, Milestone design, Ticket decomposition and DAGs, hard research, product/architecture clarification, startup implementation planning, exact-head review, and hard-problem assistance when available.
+ChatGPT is the default implementation planner, progress supervisor, hard-problem helper, and exact-head reviewer. It is always tried first for those interactions.
 
 ### DSH
 
-DSH owns implementation: coding, committed tests, runtime/device checks, ordinary debugging, evidence, git/PR work, ChatGPT planning/reviewer requests/polling, native Codex delegation, availability fallback, and closeout. DSH must keep working until the Ticket completion gate is satisfied.
+DSH is the sole implementer. It codes, tests, debugs, operates runtime/device paths, captures evidence, manages git/PR state, reports to the active helper, and continues until TicketComplete.
 
-Before first production edits, DSH must make a bounded attempt to ask ChatGPT for a concrete repository-grounded implementation/validation plan. If ChatGPT is unavailable, DSH records that fact, makes its own plan within durable authority, and continues.
-
-When DSH becomes stuck on a hard problem, it should attempt **both ChatGPT and a fresh native Codex subagent** using the same bounded git-only debug task. Receiving both answers is preferred but not required. One helper may be used if the other is unavailable; if both are unavailable, DSH continues debugging independently.
+DSH must not create its own implementation plan/to-do list while either ChatGPT or Codex is available to provide one.
 
 ### Codex
 
-Codex is an on-demand independent reviewer and hard-problem specialist reached through DSH's native Codex subagent capability. It is not the routine code author and not a persistent workflow worker.
+Codex performs the same Ticket-level helper functions as ChatGPT when escalated, but is **never called in parallel with ChatGPT**. It is summoned only when ChatGPT is unavailable or when the same problem/review chain remains unresolved after three complete ChatGPT loops.
 
-Every Codex invocation is fresh. It sees the Ticket worktree and the self-contained task DSH delegates, not DSH's conversation history. Review/debug tasks must instruct Codex not to modify the Ticket worktree; DSH applies changes itself.
+Codex must not modify the Ticket worktree; DSH remains the sole code author.
 
 ### Ticket Dispatcher
 
-The dispatcher computes the declared ready frontier and materializes/maintains **DSH runtime state only**. It does not plan work, review code, or own Codex lifecycle.
+The dispatcher computes the declared ready frontier and materializes/maintains DSH runtime state only. It does not plan work, review code, or own Codex lifecycle.
 
-## 3. Availability fallback
+## 3. Sequential helper routing
 
-ChatGPT and Codex provide redundant assistance, not hard availability dependencies.
-
-A bounded request may be marked `UNAVAILABLE` when it fails objectively because of timeout, quota/rate/usage limit, provider outage, or transport/tool failure. A technical `REQUEST_CHANGES`, `UNPASSED`, or blocking finding is **not** unavailability and must be addressed.
-
-Fallback behavior:
+The canonical helper chain is:
 
 ```text
-both available       -> use both
-ChatGPT unavailable  -> use Codex + DSH judgment
-Codex unavailable    -> use ChatGPT + DSH judgment
-both unavailable     -> DSH continues independently
+ChatGPT first
+    ↓ unavailable OR same chain unresolved after 3 complete loops
+fresh Codex subagent
+    ↓ unavailable
+DSH continues alone
 ```
 
-This applies to startup planning, hard-problem assistance, and final review. Unavailability never waives Ticket acceptance criteria, product authority, required tests, runtime/device/human gates, evidence, or cleanliness.
+DSH **never sends the same workflow request to ChatGPT and Codex concurrently**.
 
-For final review, these reviewer states are acceptable when all non-review completion requirements pass:
+`UNAVAILABLE` means an objective execution failure such as timeout, quota/rate/usage-limit exhaustion, provider outage, or transport/tool failure. A technical disagreement, `UNPASSED`, `REQUEST_CHANGES`, or blocking finding is not unavailability.
+
+One complete ChatGPT loop is:
 
 ```text
-ChatGPT PASS + Codex PASS
-ChatGPT PASS + Codex UNAVAILABLE
-ChatGPT UNAVAILABLE + Codex PASS
-ChatGPT UNAVAILABLE + Codex UNAVAILABLE
+DSH request
+→ ChatGPT guidance/blocking verdict
+→ DSH implements/fixes + validates
+→ same problem/review chain still unresolved/non-passing
 ```
 
-If either available reviewer returns a blocking verdict, completion is blocked until the finding is resolved. Any new production-code head invalidates prior PASS/UNAVAILABLE review evidence and requires fresh bounded attempts.
+After the third unsuccessful loop, DSH does not start a fourth ChatGPT loop for that same chain. It escalates the next request to a fresh Codex subagent.
 
-## 4. Milestone lifecycle
+Codex escalation is scoped to that unresolved chain. Once resolved, ordinary workflow interactions return to ChatGPT-first.
+
+## 4. Ticket-start planning
+
+Every Ticket begins with a helper-produced detailed implementation/validation plan and ordered to-do list.
+
+After reading durable authority and inspecting relevant source/tests, but before production edits:
+
+```text
+DSH → ChatGPT: detailed plan/to-do request
+        ↓
+      available → use plan
+        ↓ unavailable
+DSH → fresh Codex: same planning role
+        ↓
+      available → use Codex plan
+        ↓ unavailable
+DSH → self-plan as last resort
+```
+
+DSH must never self-plan while ChatGPT or Codex is available.
+
+The plan should contain numbered/checkable items with implementation outcome, validation, and evidence/acceptance mapping where useful.
+
+If a helper plan conflicts with durable authority, DSH requests correction. If the same planning problem survives three ChatGPT loops, DSH escalates it to Codex under the standard rule.
+
+## 5. Per-to-do completion checkpoints
+
+After **every completed to-do item**, DSH must report completion before silently proceeding through additional items.
+
+Recommended progress payload:
+
+```text
+request-id: <unique>
+kind: progress
+repo: code2hack/dsh-glasses
+milestone: <milestone>
+ticket: #<number>
+todo-item: <id + description>
+status: completed
+base: <exact base>
+branch: <branch>
+head: <current SHA or working-tree state>
+result: <what changed / what was proved>
+validation: <checks performed>
+evidence: <paths/refs>
+next: <next to-do item>
+```
+
+Routing is sequential:
+
+- ChatGPT first for normal checkpoints;
+- Codex only if ChatGPT is unavailable for that checkpoint or the checkpoint belongs to an already Codex-escalated unresolved chain;
+- if both are unavailable, record the checkpoint durably where appropriate and continue.
+
+If the helper returns a bounded correction or updates the remaining to-do list consistently with durable authority, DSH incorporates it before continuing.
+
+## 6. Milestone lifecycle
 
 At Milestone start, ChatGPT refreshes from durable state:
 
@@ -96,7 +153,7 @@ ChatGPT then defines the Milestone goal, non-goals, tracer-bullet Tickets, `Bloc
 
 Tickets remain narrow vertical slices. Logical dependencies belong in `Blocked by`; shared hardware contention does not.
 
-## 5. Ticket contract
+## 7. Ticket contract
 
 Each implementation Ticket should contain:
 
@@ -123,7 +180,7 @@ M1
 - <required automated/runtime/device checks>
 
 ## Evidence
-- <durable evidence paths needed for review/availability records>
+- <durable evidence paths needed for planning/progress/review records>
 
 ## Out of scope
 - <important nearby behavior intentionally excluded>
@@ -131,7 +188,7 @@ M1
 
 The Ticket gives DSH enough durable context to execute without replaying prior conversations. Codex invocations remain self-contained and git-grounded.
 
-## 6. Ticket Dispatcher
+## 8. Ticket Dispatcher
 
 For each ready unclaimed Ticket within active capacity:
 
@@ -143,10 +200,13 @@ GitHub Ticket + Milestone
        name = <project>-<milestone>-#<ticket>-DSH
     -> persist Ticket <-> DSH <-> worktree <-> base binding
     -> wake/bootstrap DSH
-       require bounded ChatGPT-plan attempt before first production edit
-       require native Codex availability check for later debug/review
-       require best-effort ChatGPT + fresh-Codex help/review
-       require reviewer availability fallback without deadlock
+       require helper-produced detailed plan/to-do before code
+       require ChatGPT-first / Codex-escalation routing
+       require no parallel ChatGPT+Codex requests
+       require 3-loop escalation rule
+       require progress report after every completed to-do item
+       require sequential final review
+       require both-unavailable fallback without deadlock
     -> watchdog the same DSH until TicketComplete
 ```
 
@@ -159,7 +219,7 @@ Required properties:
 - GitHub remains durable project truth;
 - DSH id/name + worktree/base are reconstructable runtime bindings;
 - shared-resource scheduling remains separate from DAG readiness;
-- **no Codex thread/session lifecycle in dispatcher state**.
+- no Codex thread/session lifecycle in dispatcher state.
 
 The dispatcher must never create/name/seed/persist/resume/reconstruct/poll/retire Codex threads. DSH owns native Codex invocation on demand.
 
@@ -169,52 +229,49 @@ The dispatcher periodically checks every unfinished admitted Ticket's DSH state.
 
 If the bound DSH session is stopped/quiescent while Ticket completion is false, the dispatcher resumes/wakes the **same DSH session** with a minimal continuation instruction. It must not create a replacement session merely because the existing one became idle.
 
-A completed Ticket is never re-woken. A Ticket must not be left permanently waiting only because ChatGPT or Codex timed out, hit a usage limit, or is otherwise unavailable; resumed DSH applies the fallback semantics and continues.
+A completed Ticket is never re-woken. A Ticket must not remain permanently waiting only because ChatGPT/Codex is unavailable; resumed DSH applies the sequential fallback and continues.
 
-Prefer supported DSH lifecycle/turn state over a fragile inactivity heuristic when deciding whether a session has stopped/quiesced.
+Prefer supported DSH lifecycle/turn state over a fragile inactivity heuristic.
 
-## 7. Ticket execution loop
+## 9. Ticket execution loop
 
 ```text
 Dispatcher starts DSH
         ↓
 DSH inspects Ticket/source/tests
         ↓
-DSH attempts ChatGPT implementation plan
-  available   → use plan
-  unavailable → record + DSH self-plan
+obtain detailed plan/to-do list
+  ChatGPT first
+  unavailable → fresh Codex
+  both unavailable → DSH self-plan
         ↓
-DSH implements
+for each to-do item
+  implement + validate
         ↓
-DSH tests / operates / ordinary-debug fixes
+  report completion
+    ChatGPT first
+    unavailable / already-escalated chain → Codex
+    both unavailable → record + continue
         ↓
-Hard/stuck problem?
-  yes → same bounded git-only debug task
-          ├─→ ChatGPT via mcp-chatgpt
-          └─→ fresh native Codex subagent
-        use both / either / neither according to availability
-        DSH fixes/tests itself and continues
+hard/stuck problem?
+  yes → ChatGPT first
+        ├─ unavailable → fresh Codex
+        ├─ 3 unsuccessful ChatGPT loops → fresh Codex
+        └─ helper path unavailable → DSH continues itself
         ↓
-Acceptance-ready candidate
+acceptance-ready candidate
         ↓
-DSH commits/pushes exact head + updates PR/evidence
+sequential exact-head review
+  ChatGPT PASS → done; do NOT call Codex
+  ChatGPT unavailable → Codex review
+  ChatGPT still non-pass after 3 loops → Codex review
         ↓
-same bounded git-only review task
-  ├─→ ChatGPT via mcp-chatgpt
-  └─→ fresh native Codex subagent
-        ↓
-Any available reviewer has blocking finding?
-  yes → DSH fixes/tests → fresh bounded review attempts
-  no  → record PASS/UNAVAILABLE states → Ticket completion gate
+Ticket completion gate
 ```
 
-DSH never uses a reviewer failure, timeout, quota limit, or hard problem as a reason to stop. A returned blocking review is another implementation loop; helper unavailability causes fallback, not deadlock.
+## 10. Planning/progress/debug/review protocol
 
-## 8. Planning, debug, and review protocol
-
-### Startup planning — ChatGPT preferred
-
-Before first production edits, DSH attempts:
+### ChatGPT transport
 
 ```text
 mcp-chatgpt
@@ -222,95 +279,72 @@ mcp-chatgpt
 -> ChatGPT session = CTO
 ```
 
-Planning task:
-
-```text
-request-id: <unique id>
-kind: plan
-repo: code2hack/dsh-glasses
-milestone: <milestone>
-ticket: #<number>
-base: <base ref + exact resolved SHA where useful>
-branch: <branch>
-head: <exact current SHA>
-paths: <relevant Ticket/SPEC/ADR/source/test paths>
-question: Produce a concrete implementation and validation plan for this Ticket within the current durable authorities.
-```
-
-If ChatGPT responds, DSH uses/evaluates that plan before production coding. If ChatGPT is unavailable after the bounded attempt, DSH records the reason and proceeds with its own repository-grounded plan. Durable authority is unchanged either way.
-
-### Hard-debug and exact-head review — same task to ChatGPT and Codex
-
-DSH constructs one task body and makes bounded attempts to both reviewers.
-
-ChatGPT transport:
-
-```text
-mcp-chatgpt
--> ChatGPT project = dsh-glasses
--> ChatGPT session = CTO
-```
-
-Codex transport:
+### Codex transport
 
 ```text
 native DSH Codex subagent (`subagent_codex` or pinned supported equivalent)
--> fresh invocation for this request
+-> fresh request-long invocation
 -> parent DSH Ticket worktree
--> self-contained task only
--> returns final result to DSH
+-> self-contained prompt
+-> final result returned to DSH
 ```
 
-Task body:
+Standard request body:
 
 ```text
 request-id: <unique id>
-kind: review | debug
+kind: plan | progress | review | debug
 repo: code2hack/dsh-glasses
 milestone: <milestone>
 ticket: #<number>
-base: <base ref + exact resolved SHA where useful>
+base: <base ref + exact resolved SHA>
 branch: <branch>
-head: <exact current SHA>
+head: <current exact SHA>
 pr: <PR number/url if present>
-paths: <relevant repository/evidence paths if needed>
-question: <smallest concrete question>
+paths: <relevant repository/evidence paths>
+question: <smallest concrete request>
 ```
 
-For Codex, append/integrate the requirement: **inspect/reason/report only; do not modify the Ticket worktree**.
+For planning, request a detailed ordered implementation/validation to-do list.
 
-Do not paste complete logs, conversation transcripts, or previous reviewer chats. If debug evidence is needed, DSH reduces it into bounded durable repository evidence and sends references.
+For progress, identify the completed to-do item, result, validation/evidence, and next item.
 
-DSH polls/waits only for a bounded period. A timed-out/limited/unavailable reviewer is recorded `UNAVAILABLE`, then DSH proceeds with the other reviewer or alone. Codex is never treated as a persistent thread.
+For Codex, always add: inspect/reason/report only; do not modify the Ticket worktree.
 
-## 9. Review semantics
+Do not paste complete logs or old conversations. Reduce diagnostics into bounded durable evidence and pass repository/path references.
 
-For an exact candidate head, DSH records each reviewer as one of:
+## 11. Hard-problem escalation
+
+Ordinary defects remain DSH's responsibility.
+
+A hard/stuck problem is one where bounded local debugging has not resolved the failure, the next edit would be speculative, a critical supported API/runtime invariant is uncertain, or another blocker prevents reliable progress.
+
+DSH asks ChatGPT first. If ChatGPT is unavailable, invoke Codex. If the same problem remains unresolved after three complete ChatGPT loops, invoke Codex instead of a fourth loop.
+
+If Codex is unavailable too, DSH continues independently. Known valid blocking findings still must be resolved or disproved with validation/evidence.
+
+## 12. Sequential final review
+
+For the final exact head:
 
 ```text
-PASS
-UNAVAILABLE <reason>
-BLOCKING <finding>
+ChatGPT review
+  PASS
+    -> reviewer gate satisfied; Codex NOT called
+  UNAVAILABLE
+    -> fresh Codex review
+  BLOCKING / UNPASSED
+    -> DSH fixes + validates + asks ChatGPT again
+    -> after third unsuccessful loop: fresh Codex review
 ```
 
-Completion review succeeds when no available reviewer has an unresolved blocking finding. Two PASSes are preferred, not mandatory.
+If escalated Codex returns `PASS`, the reviewer gate is satisfied. If Codex returns blocking findings, DSH fixes/validates and continues that Codex escalation chain.
 
-Examples:
+If the required helper path is unavailable, DSH may fall back to independent validation, but it may not silently ignore any known unresolved valid blocking finding.
 
-```text
-PASS / PASS            -> reviewer gate satisfied
-PASS / UNAVAILABLE     -> reviewer gate satisfied
-UNAVAILABLE / PASS     -> reviewer gate satisfied
-UNAVAILABLE / UNAVAILABLE -> reviewer gate satisfied by fallback
-BLOCKING / PASS        -> not satisfied
-PASS / BLOCKING        -> not satisfied
-```
+Any production-code change invalidates prior PASS/UNAVAILABLE review evidence for the new head.
 
-Any production-code change makes prior review/availability records stale. DSH revalidates and makes fresh review attempts for the new exact head.
-
-For product/architecture decisions, durable authority remains binding. ChatGPT unavailability does not grant DSH authority to invent product behavior, and Codex review never grants product authority.
-
-## 10. Completion gate
+## 13. Completion gate
 
 ```text
 TicketComplete =
@@ -318,44 +352,51 @@ TicketComplete =
   AND required automated/runtime/device/human gates == satisfied
   AND final candidate == committed + pushed
   AND durable evidence == tied to tested implementation
-  AND bounded exact-head ChatGPT review attempt == PASS or UNAVAILABLE
-  AND bounded exact-head Codex review attempt == PASS or UNAVAILABLE
-  AND no available reviewer has unresolved blocking finding
+  AND plan/to-do source follows ChatGPT -> Codex -> self-plan order
+  AND every completed to-do item has required progress checkpoint or both-unavailable record
+  AND final review follows sequential ChatGPT-first escalation
+  AND no known unresolved blocking helper finding
   AND no unresolved blocker
   AND worktree == clean (except documented external/runtime artifacts)
   AND DSH closeout == durable
 ```
 
-Reviewer `UNAVAILABLE` is a documented fallback state, not a failed Ticket. It does not excuse any non-review acceptance requirement.
+Helper unavailability never excuses non-review acceptance requirements.
 
-## 11. Closeout and successors
+## 14. Closeout and successors
 
 DSH closeout records:
 
 - final SHA/PR;
 - acceptance matrix;
 - evidence refs;
-- ChatGPT final review result or `UNAVAILABLE` reason tied to the final SHA;
-- Codex final subagent result or `UNAVAILABLE` reason tied to the final SHA, with invocation reference when available;
+- plan source and ordered to-do list;
+- per-to-do progress checkpoint record;
+- final helper/review route and verdict;
+- ChatGPT loop count and Codex escalation reason when escalation occurred;
+- helper unavailability reasons;
 - residual uncertainty/deferrals.
 
-The dispatcher then retires/reconciles DSH and recomputes the ready frontier. A successor gets a fresh named DSH session in its own branch/worktree. It does not replay predecessor chat history. Its Codex help/review calls are fresh native subagent invocations.
+The dispatcher then retires/reconciles DSH and recomputes the ready frontier. A successor gets a fresh named DSH session in its own branch/worktree and starts a new ChatGPT-first helper chain.
 
-## 12. Parallelism and scarce resources
+## 15. Parallelism and scarce resources
 
 Multiple logically ready Tickets may run concurrently up to configured active capacity. Shared mutable resources such as the real Rokid remain separately leased/scheduled; resource contention never becomes a fake `Blocked by` edge.
 
-Codex subagent concurrency is an execution/resource concern of DSH/native provider, not a Ticket-DAG dependency and not persistent Ticket worker count.
+Codex subagent use is an execution/resource concern of DSH/native provider, not a Ticket-DAG dependency and not persistent Ticket worker count.
 
-## 13. Native-Codex deployment transition
+## 16. Native-Codex deployment transition
 
-The dispatcher implementation merged before this final protocol already centers on DSH admission, but automatic Ticket execution remains disabled until the bootstrap dispatcher Ticket validates the remaining required behavior against the pinned DSH deployment:
+Automatic Ticket execution remains disabled until the bootstrap dispatcher Ticket validates the final workflow against the pinned DSH deployment:
 
 - deterministic named DSH admission/restart;
 - 120-second-default configurable DSH watchdog;
-- generated DSH bootstrap includes bounded ChatGPT-plan attempt before code;
-- generated DSH bootstrap includes best-effort ChatGPT + fresh-Codex hard-help/review plus explicit availability fallback;
+- generated bootstrap requires helper-produced detailed plan/to-do before code;
+- DSH never self-plans while ChatGPT or Codex is available;
+- DSH reports after every completed to-do item;
+- ChatGPT and Codex are never requested in parallel;
+- Codex appears only after ChatGPT unavailability or three unresolved ChatGPT loops;
+- final review is sequential ChatGPT-first;
 - native Codex subagent tool/provider is exposed to admitted DSH agents;
-- hard-debug and final review use fresh native Codex invocations in the Ticket worktree;
 - dispatcher contains no persistent Codex lifecycle state;
 - existing frontier, moving-base, failed-fetch, rollback, credential, and resource-separation guarantees remain intact.
