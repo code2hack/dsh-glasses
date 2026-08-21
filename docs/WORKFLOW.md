@@ -349,7 +349,7 @@ Codex subagent concurrency is an execution/resource concern of DSH/native provid
 
 ## 13. Native-Codex deployment transition
 
-VALIDATED by Bootstrap Ticket #19 against the pinned DSH deployment; automatic Ticket execution is now enabled (dispatcher `wakeAgents` defaults to `true`, watchdog heartbeat defaults to 120s). Evidence: `docs/evidence/ticket-19-validation-2026-08-20.md` and the PR that raises the dispatcher and pinned workflow composition to the current native-Codex protocol. Verified and under test:
+VALIDATED by Bootstrap Ticket #19 against the pinned DSH deployment; automatic Ticket execution is now enabled (dispatcher `wakeAgents` defaults to `true`, watchdog heartbeat defaults to 120s). Evidence: `docs/evidence/ticket-19-native-codex-dispatcher-2026-08-21.md` and the PR that raises the dispatcher and pinned workflow composition to the current native-Codex protocol. Verified and under test:
 
 - deterministic named DSH admission/restart (exact identity `dsh-glasses-<milestone>-#<n>-DSH`, same session reconstructed on restart, no duplicates);
 - 120-second-default configurable DSH watchdog with no duplicate admission across repeated reconciles;
