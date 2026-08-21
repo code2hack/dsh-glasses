@@ -42,7 +42,12 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
         // workers) must not hijack restart: leave a failed tombstone so the
         // Ticket re-admits under the exact deterministic id.
         const ticket = byNumber.get(marker.number);
-        const expected = ticket ? dshName({ milestone: ticket.milestone, number: marker.number }) : null;
+        // dshName requires a valid milestone string (throws otherwise). A
+        // Ticket whose declared milestone is invalid must never abort the
+        // pass; without a computable deterministic id the marker is only a
+        // stale/foreign claim and the Ticket is reported under
+        // invalidMilestone for proper re-admission once the section is fixed.
+        const expected = ticket && milestoneValid(ticket) ? dshName({ milestone: ticket.milestone, number: marker.number }) : null;
         if (expected && marker.sessionId === expected) {
           state.tickets[key] = durableProjection(marker);
         } else {
@@ -61,7 +66,10 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       if (!["claimed", "running", "publishing", "voiding", "failed", "collision", "complete"].includes(durable.status)) continue;
       const binding = { ...durable };
       const ticket = byNumber.get(binding.number);
-      if (!binding.bootstrapPrompt && ticket) binding.bootstrapPrompt = bootstrapPrompt({ ...ticket, ...binding });
+      // Invalid-milestone Tickets cannot form a deterministic identity until
+      // their declared section is fixed; skip their bootstrapPrompt so dshName
+      // is never called with an invalid milestone (would abort the pass).
+      if (!binding.bootstrapPrompt && ticket && milestoneValid(ticket)) binding.bootstrapPrompt = bootstrapPrompt({ ...ticket, ...binding });
       // Failed/voiding bindings are identity tombstones without a worktree;
       // there is nothing to probe or validate until a re-admission retries.
       if (!binding.worktree) {
@@ -77,10 +85,15 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       binding.sessionPersisted = binding.sessionProbe.status === "persisted";
       binding.live = dsh.isLive?.(binding) === true;
       binding.progressing = dsh.isProgressing?.(binding) === true;
-      // A durable identity-collision binding is non-retriable while the
-      // conflicting persisted session exists. When that session log is gone
-      // (probe no longer reports a collision), demote to a failed tombstone so
-      // the Ticket becomes re-admissible under the same deterministic id.
+      // CTO design mandate (r19-2026-08-21b): a wrong-cwd persisted session for
+      // the deterministic id is a NON-RETRIABLE terminal identity-collision
+      // while it exists — no void, no delete, no resume, no re-admission into
+      // an active collision. Re-admission is permitted ONLY after the conflict
+      // is objectively gone (the dispatcher's own probe no longer reports a
+      // collision, i.e. the offending session log was removed outside the
+      // dispatcher); only then is the durable tombstone demoted to a failed
+      // tombstone so the Ticket re-admits under the SAME deterministic id. The
+      // tombstone is never auto-cleared while any collision is still present.
       if (durable.status === "collision" && binding.sessionProbe.status !== "collision") {
         binding.status = "failed";
         binding.reason = "collision-cleared";

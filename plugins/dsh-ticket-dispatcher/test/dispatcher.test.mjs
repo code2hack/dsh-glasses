@@ -370,6 +370,27 @@ test("an OPEN Ticket without a deterministically valid Milestone is never admitt
   assert.deepEqual(report.ready, []);
 });
 
+test("an existing claim on an invalid-Milestone Ticket cannot abort the pass (dshName guard)", async () => {
+  // Regression for the reviewer finding: claim reconciliation previously called
+  // dshName() on a Ticket whose declared Milestone is invalid; dshName throws,
+  // which aborted the whole reconcile pass. The guard makes the claim a
+  // failed/stale-identity tombstone instead, and the pass completes with the
+  // Ticket reported under invalidMilestone.
+  const records = [
+    { number: 5, state: "OPEN", milestone: undefined, blockers: [], url: "u5" },
+    { number: 6, state: "OPEN", milestone: "Bootstrap", blockers: [], url: "u6" },
+  ];
+  const foreign = { number: 5, name: "dsh-glasses-legacy-#5-DSH", sessionId: "dsh-glasses-legacy-#5-DSH", branch: "workflow/ticket-5", worktree: "/tickets/ticket-5", baseSha: BASE };
+  const h = harness({ records, durableClaims: [claimBody(foreign)], maxActive: 2 });
+  const report = await h.dispatcher.reconcile(); // must complete, not throw
+  assert.deepEqual(report.invalidMilestone, [5]);
+  assert.deepEqual(report.running.map((x) => x.number), [6]);
+  assert.deepEqual(report.ready, []);
+  const tombstone = h.state().tickets[5];
+  assert.equal(tombstone.status, "failed");
+  assert.equal(tombstone.reason, "stale-identity");
+});
+
 // ── DSH liveness watchdog ─────────────────────────────────────────────────────
 
 test("watchdog does not wake a live/progressing DSH session", async () => {

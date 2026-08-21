@@ -30,6 +30,11 @@ export const Config = z.object({
   fixturesPath: z.string().default(""),
   wakeAgents: z.boolean().default(true),
   stayAlive: z.boolean().default(false),
+  // Narrow trusted principal for terminal markers. Empty (default) trusts any
+  // author on the Ticket's OWN issue; set it to the DSH closeout identity
+  // (e.g. ['code2hack']) on shared/public repositories so only that writer can
+  // retire a Ticket. See README/completionAuthors.
+  completionAuthors: z.array(z.string()).default([]),
 });
 
 function argumentsOf(ctx, config) {

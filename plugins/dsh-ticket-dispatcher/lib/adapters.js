@@ -180,11 +180,15 @@ export function normalizeIssues(issues) {
         number: issue.number,
         state: issue.state.toUpperCase(),
         url: issue.url ?? issue.html_url,
-        // The Ticket's declared `## Milestone` is the canonical identity
-        // source (admission validates it exactly). A real GitHub milestone is
-        // an object; keep only its string title as a fallback when the body
-        // declares none — never let an object reach dshName.
-        milestone: parseMilestone(issue.body) ?? (typeof issue.milestone === "string" ? issue.milestone : issue.milestone?.title ?? ""),
+        // The Ticket's declared `## Milestone` section is the sole identity
+        // authority (admission validates it exactly). A native GitHub
+        // milestone is an OBJECT and never substitutes for the declared
+        // section: a real Ticket without the section is invalid (empty
+        // milestone) and reported under invalidMilestone. A plain STRING
+        // milestone is accepted only as the contract representation used by
+        // offline fixtures that already carry the declared value — it is
+        // never an object, so dshName is safe either way.
+        milestone: parseMilestone(issue.body) ?? (typeof issue.milestone === "string" ? issue.milestone : ""),
         blockers,
         blockerStates: issue.blockerStates ?? Object.fromEntries(blockers.map((number) => [number, states.get(number) ?? "UNKNOWN"])),
       };

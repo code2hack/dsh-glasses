@@ -162,7 +162,7 @@ test("normalizeIssues canonicalizes Milestone to a string and never leaks a GitH
   const six = normalized.find((issue) => issue.number === 6);
   assert.equal(typeof five.milestone, "string");
   assert.equal(five.milestone, "M-Body", "the Ticket's declared ## Milestone is canonical and wins over a GitHub milestone object");
-  assert.equal(six.milestone, "M-Roadmap", "a GitHub milestone string title is the fallback only when the body declares none");
+  assert.equal(six.milestone, "", "a native GitHub milestone object does NOT substitute for a declared ## Milestone section: the Ticket is invalid until the section is declared");
 });
 
 test("a completion marker is authoritative only on its own issue, and only from a trusted writer when configured", async (t) => {
