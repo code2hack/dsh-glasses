@@ -677,7 +677,7 @@ try {
     // Universal exact-head invariant: every final-review request must be
     // immediately preceded by a committed candidate-head preparation (the
     // probe also asserts one preparation per request internally).
-    assert.match(sqStdout, /kind=final-review-candidate \| (chatgpt|codex) kind=review-final/, `scenario ${scenario.name} must place a committed exact head immediately before every review request:\n${sqStdout}`);
+    assert.match(sqStdout, /kind=final-review-candidate[^\n]*\nSQP event (?:chatgpt kind=review-final|codex kind=review-final)/, `scenario ${scenario.name} must place a committed exact head immediately before every review request:\n${sqStdout}`);
     for (const re of scenario.assert) {
       assert.match(sqStdout, re, `scenario ${scenario.name} violated expected routing:\n${sqStdout}`);
     }
