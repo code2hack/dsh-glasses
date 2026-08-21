@@ -56,7 +56,10 @@ async function run(ctx, config) {
   await ctx.get("loader")?.await();
   const options = argumentsOf(ctx, config);
   const worktreeRoot = config.worktreeRoot || resolve(config.repoRoot, "../dsh-glasses-tickets");
-  const github = config.fixturesPath ? createFixtureGithubAdapter(config.fixturesPath) : createGithubAdapter({ repo: config.repo });
+  const completionAuthors = Array.isArray(config.completionAuthors) ? config.completionAuthors : [];
+  const github = config.fixturesPath
+    ? createFixtureGithubAdapter(config.fixturesPath, { completionAuthors })
+    : createGithubAdapter({ repo: config.repo, completionAuthors });
   const dsh = createDshAdapter(ctx);
   if (!config.wakeAgents) delete dsh.wakeAgent;
   const dshHome = process.env.DSH_HOME;

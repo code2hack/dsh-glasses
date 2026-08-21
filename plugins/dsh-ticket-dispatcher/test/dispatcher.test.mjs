@@ -475,6 +475,21 @@ test("a closed Ticket is retired, never woken, and releases capacity", async () 
   assert.equal(h.calls.includes("dispose:1"), true);
 });
 
+test("a claim marker under a legacy/arbitrary session id cannot hijack restart: the Ticket re-admits under the exact deterministic identity", async () => {
+  const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
+    durableClaims: [`dispatcher-claim: ${JSON.stringify({ schemaVersion: 2, ticket: 1, name: "legacy", sessionId: "legacy-session", branch: "workflow/ticket-1", worktree: "/tickets/legacy", baseSha: BASE })}`],
+    maxActive: 1,
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.equal(report.running.length, 1);
+  assert.equal(report.running[0].sessionId, NAME(1), "restart must not bind the legacy session id");
+  assert.equal(h.calls.includes("agent:1"), true, "the Ticket must be re-admitted under the exact deterministic identity");
+  const durable = h.state().tickets["1"];
+  assert.equal(durable.sessionId, NAME(1));
+  assert.equal(["claimed", "running"].includes(durable.status), true);
+});
+
 test("a persisted-session identity collision is a non-retriable terminal state: no resume, no claim void, no session deletion", async () => {
   const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/moved", baseSha: BASE };
   const h = harness({

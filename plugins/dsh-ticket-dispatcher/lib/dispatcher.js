@@ -36,7 +36,18 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
         // undoes the watchdog's decision every pass.
         state.tickets[key] = durableProjection({ ...marker, ...local });
       } else {
-        state.tickets[key] = durableProjection(marker);
+        // A claim marker with no matching durable local binding is accepted
+        // only when it carries the Ticket's current deterministic DSH
+        // identity. Legacy/arbitrary session ids (older claims, foreign
+        // workers) must not hijack restart: leave a failed tombstone so the
+        // Ticket re-admits under the exact deterministic id.
+        const ticket = byNumber.get(marker.number);
+        const expected = ticket ? dshName({ milestone: ticket.milestone, number: marker.number }) : null;
+        if (expected && marker.sessionId === expected) {
+          state.tickets[key] = durableProjection(marker);
+        } else {
+          state.tickets[key] = durableProjection({ ...local, number: marker.number, status: "failed", reason: "stale-identity", sessionId: marker.sessionId });
+        }
       }
     }
     const completions = (await github.listCompletions?.(tickets.map((ticket) => ticket.number))) ?? [];

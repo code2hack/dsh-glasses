@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createFixtureGithubAdapter, createGitAdapter, encodeSegment, normalizeIssues, parseJqLines, probeSession, projectKey } from "../lib/adapters.js";
+import { bindSourceCompletions, createFixtureGithubAdapter, createGitAdapter, encodeSegment, normalizeIssues, parseJqLines, probeSession, projectKey } from "../lib/adapters.js";
 
 const exec = promisify(execFile);
 
@@ -149,6 +149,55 @@ test("probe reports persisted, missing, collision, and unknown faithfully", asyn
   // left in place (no recursive delete), so the session history survives.
   assert.equal((await probeSession(root, other)).status, "collision");
   assert.equal((await probeSession(root, binding)).status, "persisted");
+});
+
+test("normalizeIssues canonicalizes Milestone to a string and never leaks a GitHub milestone object into the identity", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-milestone-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const normalized = normalizeIssues([
+    { number: 5, state: "OPEN", pull_request: false, html_url: "u5", milestone: { title: "M-Roadmap", url: "https://example.test/m/1" }, body: "## Milestone\nM-Body\n\n## What to build\nx\n\n## Blocked by\nNone", blockerStates: {} },
+    { number: 6, state: "OPEN", pull_request: false, html_url: "u6", milestone: { title: "M-Roadmap" }, body: undefined },
+  ]);
+  const five = normalized.find((issue) => issue.number === 5);
+  const six = normalized.find((issue) => issue.number === 6);
+  assert.equal(typeof five.milestone, "string");
+  assert.equal(five.milestone, "M-Body", "the Ticket's declared ## Milestone is canonical and wins over a GitHub milestone object");
+  assert.equal(six.milestone, "M-Roadmap", "a GitHub milestone string title is the fallback only when the body declares none");
+});
+
+test("a completion marker is authoritative only on its own issue, and only from a trusted writer when configured", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-completion-trust-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "fixtures.json");
+  const markerOn6 = ({ schemaVersion: 1, ticket: 6, sessionId: "dsh-glasses-M1-#6-DSH", head: "a".repeat(40) });
+  const markerOn7 = ({ schemaVersion: 1, ticket: 7, sessionId: "dsh-glasses-M1-#7-DSH", head: "b".repeat(40) });
+  // A well-formed marker for #6 posted on issue #7's thread must NOT retire #6.
+  const bound = bindSourceCompletions([
+    { issue: 7, author: "passerby", body: `ticket-complete: ${JSON.stringify(markerOn6)}` },
+    { issue: 7, author: "dispatcher-bot", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+  ], []);
+  assert.deepEqual(bound.map((m) => m.number), [7], "cross-issue completion marker must be dropped");
+  // Trusted writers: with an allowlist, a foreign commenter's marker is ignored.
+  const trusted = bindSourceCompletions([
+    { issue: 7, author: "passerby", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+    { issue: 7, author: "dispatcher-bot", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+  ], ["dispatcher-bot"]);
+  assert.equal(trusted.length, 1);
+  assert.equal(trusted[0].sessionId, "dsh-glasses-M1-#7-DSH");
+  assert.deepEqual(bindSourceCompletions([
+    { issue: 7, author: "passerby", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+  ], ["dispatcher-bot"]), [], "untrusted writer alone must not retire the Ticket");
+  // Whole-fixture behavior: a foreign-commenter + wrong-issue marker does not retire.
+  const adapter = createFixtureGithubAdapter(path, { completionAuthors: ["dispatcher-fixture"] });
+  await writeFile(path, JSON.stringify({
+    tickets: [{ number: 7, state: "OPEN", milestone: "M1", blockers: [], url: "u7" }],
+    claims: [],
+    completions: [
+      { issue: 8, author: "dispatcher-fixture", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+      { issue: 7, author: "passerby", body: `ticket-complete: ${JSON.stringify(markerOn7)}` },
+    ],
+  }, null, 2));
+  assert.deepEqual(await adapter.listCompletions([7]), [], "only source-bound + trusted completions count");
 });
 
 test("fixture adapter persists completion markers and normalizes Ticket Milestones from issue bodies", async (t) => {

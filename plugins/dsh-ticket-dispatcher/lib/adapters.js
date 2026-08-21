@@ -6,6 +6,8 @@ import { CLAIM_PREFIX, collapseClaimMarkers, collapseCompleteMarkers, completeBo
 
 const exec = promisify(execFile);
 
+const byNumber = (a, b) => a.number - b.number;
+
 async function run(file, args, cwd) {
   const { stdout } = await exec(file, args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
   return stdout;
@@ -178,22 +180,46 @@ export function normalizeIssues(issues) {
         number: issue.number,
         state: issue.state.toUpperCase(),
         url: issue.url ?? issue.html_url,
-        milestone: issue.milestone ?? parseMilestone(issue.body),
+        // The Ticket's declared `## Milestone` is the canonical identity
+        // source (admission validates it exactly). A real GitHub milestone is
+        // an object; keep only its string title as a fallback when the body
+        // declares none — never let an object reach dshName.
+        milestone: parseMilestone(issue.body) ?? (typeof issue.milestone === "string" ? issue.milestone : issue.milestone?.title ?? ""),
         blockers,
         blockerStates: issue.blockerStates ?? Object.fromEntries(blockers.map((number) => [number, states.get(number) ?? "UNKNOWN"])),
       };
     });
 }
 
-export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
+/**
+ * Completion markers are only authoritative when they are (a) posted on the
+ * Ticket's OWN issue (self-declared `ticket` must equal the source issue) and
+ * (b) authored by a trusted terminal-marker writer when `completionAuthors`
+ * is configured. Cross-issue or foreign-commenter markers must never retire an
+ * unfinished Ticket. Markers that fail either check are ignored.
+ */
+export function bindSourceCompletions(entries, completionAuthors = []) {
+  const records = new Map();
+  for (const entry of entries) {
+    const body = typeof entry === "string" ? entry : entry?.body;
+    const marker = collapseCompleteMarkers([body])[0];
+    if (!marker) continue;
+    if (marker.number !== entry?.issue && entry?.issue !== undefined) continue;
+    if (typeof entry === "object" && entry && Array.isArray(completionAuthors) && completionAuthors.length && !completionAuthors.includes(entry.author)) continue;
+    records.set(marker.number, marker);
+  }
+  return [...records.values()].sort(byNumber);
+}
+
+export function createGithubAdapter({ repo = "code2hack/dsh-glasses", completionAuthors = [] } = {}) {
   const endpoint = `repos/${repo}`;
   async function commentsOf(numbers) {
-    const bodies = [];
+    const entries = [];
     for (const number of [...numbers].sort((a, b) => a - b)) {
       const comments = parseJqLines(await run("gh", ["api", "--paginate", "--jq", ".[]", `${endpoint}/issues/${number}/comments?per_page=100`]));
-      bodies.push(...comments.map((comment) => comment.body));
+      entries.push(...comments.map((comment) => ({ issue: number, author: comment.user?.login ?? "", body: comment.body })));
     }
-    return bodies;
+    return entries;
   }
   const adapter = {
     async listTickets() {
@@ -201,10 +227,14 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
       return normalizeIssues(issues);
     },
     async listClaims(ticketNumbers) {
-      return collapseClaimMarkers(await commentsOf(ticketNumbers));
+      const entries = await commentsOf(ticketNumbers);
+      return collapseClaimMarkers(entries.map((entry) => entry.body));
     },
     async listCompletions(ticketNumbers) {
-      return collapseCompleteMarkers(await commentsOf(ticketNumbers));
+      // Enforce the source-issue binding and the trusted-writer allowlist for
+      // terminal markers; a marker on the wrong issue or from an untrusted
+      // commenter cannot retire this Ticket.
+      return bindSourceCompletions(await commentsOf(ticketNumbers), completionAuthors);
     },
     async writeClaim(binding) {
       const body = `${CLAIM_PREFIX} ${JSON.stringify({ schemaVersion: 2, ticket: binding.number, name: binding.name, sessionId: binding.sessionId, branch: binding.branch, worktree: binding.worktree, baseSha: binding.baseSha })}`;
@@ -237,13 +267,17 @@ export function createGithubAdapter({ repo = "code2hack/dsh-glasses" } = {}) {
   return adapter;
 }
 
-export function createFixtureGithubAdapter(path) {
+export function createFixtureGithubAdapter(path, { completionAuthors = [] } = {}) {
   const load = async () => JSON.parse(await readFile(path, "utf8"));
   const save = async (data) => writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
+  const fixtureEntries = (completions) => (completions ?? []).map((entry) => {
+    if (typeof entry === "string") return { issue: undefined, author: undefined, body: entry };
+    return { issue: entry.issue, author: entry.author, body: entry.body };
+  });
   return {
     async listTickets() { return normalizeIssues((await load()).tickets); },
     async listClaims() { return collapseClaimMarkers((await load()).claims); },
-    async listCompletions() { return collapseCompleteMarkers((await load()).completions ?? []); },
+    async listCompletions() { return bindSourceCompletions(fixtureEntries((await load()).completions), completionAuthors); },
     async writeClaim(binding) {
       const data = await load();
       data.claims.push(`${CLAIM_PREFIX} ${JSON.stringify({ schemaVersion: 2, ticket: binding.number, name: binding.name, sessionId: binding.sessionId, branch: binding.branch, worktree: binding.worktree, baseSha: binding.baseSha })}`);
@@ -254,10 +288,10 @@ export function createFixtureGithubAdapter(path) {
       data.claims.push(voidClaimBody(binding, reason));
       await save(data);
     },
-    async writeComplete(binding, evidence = {}) {
+    async writeComplete(binding, evidence = {}, author = "dispatcher-fixture") {
       const data = await load();
       data.completions = data.completions ?? [];
-      data.completions.push(completeBody(binding, evidence));
+      data.completions.push({ author, issue: binding.number, body: completeBody(binding, evidence) });
       await save(data);
     },
   };
