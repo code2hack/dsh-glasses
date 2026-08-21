@@ -595,6 +595,39 @@ test("a cleared identity collision re-admits the same deterministic id without e
   assert.equal(h.calls.includes("agent:1"), true);
 });
 
+test("an indeterminate probe never clears an identity-collision tombstone (only a definitive gone-conflict re-admits)", async () => {
+  const binding = { number: 1, name: NAME(1), sessionId: NAME(1), branch: "workflow/ticket-1", worktree: "/tickets/moved", baseSha: BASE };
+  const h = harness({
+    records: [{ number: 1, state: "OPEN", milestone: "M1", blockers: [], url: "u1" }],
+    durableClaims: [claimBody(binding)],
+    initialState: { schemaVersion: 2, tickets: { "1": { status: "collision", reason: "identity-collision", number: 1, sessionId: NAME(1), milestone: "M1", worktree: "/tickets/moved", branch: "workflow/ticket-1", baseSha: BASE } } },
+    sessionProbe: async () => ({ status: "unknown" }),
+    maxActive: 1,
+  });
+  const report = await h.dispatcher.reconcile();
+  assert.deepEqual(report.invalid, [{ number: 1, reason: "identity-collision" }]);
+  assert.equal(h.state().tickets["1"].status, "collision", "an `unknown` probe proves nothing and must keep the terminal tombstone");
+  assert.equal(h.calls.includes("agent:1"), false, "no re-admission while the conflict is unproven gone");
+});
+
+test("malformed milestone strings (whitespace, embedded space) are invalidMilestone and can never abort a pass", async () => {
+  const binding = { number: 5, name: "dsh-glasses-#5-DSH", sessionId: "dsh-glasses-#5-DSH", branch: "workflow/ticket-5", worktree: "/tickets/ticket-5", baseSha: BASE };
+  const h = harness({
+    records: [
+      { number: 5, state: "OPEN", milestone: "M 1", blockers: [], url: "u5" },
+      { number: 6, state: "OPEN", milestone: "   ", blockers: [], url: "u6" },
+      { number: 7, state: "OPEN", milestone: "Bootstrap", blockers: [], url: "u7" },
+    ],
+    durableClaims: [claimBody(binding)],
+    maxActive: 3,
+  });
+  const report = await h.dispatcher.reconcile(); // must not throw
+  assert.deepEqual(report.invalidMilestone, [5, 6]);
+  assert.deepEqual(report.running.map((x) => x.number), [7]);
+  assert.equal(h.state().tickets["5"].status, "failed");
+  assert.equal(h.state().tickets["5"].reason, "stale-identity");
+});
+
 test("a failed configured-origin fetch with a resolvable stale origin/main admits no Ticket", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "dispatcher-fetch-gate-"));
   t.after(() => rm(root, { recursive: true, force: true }));

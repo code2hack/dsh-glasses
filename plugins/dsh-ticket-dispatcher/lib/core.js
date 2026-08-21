@@ -25,7 +25,11 @@ export function parseBlockers(body = "") {
  */
 export function parseMilestone(body = "") {
   const section = /^## Milestone\s*$([\s\S]*?)(?=^## |(?![\s\S]))/im.exec(body)?.[1] ?? "";
-  const line = section.split(/\r?\n/).map((value) => value.trim()).find((value) => value && !value.startsWith("#") && !value.startsWith("<!--"));
+  // HTML comments (including multi-line blocks and commented-out metadata)
+  // must never trigger admission: strip every <!-- ... --> block before
+  // scanning, then ignore any leftover single-line `<!--` opener.
+  const withoutComments = section.replace(/<!--[\s\S]*?-->/g, "");
+  const line = withoutComments.split(/\r?\n/).map((value) => value.trim()).find((value) => value && !value.startsWith("#") && !value.startsWith("<!--"));
   if (!line || !/^[A-Za-z0-9][\w.-]*$/.test(line)) return undefined;
   return line;
 }

@@ -65,6 +65,8 @@ test("Milestone parsing is deterministic and strictly validated", () => {
   assert.equal(parseMilestone("## Milestone\n\nM1\n\n## What to build\nx"), "M1");
   assert.equal(parseMilestone("## Milestone\nBootstrap\n## What to build\nx"), "Bootstrap");
   assert.equal(parseMilestone("## Milestone\n\n<!-- anything -->\nM-2026-Q3\n\n## Gate\n"), "M-2026-Q3");
+  assert.equal(parseMilestone("## Milestone\n\n<!--\nM-Commented\n-->\nM-2026-Q3\n\n## Gate\n"), "M-2026-Q3", "a multi-line HTML comment must not supply the milestone");
+  assert.equal(parseMilestone("## Milestone\n\n<!--\nBootstrap\n-->\n\n## What to build\nx"), undefined, "commented-out metadata alone must not trigger admission");
   assert.equal(parseMilestone("## Milestone\n\n## What to build\nx"), undefined);
   assert.equal(parseMilestone("## Milestone\nmilestone with spaces\n"), undefined);
   assert.equal(parseMilestone("no milestone section"), undefined);

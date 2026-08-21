@@ -121,6 +121,6 @@ npm run smoke        # requires the pinned DSH deployment + ~/.codex auth on thi
 ## 7. Residual uncertainty / deferred
 
 - The smoke's live-model turns are not asserted (the local DS4 model endpoint is not part of this Ticket's gate); dispatch is deterministic regardless of model reachability, and both the Codex seam and the availability contract are asserted with **real** invocations.
-- A reopen/rework escape uses a new sessionId under the same logical name; documented, not acceptance-blocking.
+- Rework/reopen of a completed Ticket keeps the EXACT same deterministic identity (`name === sessionId` is invariant; the deterministic id derives from the declared Milestone + number), re-probing the persisted session before materializing anything — no second identity is ever created for the same logical Ticket.
 - Native Codex auth currently rides the host `~/.codex/auth.json` (`auth_mode: chatgpt`); no per-Ticket Codex profile/model/thinking configuration exists by design (declared out of scope for #19).
 - Reviewer-availability was exercised with the reviewer side real and deterministic; the reverse one-sided leg (ChatGPT available + reviewer absent) is covered by the same entitlement logic at the code/unit level, but ChatGPT is not composed in the disposable profile, so that leg is not literally run against a real ChatGPT account here. The protocol invariant (any non-blocking technical result + at least one helper → continue; none → continue alone) is identical for both sides.

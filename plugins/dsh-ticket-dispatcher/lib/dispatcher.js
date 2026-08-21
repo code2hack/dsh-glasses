@@ -1,11 +1,18 @@
 import { bindingNames, bootstrapPrompt, classify, continuationPrompt, dshName, stableReport } from "./core.js";
 
+// The EXACT acceptance predicate dshName enforces. Validating with this
+// pattern here guarantees an admissible milestone can never make dshName throw
+// (which would abort a whole pass): only a plain non-empty string of the
+// documented identity charset is admissible.
+const MILESTONE_PATTERN = /^[A-Za-z0-9][\w.-]*$/;
+
 function milestoneValid(ticket) {
-  // Declared-section authority + crash-safety across every layer: only a plain
-  // non-empty STRING milestone makes a Ticket admissible. A native GitHub
-  // milestone OBJECT (or a missing value) is invalid — never a fallback — and
-  // can never reach dshName as `[object Object]`.
-  return ticket.state !== "OPEN" || (typeof ticket.milestone === "string" && Boolean(ticket.milestone));
+  // Declared-section authority + crash-safety across every layer: only a
+  // plain non-empty STRING matching the identity charset is admissible. A
+  // native GitHub milestone OBJECT, a missing value, or a malformed string
+  // ("", "M 1", " ") is invalid — never a fallback — and can never reach
+  // dshName (which throws on anything that fails the pattern).
+  return ticket.state !== "OPEN" || (typeof ticket.milestone === "string" && MILESTONE_PATTERN.test(ticket.milestone));
 }
 
 const DURABLE_KEYS = ["number", "status", "name", "sessionId", "branch", "worktree", "baseSha", "milestone", "bootstrapPrompt", "reason", "pendingReason", "error", "completedBy", "head", "recovered"];
@@ -92,13 +99,16 @@ export function createDispatcher({ github, git, dsh, stateStore, repoRoot, workt
       // CTO design mandate (r19-2026-08-21b): a wrong-cwd persisted session for
       // the deterministic id is a NON-RETRIABLE terminal identity-collision
       // while it exists — no void, no delete, no resume, no re-admission into
-      // an active collision. Re-admission is permitted ONLY after the conflict
-      // is objectively gone (the dispatcher's own probe no longer reports a
-      // collision, i.e. the offending session log was removed outside the
-      // dispatcher); only then is the durable tombstone demoted to a failed
-      // tombstone so the Ticket re-admits under the SAME deterministic id. The
-      // tombstone is never auto-cleared while any collision is still present.
-      if (durable.status === "collision" && binding.sessionProbe.status !== "collision") {
+      // an ACTIVE collision. Re-admission is permitted ONLY after the conflict
+      // is DEFINITIVELY gone: the dispatcher's own probe must return a
+      // conclusive state — `persisted` (the authoritative session now exists at
+      // the expected path) or `missing` (no session for this id anywhere, so
+      // nothing is left to collide with). `unknown` (no DSH home / probe
+      // failure) does NOT prove anything and keeps the terminal tombstone in
+      // place. Only then is the tombstone demoted to failed so the Ticket
+      // re-admits under the SAME deterministic id.
+      const probeDefinitive = binding.sessionProbe.status === "persisted" || binding.sessionProbe.status === "missing";
+      if (durable.status === "collision" && probeDefinitive) {
         binding.status = "failed";
         binding.reason = "collision-cleared";
       }
