@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "package": "@deepseek-ai/dsh",
+  "version": "0.1.1-rc.2",
+  "npmDistIntegrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==",
+  "requiredReadSeams": [
+    "webServer.register",
+    "sessionQuery.listSessions",
+    "sessionQuery.readSession",
+    "context.session/event",
+    "agents.get"
+  ]
+}

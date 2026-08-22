@@ -7,6 +7,13 @@
 const $ = (id) => document.getElementById(id);
 const core = window.C0Core;
 if (!core) throw new Error('C0Core is unavailable');
+const staging = window.GlassesSnapshotCore;
+if (!staging) throw new Error('GlassesSnapshotCore is unavailable');
+
+// M1 (#27) is a strictly READ-ONLY milestone: one attached session, canonical
+// snapshot bootstrap, no SSE, no draft mutations, no actions. Every TB0/M3
+// write path below remains SOURCE but must have zero reachable effect in M1.
+const M1_READ_ONLY = true;
 
 const MUTATION_KEY_PREFIX = 'dsh.c0.pending.mutation.';
 const SEND_KEY_PREFIX = 'dsh.c0.pending.send.';
@@ -21,6 +28,7 @@ let recovering = false;
 let generation = '';
 let lastSeq = -1;
 let identityFailure = null;
+let hasInstalled = false;
 const seenSeqs = new Set();
 
 let mode = 'navigation';
@@ -34,7 +42,9 @@ let authoritativeDraft = { revision: 0, text: '', locked: false };
 let actionMessage = '';
 let actionTone = '';
 
-const conversation = core.createConversationState();
+// The installed conversation is replaced wholesale (atomically) by
+// installSnapshot() adopting the staged detached state.
+let conversation = core.createConversationState();
 let pendingMutation = null;
 let pendingSend = null;
 let mutationInFlight = false;
@@ -153,6 +163,9 @@ function setHudVisible(visible) {
 }
 
 function clearSessionProjection() {
+  // Explicit projection clearing also resets the installed-state marker: after
+  // this, any rejected snapshot is a no-install (never classified keep-previous).
+  hasInstalled = false;
   generation = '';
   lastSeq = -1;
   sessionStatus = 'unavailable';
@@ -267,8 +280,21 @@ function init() {
     run();
   });
 
-  window.glassesOnLine = onSseLine;
-  window.glassesOnStream = onStreamState;
+  // M1 is strictly read-only: the legacy SSE recovery path (onSseLine ->
+  // recoverSnapshot -> applySnapshot) and stream state handling must have no
+  // externally reachable effect. Publish bounded no-ops instead of wiring the
+  // TB0 handlers.
+  if (M1_READ_ONLY) {
+    window.glassesOnLine = (eventName, data, id) => {
+      trace('m1-sse-ignored', { event: eventName || null, id: id || null });
+    };
+    window.glassesOnStream = (state, detail) => {
+      trace('m1-sse-ignored-stream', { state: String(state || ''), detail: detail || null });
+    };
+  } else {
+    window.glassesOnLine = onSseLine;
+    window.glassesOnStream = onStreamState;
+  }
   window.glassesOnSemanticControl = handleSemanticControl;
   window.onNativeTrace = (line) => {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 7000);
@@ -289,6 +315,7 @@ function init() {
     ...window.g0DebugState(),
     mode: mode,
     hudVisible: hudVisible,
+    installed: hasInstalled,
     wheel: { open: wheelOpen, selection: wheelSelection },
     sessionStatus: sessionStatus,
     writeState: writeState,
@@ -321,45 +348,116 @@ function run() {
     return;
   }
 
-  const snapshot = fetchSnapshot();
-  if (!snapshot) return;
-  showProvision(false);
-  showIdentityError(false, '', '');
-  showSession(true);
-  applySnapshot(snapshot);
+  // M1 bootstrap: fetch raw -> stage (validate complete wire law + fence) ->
+  // single atomic install. A rejected snapshot leaves the previous valid
+  // screen untouched; with no prior install the session stays hidden.
+  const accepted = stageAndInstall();
+  if (!accepted) return;
 
-  if (!streamOpen && !streamConnecting) {
-    streamConnecting = true;
-    streamVerified = false;
-    setConn('reconnecting', 'connecting');
-    trace('stream-opening', { lastSeq: lastSeq, expectedSession: expectedSession });
-    window.GlassesBridge.openStream();
-  }
+  // M1 strictly read-only: no SSE auto-open, no pending-op resume.
 }
 
+// fetchSnapshot() is TRANSPORT-ONLY: it verifies an HTTP-200 object body and
+// returns the RAW body. Every snapshot-data decision (session identity,
+// unsupported major, malformed shape, generation...) belongs to stageSnapshot()
+// so that a rejected snapshot can NEVER destructively clear an installed
+// screen (no enterSessionMismatch/clearSessionProjection before staging).
 function fetchSnapshot() {
   if (identityFailure) return null;
   const response = nativeFetch('/glasses/v1/bootstrap');
   if (response.status !== 200 || !response.body || typeof response.body !== 'object') {
     trace('bootstrap-failed', { status: response.status });
-    if (response.status === 401 || response.status === 403) {
-      showProvision(true);
-      showSession(false);
+    if (!hasInstalled) {
+      if (response.status === 401 || response.status === 403) {
+        showProvision(true);
+        showSession(false);
+      }
+    } else {
+      trace('bootstrap-transport-failed-keep-previous', { status: response.status });
     }
     scheduleReconnect(response.status === 0 ? 'unreachable' : ('HTTP ' + response.status));
     return null;
   }
+  return response.body;
+}
 
-  const snapshot = response.body;
-  const expectedSession = configuredSession();
-  const actualSession = snapshot?.attachment
-    ? String(snapshot.attachment.sessionId || '').trim()
-    : '';
-  if (!expectedSession || actualSession !== expectedSession) {
-    enterSessionMismatch(expectedSession, actualSession, 'bootstrap');
+// M1 fetch->stage->install entry. Pure staging is atomic by structure: a
+// rejection discards the whole staged object and keeps the current screen.
+function stageAndInstall() {
+  if (identityFailure) return null;
+  const raw = fetchSnapshot();
+  if (!raw) return null;
+
+  const judged = staging.stageSnapshot(raw, {
+    expectedSessionId: configuredSession(),
+  });
+  if (!judged.ok) {
+    if (hasInstalled) {
+      setAction('Snapshot rejected · ' + judged.code, 'error');
+      trace('snapshot-rejected-keep-previous', { code: judged.code, message: judged.message || '' });
+    } else {
+      trace('snapshot-rejected-no-install', { code: judged.code, message: judged.message || '' });
+      setConn('off', 'snapshot-rejected');
+    }
+    scheduleReconnect('snapshot-rejected');
     return null;
   }
-  return snapshot;
+
+  installSnapshot(judged.snapshot);
+  return judged.snapshot;
+}
+
+// installSnapshot() is the ONLY mutation of installed client state. It adopts
+// the staged, fully-detached snapshot wholesale (generation, attachment
+// identity, session state, history watermark, conversation, rendered chat,
+// diagnostics). Nothing partial is revealed; the composer stays hidden.
+function installSnapshot(staged) {
+  if (identityFailure) return;
+  const chat = $('chat');
+  const preserveBottom = isNearBottom(chat);
+  const previousTop = chat.scrollTop;
+
+  generation = String(staged.serverGeneration || '');
+  lastSeq = Number(staged.attachment.history.asOfSeq);
+  if (!Number.isFinite(lastSeq)) lastSeq = -1;
+  sessionStatus = String(staged.attachment.state || 'unavailable');
+  writeState = String(staged.attachment.capabilities?.draftMutations ? 'enabled' : 'readonly');
+  authoritativeDraft = { revision: 0, text: '', locked: false };
+  cursorWord = 0;
+  seenSeqs.clear();
+  const events = staged.attachment.history.events || [];
+  for (const event of events) {
+    const seq = Number(event?.seq);
+    if (Number.isFinite(seq)) seenSeqs.add(seq);
+  }
+
+  // Atomic adoption: the staged detached conversation becomes the live one.
+  conversation = staged.conversation === undefined ? conversation : staged.conversation;
+  hasInstalled = true;
+
+  $('events').innerHTML = '';
+  for (const event of events) addEventRow(event);
+  $('session-id').textContent = String(staged.attachment.sessionId || '').slice(0, 12) + '…';
+  $('proto').textContent = String(staged.protocolMajor ?? '');
+  $('gen').textContent = generation.slice(0, 10);
+  $('asof').textContent = String(lastSeq);
+  $('wsv').textContent = writeState;
+
+  showProvision(false);
+  showIdentityError(false, '', '');
+  showSession(true);
+  renderChat(preserveBottom, previousTop);
+  renderStatus();
+  renderComposer();
+  trace('snapshot-installed', {
+    session: staged.attachment.sessionId,
+    generation: generation,
+    lastSeq: lastSeq,
+    eventCount: events.length,
+    messageCount: core.conversationItems(conversation).length,
+    status: sessionStatus,
+    writeState: writeState,
+  });
 }
 
 function applySnapshot(snapshot) {
@@ -726,6 +824,42 @@ function handleSemanticControl(rawName, source) {
     hudVisible: hudVisible,
     wheelOpen: wheelOpen,
   });
+
+  // M1 (#27) is strictly read-only: the composer never opens, no paste, no
+  // Send, no wheel. Only HUD wake/hide remain meaningful; every other control
+  // is informational. The classic branch below is dormant TB0 code.
+  if (M1_READ_ONLY) {
+    if (!hudVisible) {
+      setHudVisible(true);
+      setAction('HUD awake · M1 is read-only', '');
+      trace('hud-wake-only', { name: name, source: provenance });
+      return;
+    }
+    switch (name) {
+      case 'SECONDARY_DOUBLE':
+      case 'HUD_HIDE':
+        setHudVisible(false);
+        return;
+      case 'COMMAND':
+      case 'COMMAND_SHORT':
+      case 'COMMAND_LONG':
+      case 'DOWN':
+      case 'COMMAND_RELEASE':
+      case 'RIGHT':
+      case 'LEFT':
+      case 'SECONDARY':
+      case 'SECONDARY_SHORT':
+      case 'PASTE':
+      case 'SEND':
+      case 'ACTION_SEND':
+        setAction('M1 is read-only', '');
+        return;
+      default:
+        setAction('Control deferred in C0: ' + name, '');
+        trace('semantic-control-deferred', { name: name, source: provenance });
+    }
+    return;
+  }
 
   // Frozen TB0 hidden-HUD rule: the first recognized operation only wakes.
   if (!hudVisible) {

@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "kind": "milestone-acceptance-evidence",
+  "repo": "code2hack/dsh-glasses",
+  "ticket": 27,
+  "milestone": "M1",
+  "gate": "autonomous",
+  "planSource": "CHATGPT",
+  "planRef": "docs/dev/plan-m1-27-sensei-2026-08-22.md",
+  "branch": "workflow/ticket-27",
+  "admittedBase": "e770e4d39b0df32ce7ee5d8cb7f5c914463fca94",
+  "verifiedProductionCodeHead": "e88548b0aa37f9fb3573688267307b13f925a8d5",
+  "acceptanceGateRunHead": "985de42c533db012872d08cf3d4e7f19447f15fc",
+  "reviewer": "ChatGPT (project-long first-line Ticket expert)",
+  "reviewVerdicts": {
+    "T27-01..T27-06": "PASS",
+    "T27-07": "PASS (after REQUEST_CHANGES closed)",
+    "T27-08": "PASS",
+    "T27-09": "PASS",
+    "T27-10": "PASS (after REQUEST_CHANGES closed)",
+    "T27-11": "PASS (after REQUEST_CHANGES closed)"
+  },
+  "supportedRevision": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.1.1-rc.2",
+    "npmDistIntegrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==",
+    "pinRef": "plugins/dsh-glasses-plugin/dsh-compat.json",
+    "installedAt": "/home/code2hack/.npm-global/lib/node_modules/@deepseek-ai/dsh",
+    "installedBin": "/home/code2hack/.npm-global/bin/dsh (symlink -> lib/bin.js)",
+    "installedBinSha256": "c0226687bb20f45c603ec6fe50f3de16d1c3510c3a803304ec575ef9bc366c62",
+    "executableCompatibilityCheck": "plugins/dsh-glasses-plugin/test/dsh-compat.test.mjs -> PASS (10 checks)"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "claim": "Exactly one selected existing DSH session is exposed as a single attachment with opaque identity, generation, label, state and capabilities; no other session/API surface crosses the glasses edge.",
+      "evidence": [
+        "plugins/dsh-glasses-plugin/lib/snapshot.js buildCanonicalSnapshot (opaque attachmentId independent of sessionId/serverGeneration)",
+        "plugins/dsh-glasses-plugin/lib/dsh-adapter.js observeSession (single-session read seam)",
+        "test/m1-narrow-edge.test.mjs: real rc.2 A+B -> bootstrap via real proxy: attachments.length===1, sessionId==A, B id+sentinels absent, generation agreement, state vocab, caps false+historyRead true",
+        "plugins/dsh-glasses-plugin/test/snapshot-contract.test.mjs (62) and dsh-adapter-runtime.test.mjs (7)"
+      ],
+      "notes": "attachmentId is a stable opaque att-<uuid>; serverGeneration stable per process; connectionEpoch fresh per bootstrap; label 'Attached session'; order 0."
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "claim": "Authenticated bootstrap returns a bounded canonical history projection plus current agent state; no unattached sessions and no unrestricted DSH APIs are reachable.",
+      "evidence": [
+        "test/m1-narrow-edge.test.mjs: history<=M1_BOOTSTRAP_MAX_EVENTS(1000), events within asOfSeq, streamSequence==asOfSeq, drafts []",
+        "proxy negatives: /api/status /api/session.list /api/session.prompt -> 403; unknown /glasses/v1/* -> 404; unauthenticated -> 401",
+        "snapshot-contract 62 checks (bounded projection + block identity); dsh-adapter-runtime 7 checks (fresh epoch, stable attachment, wire law)"
+      ],
+      "notes": "Only /glasses/v1/bootstrap(+stream) exposed; stock DSH RPC surface hidden behind the G0-only proxy."
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "claim": "Client stages/installs only a complete internally consistent snapshot; incomplete/malformed/wrong-generation/unsupported-major snapshots never become visible/writable state.",
+      "evidence": [
+        "apps/glasses-android/app/src/main/assets/snapshot-core.js stageSnapshot: full generic wire-law mirror + protocolMajor pinned internally + expectedSessionId + optional serverGeneration fence + deep detachment; stageSnapshot NEVER throws",
+        "apps/glasses-android/test/snapshot-core.test.mjs (62): unsupported-major, missing keys, 1001-event ceiling, malformed blockId paths, server/client mirror convergence, atomicity",
+        "apps/glasses-android/test/m1-render.test.mjs (30): state1 no-install, state2 keep-previous byte-identical, wrong-session/incomplete non-destructive keep-previous, clear resets installed marker, SSE no-ops"
+      ],
+      "notes": "Producer convergence invariant: buildCanonicalSnapshot success => validateSnapshotWire ok."
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "claim": "Stable history ordering and block identity; a fresh disposable runtime renders expected content exactly once.",
+      "evidence": [
+        "snapshot.js validateSnapshotWire exact blockId law (message:u-<id>/s<seq>, message:a-<id>/s<seq>, partial:<turn>:<step>, rpcId never identity; seq strictly increasing unique)",
+        "plugins/dsh-glasses-plugin/test/snapshot.test.mjs + snapshot-contract.test.mjs (62)",
+        "apps/glasses-android/test/m1-render.test.mjs exact-once + atomic replacement (30)",
+        "test/m1-narrow-edge.test.mjs: REAL bootstrap rendered by shipped client exactly once (11)"
+      ],
+      "notes": "Empty history legal only as asOfSeq/streamSequence -1."
+    },
+    {
+      "id": "AC5",
+      "status": "PASS",
+      "claim": "All mutation actions remain disabled.",
+      "evidence": [
+        "capabilities liveUpdates/draftMutations/send/steer/interrupt/resolveRequest all false, historyRead true (narrow-edge + snapshot suite)",
+        "client M1 read-only: composer hidden, HUD NAV, write state readonly, no /draft/mutations or /actions POST, no openStream, write controls no-op (m1-render 30)",
+        "server write routes quarantined: /glasses/v1/draft/mutations and /glasses/v1/actions -> 404 (narrow-edge + dsh-adapter-runtime 7)"
+      ]
+    },
+    {
+      "id": "AC6",
+      "status": "PASS",
+      "claim": "The supported DSH revision and project adapter assumptions are pinned by an executable compatibility check.",
+      "evidence": [
+        "plugins/dsh-glasses-plugin/dsh-compat.json pins @deepseek-ai/dsh@0.1.1-rc.2 + npmDistIntegrity + requiredReadSeams",
+        "plugins/dsh-glasses-plugin/test/dsh-compat.test.mjs is EXECUTABLE against the real runtime and PASSES (10 checks): version == 0.1.1-rc.2 and every required seam is present; drift is detected loudly",
+        "installed bin sha256 c0226687bb20f45c603ec6fe50f3de16d1c3510c3a803304ec575ef9bc366c62"
+      ]
+    }
+  ],
+  "testSuites": [
+    { "name": "plugins/dsh-glasses-plugin/test/snapshot.test.mjs", "result": "PASS", "checks": null, "note": "builder regression + convergence invariant (verdict-only suite)" },
+    { "name": "plugins/dsh-glasses-plugin/test/snapshot-contract.test.mjs", "result": "PASS", "checks": 62, "note": "frozen wire law: identity positives+negatives, never-throw, convergence" },
+    { "name": "plugins/dsh-glasses-plugin/test/projection.test.mjs", "result": "PASS", "checks": null, "note": "canonical projection page (verdict-only suite)" },
+    { "name": "plugins/dsh-glasses-plugin/test/dsh-adapter.test.mjs", "result": "PASS", "checks": 19, "note": "adapter seam unit (mock ctx)" },
+    { "name": "plugins/dsh-glasses-plugin/test/harness-safety.test.mjs", "result": "PASS", "checks": null, "note": "disposable-runtime PID/port identity fencing" },
+    { "name": "plugins/dsh-glasses-plugin/test/dsh-compat.test.mjs", "result": "PASS", "checks": 10, "note": "EXECUTABLE compatibility check (AC6): rc.2 + seams" },
+    { "name": "plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs", "result": "PASS", "checks": 7, "note": "real disposable rc.2 runtime: boot/seed/canonical snapshot/epoch+attachment identity/quarantine 404/unauth 401/stream seam" },
+    { "name": "apps/glasses-android/test/c0-core.test.mjs", "result": "PASS", "checks": null, "note": "pure C0 reducer coverage (verdict-only suite)" },
+    { "name": "apps/glasses-android/test/snapshot-core.test.mjs", "result": "PASS", "checks": 62, "note": "client staging: mirror convergence, detachment, atomicity, protocol-major pin, never-throw" },
+    { "name": "apps/glasses-android/test/m1-render.test.mjs", "result": "PASS", "checks": 30, "note": "jsdom 29.1.1 real-client DOM: states 1-3, read-only, wrong-session/incomplete, SSE no-op, clear bookkeeping" },
+    { "name": "test/m1-narrow-edge.test.mjs", "result": "PASS", "checks": 11, "note": "real rc.2 -> real proxy -> bootstrap -> staging -> shipped-client render; A/B isolation; negatives" }
+  ],
+  "apk": {
+    "path": "apps/glasses-android/app/build/outputs/apk/debug/app-debug.apk",
+    "sizeBytes": 836400,
+    "sha256": "4d4f195b35fb41b45041c09f7e8fe0efb916e33770faaa4075d7c4f27c237e4f",
+    "buildCommand": "/home/code2hack/Android/gradle-9.1.0/bin/gradle :app:assembleDebug --no-daemon",
+    "buildResult": "BUILD SUCCESSFUL",
+    "signature": "APK Signature Scheme v2 verified (1 signer, debug keystore)",
+    "aapt2Execution": "x86-64 build-tools/34.0.0/aapt2 runs under qemu-x86_64 binfmt user-mode emulation on aarch64 (interpreter /usr/bin/qemu-x86_64; x86-64 userspace loader present). NO native x86-64 execution claim.",
+    "embeddedAssetsByteIdenticalToCommitted": {
+      "assets/app.js": true,
+      "assets/c0-core.js": true,
+      "assets/index.html": true,
+      "assets/snapshot-core.js": true
+    }
+  },
+  "dataProvenance": {
+    "syntheticSentinels": ["M1-SYNTHETIC-USER-A", "M1-SYNTHETIC-ASSISTANT-A", "M1-SYNTHETIC-USER-B", "M1-SYNTHETIC-ASSISTANT-B"],
+    "syntheticContentMethod": "Spliced into real disposable rc.2 durable zstd-JSONL session logs using the same container writes (plugins/dsh-glasses-plugin/test/zstd-jsonl.mjs), read back cold through the real runtime + real plugin.",
+    "runtime": "Disposable @deepseek-ai/dsh@0.1.1-rc.2 on spark (aarch64, Node v24.14.1), isolated DSH_HOME, no vLLM/provider dependency.",
+    "noLiveCredentials": true,
+    "noLiveSessionIds": "All committed ids are synthetic or runtime-disposable (e.g. doc sentinels); no bearer tokens committed."
+  },
+  "limitations": {
+    "syntheticNativeBridge": "The Android WebView boundary in the client DOM suites is a synthetic native bridge; it is supplied the ACTUAL response captured through the real proxy. jsdom performs the DOM render; it does not perform Android-native HTTP transport.",
+    "physicalDevice": "No physical Rokid/WebView/ADB device behavior is claimed in this autonomous gate.",
+    "manualInput": "No manual input/touch hardware is exercised; semantic controls are unit/bridge driven.",
+    "releasePackaging": "Out of scope: release signing/packaging not claimed; only the debug APK (v2-signed) is evidenced."
+  },
+  "outOfScope": [
+    "release packaging/signing",
+    "human controls",
+    "broad safeguards beyond M1",
+    "live deltas (SSE)",
+    "history-reading beyond bootstrap projection",
+    "multiple tabs",
+    "draft mutations"
+  ]
+}

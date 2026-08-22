@@ -1,0 +1,16 @@
+{
+  "name": "@dsh-external/glasses-android",
+  "version": "0.0.1",
+  "private": true,
+  "description": "dsh-glasses Android WebView assets and host-replayable test suites.",
+  "type": "module",
+  "scripts": {
+    "test:c0-core": "node test/c0-core.test.mjs",
+    "test:snapshot-core": "node test/snapshot-core.test.mjs",
+    "test:m1-render": "node test/m1-render.test.mjs",
+    "test": "node test/c0-core.test.mjs && node test/snapshot-core.test.mjs && node test/m1-render.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1"
+  }
+}
