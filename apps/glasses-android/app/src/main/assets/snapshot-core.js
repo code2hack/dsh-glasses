@@ -210,14 +210,19 @@
 
   function stageSnapshot(rawSnapshot, opts) {
     opts = opts || {};
-    var expectedProtocolMajor = (opts.protocolMajor === undefined) ? M1_PROTOCOL_MAJOR : opts.protocolMajor;
     var expectedSessionId = opts.expectedSessionId;
     var expectedServerGeneration = opts.expectedServerGeneration;
     try {
+      // 0. The client ITSELF pins the supported protocol major; a caller may
+      //    not widen it (AC3 unsupported-major invariant lives in the staging
+      //    module, not in app.js remembering to pass 1).
+      if (opts.protocolMajor !== undefined && opts.protocolMajor !== M1_PROTOCOL_MAJOR) {
+        return fail('unsupported-protocolMajor', 'client supports protocolMajor ' + M1_PROTOCOL_MAJOR + ' only');
+      }
       // 1. Validate the COMPLETE generic frozen wire law first (mirror of the
-      //    server validateSnapshotWire, including its contextual
-      //    expectedSessionId option).
-      var judged = validateWire(rawSnapshot, expectedProtocolMajor, expectedSessionId);
+      //    server validateSnapshotWire against M1_PROTOCOL_MAJOR, including its
+      //    contextual expectedSessionId option).
+      var judged = validateWire(rawSnapshot, M1_PROTOCOL_MAJOR, expectedSessionId);
       if (!judged.ok) return judged;
       // 2. Client-only contextual fence, AFTER the generic law passed: a
       //    malformed snapshot is reported with its real generic code, never

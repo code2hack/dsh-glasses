@@ -178,6 +178,7 @@ const NEGATIVES = [
     s.attachments[0].history.events = Array.from({ length: 1001 }, (_, i) => ({ seq: i, type: 'step/end' }));
   }, 'history-beyond-max'],
   ['malformed snapshot gets its generic code even when a generation fence is set', (s) => { s.protocolMajor = 2; }, 'unsupported-protocolMajor'],
+  ['raw protocolMajor 2 cannot be widened by caller (opts.protocolMajor=2)', (s) => { s.protocolMajor = 2; }, 'unsupported-protocolMajor'],
   ['descending event sequence', (s) => { s.attachments[0].history.events = [{ seq: 4, type: 'step/end' }, { seq: 3, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'non-monotonic-seq'],
   ['duplicate sequence', (s) => { s.attachments[0].history.events = [{ seq: 2, type: 'step/end' }, { seq: 2, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'non-monotonic-seq'],
   ['event seq > asOfSeq', (s) => { s.attachments[0].history.events = [{ seq: 5, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'seq-beyond-asOfSeq'],
@@ -217,6 +218,7 @@ for (const [name, mutate, expectCode] of NEGATIVES) {
   if (name === 'wrong configured sessionId') opts.expectedSessionId = 'session-other';
   if (name === 'wrong expectedServerGeneration') { opts.expectedServerGeneration = 'gen-other'; }
   if (name === 'malformed snapshot gets its generic code even when a generation fence is set') { opts.expectedServerGeneration = 'gen-other'; }
+  if (name === 'raw protocolMajor 2 cannot be widened by caller (opts.protocolMajor=2)') { opts.protocolMajor = 2; }
   let res;
   try {
     res = core.stageSnapshot(raw, opts);
