@@ -44,16 +44,51 @@ export function portOwners(port) {
   }
 }
 
-// PIDs this harness spawned in the current process run (terminate only these).
-const ownedChildren = new Set();
-export function registerOwnedChild(pid) {
-  ownedChildren.add(pid);
+/**
+ * Stable per-process identity for PID-reuse fencing on a shared host: field 22
+ * (starttime) of /proc/<pid>/stat, in jiffies since boot. A reused PID has a
+ * different starttime, so `pid` alone is never trusted after spawn.
+ * Returns null when the process does not exist (or /proc is unavailable).
+ */
+export function processStartTicks(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const rparen = stat.lastIndexOf(")");
+    if (rparen < 0) return null;
+    const tail = stat.slice(rparen + 1).trim().split(/\s+/); // field 3 onward
+    // starttime is field 22 → index 22 - 3 = 19 in this tail.
+    const ticks = Number(tail[19]);
+    return Number.isInteger(ticks) && ticks >= 0 ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+// Children this harness spawned in the current run: pid -> { start, port }.
+// Only these PIDs (with matching start-time identity) may ever be signaled.
+const ownedChildren = new Map();
+export function registerOwnedChild(pid, opts = {}) {
+  const start = Number.isInteger(opts.start) ? opts.start : processStartTicks(pid);
+  ownedChildren.set(pid, { start, port: opts.port ?? null });
 }
 export function isOwnedChild(pid) {
   return ownedChildren.has(pid);
 }
-function unregisterOwnedChild(pid) {
+export function unregisterOwnedChild(pid) {
   ownedChildren.delete(pid);
+}
+
+/**
+ * True only if `pid` is a currently-registered child AND its live identity
+ * still matches what we recorded at spawn. Never signals a reused/unrelated PID
+ * even when the PID number happens to be held again on a shared host.
+ */
+export function ownsProcessWithIdentity(pid) {
+  const entry = ownedChildren.get(pid);
+  if (!entry) return false;
+  const now = processStartTicks(pid);
+  if (entry.start === null) return now !== null; // could not capture at spawn; require it to still exist
+  return now !== null && now === entry.start;
 }
 
 /**
@@ -79,23 +114,32 @@ export async function assertPortSpawnable(port, { timeoutMs = 8000 } = {}) {
   }
 }
 
-// Wait until the exact pid is gone (SIGTERM, then SIGKILL) and the port our
-// child listened on is released — never touching another process.
+/**
+ * Terminate exactly the child THIS harness spawned: SIGTERM then SIGKILL, each
+ * gated by PID-reuse fencing (ownsProcessWithIdentity). Refuses to signal an
+ * unregistered/reused PID. Afterwards it waits for the LISTEN socket to free,
+ * but never touches any process that acquired the port later.
+ */
 export async function stopOwnedProcess(pid, port, timeoutMs = 8000) {
-  if (!pid) return;
+  if (!pid || !isOwnedChild(pid)) return; // not currently ours -> never signal
   const t0 = Date.now();
-  const alive = () => {
-    try { process.kill(pid, 0); return true; } catch { return false; }
-  };
-  try { process.kill(pid, "SIGTERM"); } catch {}
-  while (alive() && Date.now() - t0 < timeoutMs / 2) await sleep(200);
-  try { process.kill(pid, "SIGKILL"); } catch {}
+  const identityAlive = () => ownsProcessWithIdentity(pid);
+
+  if (identityAlive()) {
+    try { process.kill(pid, "SIGTERM"); } catch {}
+  }
+  while (identityAlive() && Date.now() - t0 < timeoutMs / 2) await sleep(200);
+  if (identityAlive()) {
+    try { process.kill(pid, "SIGKILL"); } catch {}
+  }
   unregisterOwnedChild(pid);
   // Wait for the LISTEN socket to actually free (avoid racing a re-spawn).
+  // If a DIFFERENT process acquires the port meanwhile, we stop waiting and
+  // leave it alone.
   const rt0 = Date.now();
   while (Date.now() - rt0 < timeoutMs) {
     const owners = portOwners(port).filter((p) => p !== process.pid);
-    if (owners.every((p) => !isOwnedChild(p))) break;
+    if (owners.every((p) => p !== pid && !isOwnedChild(p))) break;
     await sleep(200);
   }
 }
@@ -227,7 +271,7 @@ export async function spawnInstance({ homeDir, port, sessionId, token, extraEnv 
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  registerOwnedChild(proc.pid);
+  registerOwnedChild(proc.pid, { port });
   proc.once("exit", () => unregisterOwnedChild(proc.pid));
   const logBuf = [];
   proc.stdout?.on("data", (d) => { logBuf.push(String(d)); if (process.env.VERBOSE) process.stdout.write("[child] " + String(d)); });
