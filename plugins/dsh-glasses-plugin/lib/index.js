@@ -20,6 +20,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 import { projectEvent } from "./projection.js";
+import { createGlassesDshAdapter } from "./dsh-adapter.js";
 
 export const name = "dsh-glasses-plugin";
 
@@ -68,6 +69,11 @@ export async function apply(ctx, config) {
   const serverGeneration = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
   const log = (...args) => console.log("[dsh-glasses-plugin]", ...args);
 
+  // SPEC §5 isolation: the M1 read path touches DSH internals only through the
+  // project-owned adapter. Construction fails fast if a required read seam is
+  // absent (boot-time ABI complement to test/dsh-compat.test.mjs).
+  const adapter = createGlassesDshAdapter(ctx, { maxEvents: bootstrapMaxEvents });
+
   const requireAuth = (req) => {
     const h = req.headers.authorization ?? "";
     const m = /^Bearer\s+(.+)$/.exec(h);
@@ -75,18 +81,12 @@ export async function apply(ctx, config) {
   };
 
   const readSnapshot = async () => {
-    const snap = await ctx.sessionQuery.readSession(sessionId);
-    const events = Array.isArray(snap?.events) ? snap.events : [];
-    const bounded = events.slice(-bootstrapMaxEvents);
-    const asOfSeq = bounded.length ? bounded[bounded.length - 1].seq : -1;
-    let status = "unavailable";
-    try {
-      const agent = ctx.agents.get(sessionId);
-      if (agent) status = agent.status === "running" ? "running" : "idle";
-    } catch {
-      /* agent absent or not-yet-published -> unavailable */
-    }
-    return { events: bounded, asOfSeq, status };
+    // Bounded canonical history + mapped agent state, both adapter-provided.
+    // Malformed/non-monotonic pages throw here and surface as a 500 rather
+    // than being silently normalized.
+    const { asOfSeq, events } = await adapter.readProjectionPage(sessionId);
+    const status = adapter.getAgentState(sessionId);
+    return { events, asOfSeq, status };
   };
 
   const handleBootstrap = async (req, res) => {
@@ -115,7 +115,7 @@ export async function apply(ctx, config) {
         protocolMajor: PROTOCOL_MAJOR,
         serverGeneration,
         attachment: { attachmentId: `tb0:${sessionId}:${serverGeneration}`, sessionId, status },
-        history: { asOfSeq, events: events.map(projectEvent) },
+        history: { asOfSeq, events },
         draft: draftProj,
         writeState,
       });
