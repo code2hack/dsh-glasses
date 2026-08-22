@@ -246,7 +246,7 @@ export function buildCanonicalSnapshot({ sessionId, attachmentId, projected, age
     history: { serverGeneration: sg, attachmentGeneration: generation, asOfSeq, events },
   };
 
-  return {
+  const assembled = {
     protocolMajor: M1_PROTOCOL_MAJOR,
     serverGeneration: sg,
     connectionEpoch: ce,
@@ -255,4 +255,14 @@ export function buildCanonicalSnapshot({ sessionId, attachmentId, projected, age
     attachments: [attachmentBlock],
     drafts: [],
   };
+
+  // Producer -> wire-law convergence (single executable protocol law). The
+  // builder may return ONLY snapshots the frozen validator accepts; any
+  // divergence (empty-history watermark, block identity, event type, ...) is a
+  // hard production error, surfaced with the SAME code the wire law would use.
+  const law = validateSnapshotWire(assembled, { expectedSessionId: sid, maxEvents: bound });
+  if (!law.ok) {
+    throw new SnapshotValidationError(law.code, `built snapshot violates wire law: ${law.message}`);
+  }
+  return assembled;
 }

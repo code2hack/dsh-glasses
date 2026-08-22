@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import {
   buildCanonicalSnapshot,
+  validateSnapshotWire,
   SnapshotValidationError,
   M1_PROTOCOL_MAJOR,
   M1_ATTACHMENT_SET_REVISION,
@@ -126,6 +127,56 @@ rejects({ projected: { asOfSeq: 9, events: [{ seq: 1, type: "step/end" }] } }, "
 {
   const many = Array.from({ length: M1_BOOTSTRAP_MAX_EVENTS + 5 }, (_, i) => ({ seq: i, type: "step/end" }));
   rejects({ projected: { asOfSeq: many.length, events: many }, maxEvents: M1_BOOTSTRAP_MAX_EVENTS + 10 }, "history-beyond-hard-max", "hard max cannot be removed by config");
+}
+
+// ---------------------------------------------------------------------------
+// Producer -> wire-law convergence (single executable protocol law).
+// The builder must reject exactly what validateSnapshotWire() rejects.
+// ---------------------------------------------------------------------------
+// Empty history must be asOfSeq/streamSequence -1; a non-empty watermark with
+// [] events is a law violation the builder previously accepted.
+rejects({ projected: { asOfSeq: 5, events: [] } }, "asOfSeq-mismatch", "empty history with wrong watermark must be rejected like the wire law");
+// Empty history with a NEGATIVE watermark other than -1 is also a mismatch.
+rejects({ projected: { asOfSeq: -2, events: [] } }, "malformed-asOfSeq", "asOfSeq below -1 rejected");
+// attachmentId coupling serverGeneration must be rejected exactly like the law.
+rejects({ attachmentId: "g", serverGeneration: "g" }, "attachmentId-couples-serverGeneration", "attachmentId == serverGeneration must be rejected");
+// Frozen-law block identity / event type codes surface identically from the builder.
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:a-u1", message: { role: "user", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
+  "type-blockId-mismatch",
+  "wrong message blockId identity rejected like the law",
+);
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end" }, { seq: 2, type: "assistant/chunk", blockId: "partial:9:9", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "p" } }] } },
+  "type-blockId-mismatch",
+  "chunk blockId not matching its turn/step rejected like the law",
+);
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "assistant", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
+  "type-role-mismatch",
+  "user/message wrong role rejected like the law",
+);
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1" } }, { seq: 2, type: "step/end" }] } },
+  "malformed-projected-event",
+  "message missing text rejected like the law",
+);
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end" }, { seq: 2, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: {} }] } },
+  "malformed-projected-event",
+  "chunk missing chunk.type rejected like the law",
+);
+rejects(
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
+  "malformed-projected-event",
+  "event missing type rejected like the law",
+);
+// Any snapshot the builder RETURNS is wire-law-valid (convergence invariant).
+{
+  const built = buildCanonicalSnapshot(baseArgs());
+  const law = validateSnapshotWire(built, { expectedSessionId: SESSION, maxEvents: M1_BOOTSTRAP_MAX_EVENTS });
+  assert.equal(law.ok, true, "builder output must pass the frozen wire law");
+  console.log("convergence invariant: buildCanonicalSnapshot output passes validateSnapshotWire");
 }
 
 console.log("snapshot.test.mjs: PASS");
