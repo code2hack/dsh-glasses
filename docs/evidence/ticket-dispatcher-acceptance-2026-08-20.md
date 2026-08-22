@@ -1,6 +1,13 @@
 # Ticket #15 — deterministic Ticket Dispatcher — independent DSH acceptance evidence (rev 3)
 
-- Ticket: https://github.com/code2hack/dsh-glasses/issues/15
+> Status: GitHub issue #15 was **permanently deleted on 2026-08-22** after its implementation was
+> merged via PR #16. The original ticket URL (`.../issues/15`) is therefore dead; this record is
+> retained as unlinkable historical evidence. Under the current workflow constitution
+> (`AGENTS.md` §19), the hard-coded `dsh-ticket-dispatcher` plugin this ticket delivered is
+> **removed architecture**, superseded by the Project Supervisor DSH; the plugin code remains on
+> `main` as a delivered legacy artifact.
+
+- Ticket: GitHub issue #15 (deleted 2026-08-22; see status note above)
 - DSH Ticket Lead session: `session-e264b58f-a673-447d-90e2-31d45ddc690c` (host `spark`, aarch64; user `code2hack`)
 - Tested implementation head: `fb017e41e16843cf43d047bc9e4881977ac9a7bd` (branch `workflow/ticket-dispatcher`)
 - Stacked base: current `origin/main` `0673f8c5c30c20caf25532c132b6a27122428578` (PR #14 merged 2026-08-20T13:12:24Z; PR #16 retargeted to `main` per review packet)

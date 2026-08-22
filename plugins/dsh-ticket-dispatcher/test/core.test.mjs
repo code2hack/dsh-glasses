@@ -39,10 +39,12 @@ test("claimed Tickets consume capacity and scarce resources remain a separate vi
 });
 
 test("external issue or PR blocker state participates without becoming a dispatch candidate", () => {
-  const ticket = { number: 15, state: "OPEN", blockers: [14], blockerStates: { 14: "OPEN" } };
-  assert.deepEqual(classify([ticket], {}, 3).blocked, [{ number: 15, blocking: [14] }]);
+  // Fixture ticket 42 (not a real repo issue) keeps this test free of dead
+  // references to permanently-deleted GitHub issue #15.
+  const ticket = { number: 42, state: "OPEN", blockers: [14], blockerStates: { 14: "OPEN" } };
+  assert.deepEqual(classify([ticket], {}, 3).blocked, [{ number: 42, blocking: [14] }]);
   ticket.blockerStates[14] = "CLOSED";
-  assert.deepEqual(classify([ticket], {}, 3).ready, [{ number: 15 }]);
+  assert.deepEqual(classify([ticket], {}, 3).ready, [{ number: 42 }]);
 });
 
 test("closed claimed Tickets release active capacity for successors", () => {
@@ -57,23 +59,25 @@ test("closed claimed Tickets release active capacity for successors", () => {
 });
 
 test("binding, claim, and bootstrap identities are deterministic except session UUID", () => {
-  const names = bindingNames({ number: 15, baseSha: "71059429be3d6f95ef9625adf5dea52db2cd51d2", repoRoot: "/repo" });
-  assert.deepEqual(names, { branch: "workflow/ticket-15", worktree: "/dsh-glasses-tickets/ticket-15-71059429be3d" });
-  const binding = { number: 15, sessionId: "session-one", ...names, baseSha: "71059429be3d6f95ef9625adf5dea52db2cd51d2" };
+  // Fixture ticket 42 (not a real repo issue) keeps this test free of dead
+  // references to permanently-deleted GitHub issue #15.
+  const names = bindingNames({ number: 42, baseSha: "71059429be3d6f95ef9625adf5dea52db2cd51d2", repoRoot: "/repo" });
+  assert.deepEqual(names, { branch: "workflow/ticket-42", worktree: "/dsh-glasses-tickets/ticket-42-71059429be3d" });
+  const binding = { number: 42, sessionId: "session-one", ...names, baseSha: "71059429be3d6f95ef9625adf5dea52db2cd51d2" };
   const body = claimBody(binding);
   assert.ok(body.startsWith(`${CLAIM_PREFIX} `));
-  assert.deepEqual(parseClaim(body), { schemaVersion: 1, ticket: 15, number: 15, sessionId: "session-one", ...names, baseSha: binding.baseSha, status: "claimed" });
-  const prompt = bootstrapPrompt({ number: 15, url: "https://github.com/code2hack/dsh-glasses/issues/15", ...binding });
+  assert.deepEqual(parseClaim(body), { schemaVersion: 1, ticket: 42, number: 42, sessionId: "session-one", ...names, baseSha: binding.baseSha, status: "claimed" });
+  const prompt = bootstrapPrompt({ number: 42, url: "https://github.com/code2hack/dsh-glasses/issues/42", ...binding });
   assert.match(prompt, /AGENTS\.md section 3/);
-  assert.match(prompt, /issues\/15/);
+  assert.match(prompt, /issues\/42/);
   assert.match(prompt, new RegExp(binding.baseSha));
 });
 
 test("claim tombstones suppress only their matching durable session", () => {
-  const first = { number: 15, sessionId: "session-one", branch: "b", worktree: "w", baseSha: "a".repeat(40) };
+  const first = { number: 42, sessionId: "session-one", branch: "b", worktree: "w", baseSha: "a".repeat(40) };
   const second = { ...first, sessionId: "session-two" };
   assert.deepEqual(collapseClaimMarkers([claimBody(first), voidClaimBody(first, "stale-session")]), [
-    { number: 15, sessionId: "session-one", status: "void", reason: "stale-session" },
+    { number: 42, sessionId: "session-one", status: "void", reason: "stale-session" },
   ]);
   assert.equal(collapseClaimMarkers([claimBody(first), claimBody(second), voidClaimBody(first, "stale-session")])[0].sessionId, "session-two");
 });
