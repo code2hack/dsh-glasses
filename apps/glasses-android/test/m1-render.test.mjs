@@ -25,10 +25,10 @@ function record(name, pass, detail) {
 
 function eventsFor(userText, asstText, uid, aid) {
   return [
-    { seq: 1, type: 'user/message', blockId: `message:u-${uid}`, message: { role: 'user', id: uid, text: userText } },
-    { seq: 2, type: 'assistant/chunk', blockId: 'partial:1:1', turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
-    { seq: 3, type: 'assistant/chunk', blockId: 'partial:1:1', turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } },
-    { seq: 4, type: 'assistant/message', blockId: `message:a-${aid}`, turn: 1, step: 1, message: { role: 'assistant', id: aid, text: asstText } },
+    { seq: 1, type: 'user/message', blocks: [{ blockId: `message:u-${uid}:content:0`, kind: 'text', role: 'user', text: userText }] },
+    { seq: 2, type: 'assistant/chunk', blocks: [{ blockId: 'partial:1:1', kind: 'partial', turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } }] },
+    { seq: 3, type: 'assistant/chunk', blocks: [{ blockId: 'partial:1:1', kind: 'partial', turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } }] },
+    { seq: 4, type: 'assistant/message', turn: 1, step: 1, blocks: [{ blockId: `message:a-${aid}:content:0`, kind: 'text', role: 'assistant', text: asstText }] },
   ];
 }
 function validSnapshot({ generation, user, asst, asOfSeq = 4, epoch }) {

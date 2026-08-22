@@ -123,42 +123,29 @@ function validateSnapshotWireInner(snapshot, { expectedSessionId, maxEvents = M1
   if (history.events.length > 0 && history.events[history.events.length - 1]?.seq !== history.asOfSeq) return bad("asOfSeq-mismatch", "last event seq must equal asOfSeq");
 
   // ---- Per-event untrusted-wire checks ----
-  // blockId must match the EXACT deterministic identity the projection produces
-  // (durable id when present, else seq fallback); a mismatched partial/message
-  // identity would let a leftover partial render alongside a final answer (the
-  // AC4 duplication). Every event must carry a non-empty type.
-  const expectedMessageIdentity = (prefix, ev) => {
-    const id = ev?.message?.id;
-    return typeof id === "string" && id !== "" ? `${prefix}${id}` : `${prefix}s${ev.seq}`;
-  };
-  let previous = -1;
-  const seenMessageBlockIds = new Set();
-  for (const ev of history.events) {
-    if (!ev || typeof ev !== "object") return bad("malformed-projected-event", "history event must be an object");
-    if (!Number.isInteger(ev.seq) || ev.seq < 0) return bad("malformed-seq", `event seq ${String(ev.seq)} invalid`);
-    if (typeof ev.type !== "string" || ev.type === "") return bad("malformed-projected-event", "history event must carry a non-empty type");
-    if (ev.seq <= previous) return bad("non-monotonic-seq", `event seq ${ev.seq} not strictly after ${previous}`);
-    if (ev.seq > history.asOfSeq) return bad("seq-beyond-asOfSeq", `event seq ${ev.seq} exceeds asOfSeq ${history.asOfSeq}`);
-    previous = ev.seq;
-
-    if (ev.type === "user/message" || ev.type === "assistant/message") {
-      const prefix = ev.type === "user/message" ? "message:u-" : "message:a-";
-      const expected = expectedMessageIdentity(prefix, ev);
-      if (ev.blockId !== expected) return bad("type-blockId-mismatch", `event ${ev.type} blockId ${String(ev.blockId)} != expected ${expected}`);
-      if (seenMessageBlockIds.has(ev.blockId)) return bad("duplicate-blockId", `duplicate message blockId ${ev.blockId}`);
-      seenMessageBlockIds.add(ev.blockId);
-      const msg = ev.message;
-      if (!msg || typeof msg !== "object") return bad("malformed-projected-event", `event ${ev.type} lacks message`);
-      const wantedRole = prefix === "message:u-" ? "user" : "assistant";
-      if (msg.role !== wantedRole) return bad("type-role-mismatch", `event ${ev.type} has role ${String(msg.role)}`);
-      if (typeof msg.text !== "string") return bad("malformed-projected-event", `event ${ev.type} lacks message.text`);
-    } else if (ev.type === "assistant/chunk") {
-      const expected = Number.isInteger(ev.turn) && Number.isInteger(ev.step) ? `partial:${ev.turn}:${ev.step}` : `partial:s${ev.seq}`;
-      if (ev.blockId !== expected) return bad("type-blockId-mismatch", `chunk blockId ${String(ev.blockId)} != expected ${expected}`);
-      if (!ev.chunk || typeof ev.chunk.type !== "string") return bad("malformed-projected-event", "chunk event lacks chunk.type");
+  // Canonical M1 (#28) event law: every history/key event is
+  // { seq, type, blocks[] } where blocks are typed projection blocks with
+  // stable identities. The wire law DELEGATES the full event/block law to the
+  // single executable canonical projection law (validateCanonicalProjectionPage)
+  // so producer, validator, and client mirror never drift; a valid but
+  // non-renderable source event carries blocks: [] and still advances the
+  // watermark. This validator MUST NOT throw: every projection-law fault is
+  // converted to the same {ok:false, code} rejection.
+  try {
+    validateCanonicalProjectionPage(history.events);
+  } catch (e) {
+    if (e && typeof e.code === "string") {
+      return bad(e.code, `canonical projection law: ${e.message}`);
     }
-    // Other non-renderable projected types (step/end, permission/preset) carry
-    // no blockId requirement and are permitted.
+    return bad("malformed-projected-event", `canonical projection law fault: ${String(e)}`);
+  }
+  // Snapshot-specific watermark interplay: every event seq stays within the
+  // snapshot watermark (the projection law already guarantees strictly
+  // increasing, non-negative seqs and that the LAST event equals asOfSeq).
+  for (const ev of history.events) {
+    if (Number.isInteger(ev?.seq) && ev.seq > history.asOfSeq) {
+      return bad("seq-beyond-asOfSeq", `event seq ${ev.seq} exceeds asOfSeq ${history.asOfSeq}`);
+    }
   }
 
   return { ok: true };

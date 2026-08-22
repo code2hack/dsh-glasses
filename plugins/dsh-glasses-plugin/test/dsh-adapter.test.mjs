@@ -74,7 +74,8 @@ try {
     assert.equal(page.asOfSeq, 2);
     assert.equal(page.events.length, 3);
     assert.equal(page.events[1].type, "assistant/message");
-    assert.equal(page.events[1].message.text, "hi");
+    assert.equal(page.events[1].blocks[0].blockId, "message:a-a1:content:0");
+    assert.equal(page.events[1].blocks[0].text, "hi");
     assert.deepEqual(page.events.map((e) => e.seq), [0, 1, 2]);
   });
 

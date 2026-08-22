@@ -691,28 +691,77 @@ function renderChat(forceBottom, preservedTop) {
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-chat';
-    empty.textContent = 'No projected text messages yet.';
+    empty.textContent = 'No projected messages yet.';
     chat.appendChild(empty);
   } else {
     for (const item of items) {
-      const article = document.createElement('article');
-      article.className = 'message ' + item.role + (item.partial ? ' partial' : '');
-      article.dataset.seq = String(item.seq);
-      const role = document.createElement('span');
-      role.className = 'role';
-      role.textContent = item.role === 'user'
-        ? 'you'
-        : (item.partial ? 'assistant · streaming' : 'assistant');
-      const body = document.createElement('span');
-      body.className = 'body';
-      body.textContent = item.text;
-      article.append(role, body);
-      chat.appendChild(article);
+      chat.appendChild(renderBlockItem(item));
     }
   }
 
   if (shouldStick) chat.scrollTop = chat.scrollHeight;
   else chat.scrollTop = oldTop;
+}
+
+// Renders ONE canonical projection block as a stable message article. The
+// `blockId` is the stable anchor for M1 reanchoring (AC3); `seq` is the durable
+// source watermark and `kind` the typed projection kind. Every body is bounded:
+// images show identity + intrinsic metadata (never base64/path/URL), tool/
+// status/request/error kinds are compact canonical forms.
+function renderBlockItem(item) {
+  const article = document.createElement('article');
+  const kind = typeof item.kind === 'string' ? item.kind : 'text';
+  const roleClass = typeof item.role === 'string' && item.role ? item.role : kind;
+  article.className = 'message ' + roleClass + (item.partial ? ' partial' : '');
+  article.dataset.seq = String(item.seq != null ? item.seq : '');
+  article.dataset.blockId = String(item.blockId || '');
+  article.dataset.kind = kind;
+
+  const role = document.createElement('span');
+  role.className = 'role';
+  role.textContent = roleLabel(item, kind);
+  const body = document.createElement('span');
+  body.className = 'body';
+  appendBoundedBody(body, item, kind);
+  article.append(role, body);
+  return article;
+}
+
+function roleLabel(item, kind) {
+  if (kind === 'text' || kind === 'image') {
+    return item.role === 'user' ? 'you' : (item.partial ? 'assistant · streaming' : 'assistant');
+  }
+  if (kind === 'partial') return 'assistant · streaming';
+  if (kind === 'tool/call') return 'tool';
+  if (kind === 'tool/result') return 'tool result';
+  if (kind === 'status') return 'status';
+  if (kind === 'request') return 'request';
+  if (kind === 'error') return 'error';
+  return kind;
+}
+
+function appendBoundedBody(bodyNode, item, kind) {
+  const text = (v) => (typeof v === 'string' ? v : '');
+  if (kind === 'text' || kind === 'partial') {
+    bodyNode.textContent = text(item.text);
+  } else if (kind === 'image') {
+    const dims = Number.isInteger(item.width) && Number.isInteger(item.height) ? ` ${item.width}x${item.height}` : '';
+    bodyNode.textContent = '[image ' + (text(item.mediaType) || 'raster') + dims + ']';
+  } else if (kind === 'tool/call') {
+    bodyNode.textContent = 'call ' + text(item.name) + '(' + (text(item.arguments) || '').slice(0, 60) + ')';
+  } else if (kind === 'tool/result') {
+    bodyNode.textContent = (item.error === true ? 'error: ' : '') + text(item.text);
+  } else if (kind === 'status') {
+    bodyNode.textContent = 'turn ' + String(item.turn != null ? item.turn : '?') + ' ' + text(item.state);
+  } else if (kind === 'request') {
+    if (typeof item.reason === 'string' && item.reason) bodyNode.textContent = 'reason: ' + item.reason;
+    else if (text(item.provider) || text(item.model)) bodyNode.textContent = text(item.provider) + ' ' + text(item.model);
+    else bodyNode.textContent = 'request';
+  } else if (kind === 'error') {
+    bodyNode.textContent = text(item.message) || 'error';
+  } else {
+    bodyNode.textContent = '';
+  }
 }
 
 function renderComposer() {

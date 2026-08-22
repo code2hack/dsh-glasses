@@ -19,10 +19,10 @@ const EPOCH_B = "epoch-2-bbbb";
 
 function canonicalEvents() {
   return [
-    { seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "hello", rpcId: "r" } },
-    { seq: 2, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } },
-    { seq: 3, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } },
-    { seq: 4, type: "assistant/message", blockId: "message:a-a1", turn: 1, step: 1, message: { role: "assistant", id: "a1", text: "final", provider: "p", model: "m" } },
+    { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "hello" }] },
+    { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }] },
+    { seq: 3, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } }] },
+    { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", role: "assistant", text: "final" }] },
   ];
 }
 
@@ -103,10 +103,10 @@ rejects({ maxEvents: 2 }, "history-beyond-bound", "history length beyond smaller
 rejects(
   {
     projected: {
-      asOfSeq: 5,
+      asOfSeq: 2,
       events: [
-        { seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "a" } },
-        { seq: 2, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "b" } },
+        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "a" }] },
+        { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "b" }] },
       ],
     },
   },
@@ -115,17 +115,17 @@ rejects(
 );
 // non-monotonic seq
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 3 }, { seq: 2 }].map((e, i) => ({ ...e, type: "step/end" })) } },
+  { projected: { asOfSeq: 3, events: [{ seq: 3, type: "step/end", blocks: [] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "non-monotonic-seq",
   "backwards seq",
 );
 // event seq beyond asOfSeq
-rejects({ projected: { asOfSeq: 3, events: [{ seq: 5, type: "step/end" }] } }, "seq-beyond-asOfSeq", "event seq > asOfSeq");
+rejects({ projected: { asOfSeq: 3, events: [{ seq: 5, type: "step/end", blocks: [] }] } }, "seq-beyond-asOfSeq", "event seq > asOfSeq");
 // last event seq != asOfSeq
-rejects({ projected: { asOfSeq: 9, events: [{ seq: 1, type: "step/end" }] } }, "asOfSeq-mismatch", "asOfSeq mismatch with last event");
+rejects({ projected: { asOfSeq: 9, events: [{ seq: 1, type: "step/end", blocks: [] }] } }, "asOfSeq-mismatch", "asOfSeq mismatch with last event");
 // history beyond the HARD max (config cannot remove the hard cap)
 {
-  const many = Array.from({ length: M1_BOOTSTRAP_MAX_EVENTS + 5 }, (_, i) => ({ seq: i, type: "step/end" }));
+  const many = Array.from({ length: M1_BOOTSTRAP_MAX_EVENTS + 5 }, (_, i) => ({ seq: i, type: "step/end", blocks: [] }));
   rejects({ projected: { asOfSeq: many.length, events: many }, maxEvents: M1_BOOTSTRAP_MAX_EVENTS + 10 }, "history-beyond-hard-max", "hard max cannot be removed by config");
 }
 
@@ -142,33 +142,33 @@ rejects({ projected: { asOfSeq: -2, events: [] } }, "malformed-asOfSeq", "asOfSe
 rejects({ attachmentId: "g", serverGeneration: "g" }, "attachmentId-couples-serverGeneration", "attachmentId == serverGeneration must be rejected");
 // Frozen-law block identity / event type codes surface identically from the builder.
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:a-u1", message: { role: "user", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
-  "type-blockId-mismatch",
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:a-u1:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  "blockId-root-mismatch",
   "wrong message blockId identity rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end" }, { seq: 2, type: "assistant/chunk", blockId: "partial:9:9", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "p" } }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end", blocks: [] }, { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:9:9", kind: "partial", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "p" } }] }] } },
   "type-blockId-mismatch",
   "chunk blockId not matching its turn/step rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "assistant", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "assistant", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "type-role-mismatch",
   "user/message wrong role rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1" } }, { seq: 2, type: "step/end" }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "malformed-projected-event",
   "message missing text rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end" }, { seq: 2, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: {} }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "step/end", blocks: [] }, { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: {} }] }] } },
   "malformed-projected-event",
   "chunk missing chunk.type rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "x" } }, { seq: 2, type: "step/end" }] } },
-  "malformed-projected-event",
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  "malformed-type",
   "event missing type rejected like the law",
 );
 // Any snapshot the builder RETURNS is wire-law-valid (convergence invariant).

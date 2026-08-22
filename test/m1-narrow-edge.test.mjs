@@ -181,8 +181,10 @@ try {
     if (realBody.streamSequence !== a0.history.asOfSeq) throw new Error("streamSequence must equal history.asOfSeq");
     const counts = {};
     for (const ev of events) {
-      const t = ev.message?.text;
-      if (t) counts[t] = (counts[t] || 0) + 1;
+      const textBlocks = Array.isArray(ev.blocks) ? ev.blocks.filter((b) => b.kind === "text").map((b) => b.text) : [];
+      for (const t of textBlocks) {
+        if (t) counts[t] = (counts[t] || 0) + 1;
+      }
     }
     if (counts[SENTINEL_A_U] !== 1 || counts[SENTINEL_A_A] !== 1) {
       throw new Error(`A sentinel must appear exactly once each: ${JSON.stringify(counts)}`);

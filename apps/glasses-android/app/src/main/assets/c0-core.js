@@ -1,5 +1,13 @@
-/* Pure C0 reducer helpers. This file intentionally has no DOM/native access so
- * the same logic can be replay-tested on the host. */
+/* Pure C0/C1 reducer helpers. This file intentionally has no DOM/native access so
+ * the same logic can be replay-tested on the host.
+ *
+ * M1 (#28): the reducer consumes CANONICAL projected events
+ * { seq, type, blocks[] } where blocks are typed projection blocks with stable
+ * identities. Rendered conversation items are DERIVED from blocks, never from
+ * raw DSH payloads. Durable-source deduplication is by event seq; two source
+ * events that update the SAME stable block (e.g. status running->idle, or a
+ * final assistant message replacing its partial stream) are NOT duplicates and
+ * are both folded. */
 (function installC0Core(root) {
   'use strict';
 
@@ -65,37 +73,137 @@
   }
 
   function createConversationState() {
-    return { messages: new Map(), partials: new Map() };
+    return { messages: new Map(), partials: new Map(), blocks: new Map() };
   }
 
   function resetConversation(state) {
     state.messages.clear();
     state.partials.clear();
+    state.blocks.clear();
   }
 
-  function partialKey(event) {
-    return String(event.turn ?? '?') + ':' + String(event.step ?? '?');
+  // -------------------------------------------------------------------------
+  // Canonical reducer over blocks[] projection events.
+  // -------------------------------------------------------------------------
+
+  // Content-index order for message content children is encoded in the stable
+  // blockId suffix (message:<role>:<id>:content:<i>). Recover it for
+  // deterministic intra-event ordering.
+  function contentOrder(blockId) {
+    const m = /^message:(u|a)-[^:]+:content:(\d+)$/.exec(text(blockId));
+    return m ? Number(m[2]) : 0;
   }
 
-  // Canonical identity of a partial stream block. The normalized projection
-  // (projection.js) attaches `partial:<turn>:<step>` as blockId; legacy TB0
-  // chunk events without blockId fall back to the turn/step-derived key.
-  function partialIdentity(event) {
-    const blockId = event.blockId;
-    if (typeof blockId === 'string' && blockId) return blockId;
-    return 'partial:' + partialKey(event);
+  function finalizeTurnStep(state, event) {
+    // A finalized assistant message replaces its partial stream exactly once.
+    const turn = event.turn;
+    const step = event.step;
+    if (Number.isInteger(turn) && Number.isInteger(step)) {
+      state.partials.delete('partial:' + turn + ':' + step);
+    }
   }
 
-  // Canonical identity of a finalized message block. Prefer the projection's
-  // stable blockId; otherwise reconstruct the SAME deterministic identity the
-  // projection would produce: durable message id, else seq-only fallback.
-  // rpcId is deliberately NOT identity (it is operation-transient).
-  function messageIdentity(role, event, seq) {
-    const blockId = event.blockId;
-    if (typeof blockId === 'string' && blockId) return blockId;
-    const prefix = role === 'user' ? 'message:u-' : 'message:a-';
-    const id = text(event.message?.id);
-    return prefix + (id || ('s' + String(seq)));
+  function applyConversationEvent(state, event) {
+    if (!event || typeof event !== 'object') return false;
+    const seq = finiteNumber(event.seq, -1);
+    if (seq < 0) return false;
+    const blocks = Array.isArray(event.blocks) ? event.blocks : [];
+    if (!blocks.length) return false;
+
+    if (event.type === 'assistant/message') {
+      finalizeTurnStep(state, event);
+    }
+
+    let changed = false;
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object') continue;
+      const blockId = text(block.blockId);
+      if (!blockId) continue;
+      const kind = text(block.kind);
+      if (!kind) continue;
+
+      if (kind === 'text') {
+        state.messages.set(blockId, {
+          key: blockId,
+          blockId,
+          kind: 'text',
+          role: text(block.role),
+          text: text(block.text),
+          seq,
+          order: contentOrder(blockId),
+          partial: false,
+        });
+        changed = true;
+      } else if (kind === 'image') {
+        state.messages.set(blockId, {
+          key: blockId,
+          blockId,
+          kind: 'image',
+          role: text(block.role),
+          attachmentId: text(block.attachmentId),
+          mediaType: text(block.mediaType),
+          width: Number.isInteger(block.width) ? block.width : null,
+          height: Number.isInteger(block.height) ? block.height : null,
+          seq,
+          order: contentOrder(blockId),
+          partial: false,
+        });
+        changed = true;
+      } else if (kind === 'partial') {
+        let partial = state.partials.get(blockId);
+        if (!partial) {
+          partial = { key: blockId, blockId, role: 'assistant', kind: 'partial', firstSeq: seq, lastSeq: seq, blocks: new Map() };
+          state.partials.set(blockId, partial);
+        }
+        partial.firstSeq = partial.firstSeq < 0 ? seq : Math.min(partial.firstSeq, seq);
+        partial.lastSeq = Math.max(partial.lastSeq, seq);
+        const chunk = block.chunk || {};
+        const index = Number.isInteger(chunk.index) ? chunk.index : 0;
+        switch (chunk.type) {
+          case 'block-start':
+            partial.blocks.set(index, { kind: chunk.blockType === 'text' ? 'text' : 'other', text: '' });
+            break;
+          case 'text-delta': {
+            const previous = partial.blocks.get(index);
+            partial.blocks.set(index, {
+              kind: 'text',
+              text: (previous && previous.kind === 'text' ? previous.text : '') + text(chunk.text),
+            });
+            break;
+          }
+          case 'block-end':
+            if (typeof chunk.text === 'string') {
+              partial.blocks.set(index, { kind: 'text', text: chunk.text });
+            }
+            break;
+          default:
+            break;
+        }
+        changed = true;
+      } else {
+        // tool/call | tool/result | status | error | request
+        if (state.blocks.has(blockId)) {
+          // A SAME-STABLE-BLOCK update (e.g. status running -> idle at a later
+          // source seq) is folded IN PLACE: chronological anchor (firstSeq),
+          // order and key are preserved; only the payload fields are refreshed.
+          const existing = state.blocks.get(blockId);
+          for (const key of Object.keys(block)) {
+            if (key === 'blockId' || key === 'kind' || key === 'partial' || key === 'seq' || key === 'order') continue;
+            existing[key] = block[key];
+          }
+          changed = true;
+        } else {
+          const entry = { key: blockId, blockId, kind, seq, order: contentOrder(blockId), partial: false };
+          for (const key of Object.keys(block)) {
+            if (key === 'blockId' || key === 'kind' || key === 'partial') continue;
+            entry[key] = block[key];
+          }
+          state.blocks.set(blockId, entry);
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   function partialText(partial) {
@@ -106,103 +214,28 @@
       .join('');
   }
 
-  function applyConversationEvent(state, event) {
-    if (!event || typeof event !== 'object') return false;
-    const seq = finiteNumber(event.seq, -1);
-
-    if (event.type === 'user/message' && event.message?.role === 'user') {
-      const key = messageIdentity('user', event, seq);
-      state.messages.set(key, {
-        key,
-        blockId: key,
-        role: 'user',
-        text: text(event.message.text),
-        seq: seq,
-        partial: false,
-      });
-      return true;
-    }
-
-    if (event.type === 'assistant/chunk' && event.chunk && typeof event.chunk.type === 'string') {
-      const key = partialIdentity(event);
-      let partial = state.partials.get(key);
-      if (!partial) {
-        partial = { key, blockId: key, role: 'assistant', firstSeq: seq, lastSeq: seq, blocks: new Map() };
-        state.partials.set(key, partial);
-      }
-      partial.firstSeq = partial.firstSeq < 0 ? seq : Math.min(partial.firstSeq, seq);
-      partial.lastSeq = Math.max(partial.lastSeq, seq);
-      const index = Number.isInteger(event.chunk.index) ? event.chunk.index : 0;
-
-      switch (event.chunk.type) {
-        case 'block-start':
-          partial.blocks.set(index, {
-            kind: event.chunk.blockType === 'text' ? 'text' : 'other',
-            text: '',
-          });
-          break;
-        case 'text-delta': {
-          const previous = partial.blocks.get(index);
-          partial.blocks.set(index, {
-            kind: 'text',
-            text: (previous?.kind === 'text' ? previous.text : '') + text(event.chunk.text),
-          });
-          break;
-        }
-        case 'block-end':
-          if (typeof event.chunk.text === 'string') {
-            partial.blocks.set(index, { kind: 'text', text: event.chunk.text });
-          }
-          break;
-        default:
-          break;
-      }
-      return true;
-    }
-
-    if (event.type === 'assistant/message' && event.message?.role === 'assistant') {
-      // Final-message replacement of any earlier partial output for the same
-      // turn/step: a finalized answer must never render as partial AND final.
-      const turn = event.turn;
-      const step = event.step;
-      if (Number.isInteger(turn) && Number.isInteger(step)) {
-        state.partials.delete('partial:' + turn + ':' + step);
-      }
-      if (typeof event.blockId === 'string' && event.blockId) state.partials.delete(event.blockId);
-      state.partials.delete('partial:' + partialKey(event));
-
-      const key = messageIdentity('assistant', event, seq);
-      state.messages.set(key, {
-        key,
-        blockId: key,
-        role: 'assistant',
-        text: text(event.message.text),
-        seq: seq,
-        partial: false,
-        provider: text(event.message.provider),
-        model: text(event.message.model),
-      });
-      return true;
-    }
-
-    return false;
-  }
-
   function conversationItems(state) {
-    const items = [...state.messages.values()];
+    const items = [];
+    for (const item of state.messages.values()) items.push(item);
     for (const partial of state.partials.values()) {
       const body = partialText(partial);
       if (!body) continue;
       items.push({
         key: partial.key,
         blockId: partial.blockId,
+        kind: 'partial',
         role: 'assistant',
         text: body,
         seq: partial.firstSeq,
+        order: 0,
         partial: true,
       });
     }
-    return items.sort((a, b) => a.seq - b.seq || a.key.localeCompare(b.key));
+    for (const item of state.blocks.values()) items.push(item);
+
+    // Chronological by durable source seq; intra-event order by content index
+    // (child blocks of one message) and finally a deterministic key tiebreak.
+    return items.sort((a, b) => a.seq - b.seq || (a.order || 0) - (b.order || 0) || a.key.localeCompare(b.key));
   }
 
   root.C0Core = Object.freeze({

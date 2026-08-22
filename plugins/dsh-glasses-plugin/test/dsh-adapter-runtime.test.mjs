@@ -119,9 +119,9 @@ try {
       if (ev.seq > attachments[0].history.asOfSeq) throw new Error(`event seq ${ev.seq} > asOfSeq`);
       prev = ev.seq;
     }
-    const texts = events.map((e) => e.message?.text ?? "").join("|");
-    if (!texts.includes("M1-SYNTHETIC-USER-A")) throw new Error("synthetic user sentinel missing from real-runtime projection");
-    if (!texts.includes("M1-SYNTHETIC-ASSISTANT-A")) throw new Error("synthetic assistant sentinel missing from real-runtime projection");
+    const texts = events.flatMap((e) => (Array.isArray(e.blocks) ? e.blocks.filter((b) => b.kind === "text").map((b) => b.text) : []));
+    if (!texts.some((t) => typeof t === "string" && t.includes("M1-SYNTHETIC-USER-A"))) throw new Error("synthetic user sentinel missing from real-runtime projection");
+    if (!texts.some((t) => typeof t === "string" && t.includes("M1-SYNTHETIC-ASSISTANT-A"))) throw new Error("synthetic assistant sentinel missing from real-runtime projection");
     // agent projection agrees with attachment; state in SPEC vocabulary
     const state = attachments[0].state;
     if (!["idle", "running", "waiting-user", "unavailable", "unknown"].includes(state)) throw new Error(`bad agent state ${state}`);

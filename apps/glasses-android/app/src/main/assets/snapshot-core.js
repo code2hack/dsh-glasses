@@ -105,40 +105,64 @@
       return fail('asOfSeq-mismatch', 'last event seq must equal asOfSeq');
     }
 
-    function expectedMessageIdentity(prefix, ev) {
-      var id = ev && ev.message ? ev.message.id : undefined;
-      return (typeof id === 'string' && id !== '') ? prefix + id : prefix + 's' + ev.seq;
-    }
-
+    // Canonical M1 (#28) events law (client mirror of the server law): every
+    // history event is { seq, type, blocks[] } with typed, stable-blockId
+    // projection blocks. Non-renderable DSH source events carry blocks: [].
+    var REPEATABLE_KINDS = { partial: true, status: true };
+    var BLOCK_KINDS = { text: true, image: true, 'partial': true, 'tool/call': true, 'tool/result': true, status: true, error: true, request: true };
     var previous = -1;
-    var seenMessageBlockIds = {};
+    var seenBlockIds = {};
     for (var ei = 0; ei < history.events.length; ei++) {
       var ev = history.events[ei];
       if (!ev || typeof ev !== 'object') return fail('malformed-projected-event', 'history event must be an object');
       if (!Number.isInteger(ev.seq) || ev.seq < 0) return fail('malformed-seq', 'event seq invalid');
-      if (typeof ev.type !== 'string' || ev.type === '') return fail('malformed-projected-event', 'history event must carry a non-empty type');
+      if (typeof ev.type !== 'string' || ev.type === '') return fail('malformed-type', 'history event must carry a non-empty type');
       if (ev.seq <= previous) return fail('non-monotonic-seq', 'event seq not strictly increasing');
       if (ev.seq > history.asOfSeq) return fail('seq-beyond-asOfSeq', 'event seq exceeds asOfSeq');
       previous = ev.seq;
 
+      if (!Array.isArray(ev.blocks)) return fail('malformed-blocks', 'event lacks a blocks array');
       if (ev.type === 'user/message' || ev.type === 'assistant/message') {
-        var prefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
-        var expected = expectedMessageIdentity(prefix, ev);
-        if (ev.blockId !== expected) return fail('type-blockId-mismatch', 'message blockId does not match its identity');
-        if (hasOwn(seenMessageBlockIds, ev.blockId)) return fail('duplicate-blockId', 'duplicate message blockId');
-        seenMessageBlockIds[ev.blockId] = true;
-        var msg = ev.message;
-        if (!msg || typeof msg !== 'object') return fail('malformed-projected-event', 'event lacks message');
-        var wantedRole = prefix === 'message:u-' ? 'user' : 'assistant';
-        if (msg.role !== wantedRole) return fail('type-role-mismatch', 'message role mismatch');
-        if (typeof msg.text !== 'string') return fail('malformed-projected-event', 'message lacks text');
+        if (ev.blocks.length === 0) return fail('message-no-blocks', 'message event has no derived blocks');
+        var msgPrefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
+        var wantedRole = ev.type === 'user/message' ? 'user' : 'assistant';
+        var contentIndex = /:content:\d+$/;
+        for (var mcj = 0; mcj < ev.blocks.length; mcj++) {
+          var mblock = ev.blocks[mcj];
+          if (mblock && mblock.kind === 'error') continue; // interruption error child escapes the role law
+          if (!mblock || typeof mblock.blockId !== 'string' || mblock.blockId.indexOf(msgPrefix) !== 0 || !contentIndex.test(mblock.blockId)) {
+            return fail('blockId-root-mismatch', 'message block not rooted under its role prefix');
+          }
+          if (mblock.kind === 'text' || mblock.kind === 'image') {
+            if (mblock.role !== wantedRole) return fail('type-role-mismatch', 'message block role mismatch');
+          }
+        }
       } else if (ev.type === 'assistant/chunk') {
-        var expectedChunk = (Number.isInteger(ev.turn) && Number.isInteger(ev.step)) ? 'partial:' + ev.turn + ':' + ev.step : 'partial:s' + ev.seq;
-        if (ev.blockId !== expectedChunk) return fail('type-blockId-mismatch', 'chunk blockId does not match its identity');
-        if (!ev.chunk || typeof ev.chunk.type !== 'string') return fail('malformed-projected-event', 'chunk lacks chunk.type');
+        if (ev.blocks.length < 1) return fail('chunk-no-block', 'chunk event carries no valid partial block');
+        for (var bj = 0; bj < ev.blocks.length; bj++) {
+          var pblock = ev.blocks[bj];
+          if (!pblock || pblock.kind !== 'partial') return fail('chunk-wrong-kind', 'chunk event block is not partial');
+          var expected = (Number.isInteger(pblock.turn) && Number.isInteger(pblock.step)) ? 'partial:' + pblock.turn + ':' + pblock.step : 'partial:s' + ev.seq;
+          if (pblock.blockId !== expected) return fail('type-blockId-mismatch', 'chunk blockId does not match its turn/step');
+        }
       }
-      // Non-renderable projected types (step/end, permission/preset) carry no
-      // blockId requirement and are permitted.
+
+      for (var bi = 0; bi < ev.blocks.length; bi++) {
+        var block = ev.blocks[bi];
+        if (!block || typeof block !== 'object') return fail('malformed-block', 'event block must be an object');
+        if (typeof block.blockId !== 'string' || block.blockId === '') return fail('missing-blockId', 'event block lacks blockId');
+        if (!hasOwn(BLOCK_KINDS, block.kind)) return fail('unknown-block-kind', 'block has unknown kind');
+        // Structured per-kind shape law (mirror of the projection law).
+        if (block.kind === 'text' && typeof block.text !== 'string') return fail('malformed-projected-event', 'text block lacks text');
+        if (block.kind === 'image' && (typeof block.attachmentId !== 'string' || block.attachmentId === '')) return fail('malformed-projected-event', 'image block lacks attachmentId');
+        if (block.kind === 'partial' && (!block.chunk || typeof block.chunk !== 'object' || typeof block.chunk.type !== 'string')) return fail('malformed-projected-event', 'partial block lacks chunk.type');
+        if (block.kind === 'tool/call' && (typeof block.callId !== 'string' || block.callId === '')) return fail('malformed-projected-event', 'tool call block lacks callId');
+        if (block.kind === 'tool/result' && (typeof block.callId !== 'string' || block.callId === '')) return fail('malformed-projected-event', 'tool result block lacks callId');
+        if (block.kind === 'status' && (!Number.isInteger(block.turn) || (block.state !== 'running' && block.state !== 'idle'))) return fail('malformed-projected-event', 'status block malformed');
+        if (block.kind === 'error' && typeof block.message !== 'string') return fail('malformed-projected-event', 'error block lacks message');
+        if (!hasOwn(REPEATABLE_KINDS, block.kind) && hasOwn(seenBlockIds, block.blockId)) return fail('duplicate-blockId', 'duplicate blockId');
+        seenBlockIds[block.blockId] = true;
+      }
     }
 
     return { ok: true };
