@@ -13,16 +13,10 @@
 // Plus: composer hidden, mode NAV, no paste/Send/mutation/send retry, no
 // /draft/mutations or /actions POST, no openStream().
 import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from '../../../plugins/dsh-glasses-plugin/lib/snapshot.js';
+import { bootClientDom as boot, chatTexts, sleep } from './dom-harness.mjs';
 
 const SESSION = 'render-session-a';
-const HERE = dirname(fileURLToPath(import.meta.url));
-const INDEX = join(HERE, '..', 'app', 'src', 'main', 'assets', 'index.html');
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RESULTS = [];
 function record(name, pass, detail) {
   RESULTS.push({ name, verdict: pass ? 'PASS' : 'FAIL', detail: detail ?? null });
@@ -55,70 +49,11 @@ function invalidSnapshot() {
   return snap;
 }
 
-async function boot({ responses, session = SESSION }) {
-  const requests = [];
-  const traces = [];
-  let servedIndex = 0;
-  const served = responses.slice();
-
-  const dom = await JSDOM.fromFile(INDEX, {
-    resources: 'usable',
-    runScripts: 'dangerously',
-    pretendToBeVisual: true,
-    beforeParse(window) {
-      const originalInfo = window.console.info.bind(window.console);
-      window.console.info = (...args) => {
-        traces.push(args.map(String).join(' '));
-        originalInfo(...args);
-      };
-      window.GlassesBridge = {
-        endpoint: () => 'http://dsh-render:7777',
-        sessionId: () => session,
-        configure: (base, token, sid) => { window.__configured = { base, sid }; return true; },
-        fetch: (path, payload) => {
-          requests.push({ path, hasBody: payload !== '' });
-          const r = served[Math.min(servedIndex++, served.length - 1)];
-          return JSON.stringify({ status: r.status, body: r.body });
-        },
-        openStream: () => { requests.push({ path: 'OPEN_STREAM', hasBody: false }); },
-        closeStream: () => {},
-        clipboardText: () => 'clip',
-      };
-    },
-  });
-
-  const w = dom.window;
-  const $ = (id) => w.document.getElementById(id);
-  const settled = async (label) => {
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const gen = (w.c0DebugState && w.c0DebugState().generation) || '';
-      const conn = String(($('conn') && $('conn').textContent) || '');
-      if (gen !== '' || conn.startsWith('snapshot-rejected') || conn === 'session-mismatch' || conn === 'configure') return;
-      await sleep(25);
-    }
-    throw new Error('runtime did not settle for ' + label);
-  };
-
-  return {
-    dom, w,
-    requests: () => requests.map((r) => r.path),
-    traces: () => traces.slice(),
-    $,
-    settled,
-    setResponses(next) { served.length = 0; for (const r of next) served.push(r); },
-  };
-}
-
-const chatTexts = (rt) =>
-  [...rt.$('chat').querySelectorAll('article.message')].map((el) => ({
-    role: el.querySelector('.role')?.textContent,
-    body: el.querySelector('.body')?.textContent,
-  }));
+// boot(), chatTexts() and sleep() come from the shared dom-harness module.
 
 // ---- State 1: no prior install + invalid bootstrap ----------------------
 {
-  const rt = await boot({ responses: [{ status: 200, body: invalidSnapshot() }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: invalidSnapshot() }] });
   await rt.settled('invalid-initial');
   const hidden = rt.$('session').classList.contains('hidden');
   const articles = rt.$('chat').querySelectorAll('article.message').length;
@@ -141,7 +76,7 @@ const chatTexts = (rt) =>
 // ---- State 2: valid install, then later invalid bootstrap keeps screen ----
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
-  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: invalidSnapshot() }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }, { status: 200, body: invalidSnapshot() }] });
   await rt.settled('valid-initial');
   const first = chatTexts(rt);
   assert.equal(first.length, 2);
@@ -167,7 +102,7 @@ const chatTexts = (rt) =>
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
   const v2 = validSnapshot({ generation: 'gen-v2', user: 'second-request', asst: 'second-answer' });
-  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: v2 }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }, { status: 200, body: v2 }] });
   await rt.settled('valid-initial');
   assert.equal(chatTexts(rt).length, 2);
 
@@ -222,7 +157,7 @@ const chatTexts = (rt) =>
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
   const wrong = validSnapshot({ generation: 'gen-wrong', user: 'other-user', asst: 'other-answer' });
   wrong.attachments[0].sessionId = 'session-other';
-  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: wrong }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }, { status: 200, body: wrong }] });
   await rt.settled('wrong-session-initial');
   const before = JSON.stringify(chatTexts(rt));
   assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
@@ -246,7 +181,7 @@ const chatTexts = (rt) =>
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
   const incomplete = validSnapshot({ generation: 'gen-incomplete', user: 'x', asst: 'y' });
   delete incomplete.attachments; // incomplete (missing attachments) -> missing-attachments
-  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: incomplete }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }, { status: 200, body: incomplete }] });
   await rt.settled('incomplete-initial');
   const before = JSON.stringify(chatTexts(rt));
   assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
@@ -267,7 +202,7 @@ const chatTexts = (rt) =>
 {
   const wrong = validSnapshot({ generation: 'gen-wrong', user: 'u', asst: 'a' });
   wrong.attachments[0].sessionId = 'session-other';
-  const rt = await boot({ responses: [{ status: 200, body: wrong }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: wrong }] });
   await rt.settled('initial-wrong-session');
   record('rw0: initial wrong-session stays hidden', rt.$('session').classList.contains('hidden') === true, 'hidden=' + rt.$('session').classList.contains('hidden'));
   assert.equal(rt.$('session').classList.contains('hidden'), true);
@@ -282,7 +217,7 @@ const chatTexts = (rt) =>
 // ---- Regression: native SSE callback invocation has zero effect in M1 -------
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
-  const rt = await boot({ responses: [{ status: 200, body: v1 }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }] });
   await rt.settled('sse-callback-initial');
   const before = JSON.stringify(chatTexts(rt));
   const genBefore = rt.w.c0DebugState().generation;
@@ -307,7 +242,7 @@ const chatTexts = (rt) =>
 // ---- Regression: explicit projection clear resets installed-state marker ----
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
-  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: invalidSnapshot() }] });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }, { status: 200, body: invalidSnapshot() }] });
   await rt.settled('clear-initial');
   assert.equal(rt.w.c0DebugState().installed, true, 'installed marker true after install');
 
