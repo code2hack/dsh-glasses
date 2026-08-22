@@ -10,9 +10,10 @@ VERIFIED_CODE_HEAD = e88548b0aa37f9fb3573688267307b13f925a8d5  (verified product
 
 This evidence record (`docs/evidence/m1-27-tb0-quarantine-2026-08-22.md`) was
 ADDED afterward on `workflow/ticket-27`, so it is intentionally NOT part of the
-protected/unchanged set. The checks below use base-relative paths and an
-exclusion for this record so they are reproducible at any present or future
-branch state.
+protected/unchanged set. The checks below operate on the base FILE SET (records
+that already existed under `docs/evidence/` at BASE); later M1 evidence records
+are additions by construction and are excluded automatically. The commands
+therefore reproduce at any present or future branch state.
 
 ## Intent
 
