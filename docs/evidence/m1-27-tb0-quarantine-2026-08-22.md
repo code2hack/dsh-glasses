@@ -2,7 +2,17 @@
 
 Date: 2026-08-22 (ticket #27, Milestone M1)
 Branch: `workflow/ticket-27`
-Candidate head (evidence generation): `e88548b0aa37f9fb3573688267307b13f925a8d5`
+
+```text
+BASE               = e770e4d39b0df32ce7ee5d8cb7f5c914463fca94  (admitted base)
+VERIFIED_CODE_HEAD = e88548b0aa37f9fb3573688267307b13f925a8d5  (verified production-code head)
+```
+
+This evidence record (`docs/evidence/m1-27-tb0-quarantine-2026-08-22.md`) was
+ADDED afterward on `workflow/ticket-27`, so it is intentionally NOT part of the
+protected/unchanged set. The checks below use base-relative paths and an
+exclusion for this record so they are reproducible at any present or future
+branch state.
 
 ## Intent
 
@@ -14,23 +24,34 @@ document is the durable record of that preservation/quarantine.
 
 ## 1. Historical TB0 files are untouched
 
-Exact diff verification versus the admitted base
-`e770e4d39b0df32ce7ee5d8cb7f5c914463fca94` (HEAD = the evidence-generation
-commit):
+Exact diff verification versus the admitted base. All commands are reproducible
+and must yield empty output / rc=0:
 
-```text
-git diff --stat $BASE HEAD -- docs/evidence/ dev/d0-runtime.mjs dev/d0-host-write-recovery.mjs
--> (empty output)
-git diff --name-only $BASE HEAD -- docs/evidence/ | wc -l
--> 0
-git log --oneline $BASE..HEAD -- dev/d0-runtime.mjs | wc -l
--> 0
+```bash
+BASE=e770e4d39b0df32ce7ee5d8cb7f5c914463fca94
+# The two explicitly protected files:
+git diff --exit-code "$BASE" HEAD -- \
+  docs/evidence/tb0-dsh-compat-2026-08-19.md \
+  dev/d0-runtime.mjs \
+  dev/d0-host-write-recovery.mjs
+# -> empty / rc=0
+
+# ALL pre-existing docs/evidence records (excluding THIS new M1 record):
+git diff --exit-code "$BASE" HEAD -- \
+  docs/evidence/ \
+  ':(exclude)docs/evidence/m1-27-tb0-quarantine-2026-08-22.md'
+# -> empty / rc=0
+
+# Historical check BEFORE this evidence record was added:
+git diff --name-only "$BASE" "$VERIFIED_CODE_HEAD" -- docs/evidence/
+# -> empty
 ```
 
 In particular:
+- No pre-existing `docs/evidence/*` record changed; this ticket adds **exactly
+  one** new M1 evidence record: `docs/evidence/m1-27-tb0-quarantine-2026-08-22.md`.
 - `docs/evidence/tb0-dsh-compat-2026-08-19.md` — unchanged.
 - `dev/d0-runtime.mjs` — unchanged.
-- Every other `docs/evidence/*` TB0 record — unchanged.
 - `dev/d0-host-write-recovery.mjs` — still committed, unchanged.
 
 ## 2. Dormant TB0 write/SSE source is preserved (present, unreachable)
