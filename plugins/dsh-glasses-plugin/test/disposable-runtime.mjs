@@ -317,21 +317,28 @@ export async function stopInstance(proc, port) {
 }
 
 /** Create a real session through the disposable instance's own RPC and wait for its durable log. */
-export async function createSession({ port, cwd, homeDir, rpcId, agentPreset = "minimal" }) {
+export async function createSession({ port, cwd, homeDir, rpcId, agentPreset = "minimal", attempts = 3 }) {
   const magic = (process.pid.toString(36) + Date.now().toString(36) + (rpcId || Math.random().toString(36).slice(2, 8)));
   const rid = rpcId || `m1-${magic}`;
-  const r = await httpReq({
-    port,
-    method: "POST",
-    path: "/api/session.create",
-    headers: { "content-type": "application/json" },
-    body: { type: "client-request", rpcId: rid, method: "session.create", payload: { cwd, agentPreset } },
-    timeoutMs: 60000,
-  });
-  const sid = r.json?.result?.value?.sessionId;
-  if (!sid) throw new Error(`session.create failed: ${JSON.stringify(r.json || r.text)}`);
-  await waitForSessionLog(homeDir, sid);
-  return sid;
+  let last = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const r = await httpReq({
+      port,
+      method: "POST",
+      path: "/api/session.create",
+      headers: { "content-type": "application/json" },
+      body: { type: "client-request", rpcId: rid, method: "session.create", payload: { cwd, agentPreset } },
+      timeoutMs: 60000,
+    });
+    const sid = r.json?.result?.value?.sessionId;
+    if (sid) {
+      await waitForSessionLog(homeDir, sid);
+      return sid;
+    }
+    last = r;
+    if (attempt < attempts) await sleep(1200); // RPC registration race guard
+  }
+  throw new Error(`session.create failed: ${JSON.stringify(last?.json || last?.text)}`);
 }
 
 async function waitForSessionLog(homeDir, sessionId) {

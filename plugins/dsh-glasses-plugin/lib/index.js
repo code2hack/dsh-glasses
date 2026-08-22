@@ -42,7 +42,12 @@ export const Config = z.object({
   bootstrapMaxEvents: z.number().default(200),
 });
 
-export const inject = ["webServer", "sessionQuery", "sessions", "agents", "storage", "apiProxy"];
+// M1 injects ONLY the read seams the adapter/bootstraps require. storage and
+// apiProxy belong to the dormant TB0 write slice (whose routes are unregistered
+// and whose startup reconciliation is disabled in M1), so they must not be
+// required for ordinary M1 startup. A follow-up milestone that reactivates the
+// write paths restores them.
+export const inject = ["webServer", "sessionQuery", "sessions", "agents"];
 
 const PROTOCOL_MAJOR = 1;
 
@@ -76,6 +81,10 @@ export async function apply(ctx, config) {
   const effBootstrapMaxEvents = Math.max(1, Math.min(bootstrapMaxEvents, M1_BOOTSTRAP_MAX_EVENTS));
 
   const serverGeneration = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  // Independently opaque attachment identity: one per plugin/attachment
+  // lifetime (stable across bootstraps; fresh on a new plugin lifetime). It is
+  // NOT derived from serverGeneration and does NOT encode the sessionId.
+  const attachmentId = `att-${randomUUID().slice(0, 12)}`;
   // Fresh opaque connection epoch per authenticated bootstrap (never reused).
   let connectionEpochCounter = 0;
   const nextConnectionEpoch = () =>
@@ -102,6 +111,7 @@ export async function apply(ctx, config) {
       const agentState = adapter.getAgentState(sessionId);
       const snapshot = buildCanonicalSnapshot({
         sessionId,
+        attachmentId,
         projected: { asOfSeq, events },
         agentState,
         serverGeneration,

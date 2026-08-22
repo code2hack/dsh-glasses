@@ -28,6 +28,7 @@ function canonicalEvents() {
 function baseArgs(over = {}) {
   return {
     sessionId: SESSION,
+    attachmentId: `att-6f1e0a2b3c4d`,
     projected: { asOfSeq: 4, events: canonicalEvents() },
     agentState: "idle",
     serverGeneration: SERVER_GENERATION,
@@ -37,10 +38,10 @@ function baseArgs(over = {}) {
   };
 }
 
-// ---- Positive: the exact normative snapshot is built ----
+// ---- Positive: the exact normative snapshot is built (no envelope `ok`) ----
 {
   const snap = buildCanonicalSnapshot(baseArgs());
-  assert.equal(snap.ok, true);
+  assert.equal(Object.hasOwn(snap, "ok"), false, "the canonical snapshot IS the HTTP-200 body; no envelope ok field");
   assert.equal(snap.protocolMajor, M1_PROTOCOL_MAJOR);
   assert.equal(snap.serverGeneration, SERVER_GENERATION);
   assert.equal(snap.connectionEpoch, EPOCH_A);
@@ -49,7 +50,7 @@ function baseArgs(over = {}) {
   assert.deepEqual(snap.drafts, []);
   assert.equal(snap.attachments.length, 1);
   const a = snap.attachments[0];
-  assert.equal(a.attachmentId, `att:${SERVER_GENERATION}`);
+  assert.equal(a.attachmentId, "att-6f1e0a2b3c4d");
   assert.notEqual(a.attachmentId, SESSION);
   assert.equal(a.attachmentId.includes(SESSION), false, "attachmentId must not encode sessionId");
   assert.equal(a.attachmentGeneration, M1_ATTACHMENT_GENERATION);
@@ -69,6 +70,9 @@ function baseArgs(over = {}) {
   console.log("[snapshot-builder] canonical positive fixture: PASS");
 }
 
+// attachmentId is stable across bootstraps of the SAME attachment lifetime.
+assert.equal(buildCanonicalSnapshot(baseArgs({ connectionEpoch: EPOCH_B })).attachments[0].attachmentId, "att-6f1e0a2b3c4d");
+
 // A fresh connectionEpoch must be passed per bootstrap; the builder never
 // fabricates or reuses one.
 assert.equal(buildCanonicalSnapshot(baseArgs({ connectionEpoch: EPOCH_B })).connectionEpoch, EPOCH_B);
@@ -82,6 +86,10 @@ const rejects = (over, code, label) => {
   );
 };
 rejects({ sessionId: "" }, "invalid-sessionId", "empty sessionId");
+rejects({ attachmentId: undefined }, "invalid-attachmentId", "missing attachmentId");
+rejects({ attachmentId: "" }, "invalid-attachmentId", "empty attachmentId");
+rejects({ attachmentId: SESSION }, "attachmentId-encodes-session", "attachmentId equals sessionId");
+rejects({ attachmentId: `x-${SESSION}-y` }, "attachmentId-encodes-session", "attachmentId contains sessionId");
 rejects({ projected: { asOfSeq: 4, events: {} } }, "malformed-projected", "events not an array");
 rejects({ projected: { asOfSeq: "4", events: [] } }, "malformed-asOfSeq", "asOfSeq not integer");
 rejects({ serverGeneration: "" }, "invalid-serverGeneration", "empty serverGeneration");
