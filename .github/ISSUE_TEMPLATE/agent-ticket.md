@@ -1,6 +1,6 @@
 ---
 name: Agent Ticket
-about: One vertical slice for one fresh persistent DSH executor
+about: One vertical slice for one persistent Ticket DSH executor
 labels: ready-for-agent
 ---
 
@@ -39,26 +39,28 @@ M1
 
 ## Evidence
 
-- <durable repository evidence paths required for planning/progress/review records>
+- <durable repository evidence paths required for implementation/review>
 
-<!-- Protocol reminder:
-     - Ticket Dispatcher creates one persistent named DSH session only.
-     - Before first production edits, DSH MUST obtain a detailed ordered
-       implementation/validation plan + to-do list. Ask ChatGPT first. Only if
-       ChatGPT is unavailable may DSH ask fresh native Codex. DSH may self-plan
-       only when BOTH ChatGPT and Codex are unavailable.
-     - After EVERY completed to-do item, DSH MUST report completion to the helper
-       chain: ChatGPT first; Codex only if ChatGPT is unavailable or that unresolved
-       chain has already escalated after three unsuccessful ChatGPT loops; both
-       unavailable -> record and continue.
-     - DSH NEVER requests ChatGPT and Codex in parallel for the same workflow step.
-     - For a hard problem or final review, ChatGPT is always first-line. Codex is
-       escalation only when ChatGPT is unavailable or the same problem/review chain
-       remains unresolved after three complete ChatGPT loops.
-     - If ChatGPT PASSes final exact-head review, DO NOT summon Codex.
-     - Codex invocations are fresh/ephemeral and must not modify the Ticket worktree.
-     - If the required helper path is unavailable, DSH may continue independently,
-       but known valid blocking findings and all non-review acceptance gates remain. -->
+<!-- Workflow reminder:
+     - Project Supervisor DSH admits one persistent named Ticket DSH per Ticket.
+     - Runtime expert identities are supplied by the project owner to the
+       Supervisor and propagated into Ticket DSH bootstrap; do not hard-code
+       ChatGPT session identifiers or Project Codex thread IDs in Tickets.
+     - Before first production edits, Ticket DSH MUST obtain a detailed ordered
+       implementation + validation to-do list from ChatGPT first. If ChatGPT is
+       objectively unavailable, use the persistent Project Codex thread. Ticket
+       DSH may self-plan only if BOTH project experts are unavailable.
+     - After every completed to-do item, Ticket DSH MUST checkpoint progress to
+       ChatGPT first; Project Codex is second-line escalation only.
+     - Never ask ChatGPT and Project Codex concurrently for the same interaction.
+     - After three unsuccessful ChatGPT loops for the same unresolved chain,
+       escalate that chain to Project Codex instead of starting ChatGPT loop 4.
+     - Final review is ChatGPT-first. ChatGPT PASS ends the reviewer gate; Project
+       Codex is used only on ChatGPT unavailability or valid three-loop escalation.
+     - Project Codex is one project-long persistent thread reached through Codex
+       app-server, not `subagent_codex`, and helper requests must be non-mutating.
+     - Ticket DSH implements/tests/proves; Supervisor DSH orchestrates; Project
+       Codex and ChatGPT provide expert guidance/review. -->
 
 ## Out of scope
 
