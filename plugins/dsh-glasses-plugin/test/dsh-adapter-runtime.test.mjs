@@ -26,6 +26,7 @@ import {
   httpReq,
 } from "./disposable-runtime.mjs";
 import { syntheticUserEvent, syntheticAssistantEvent } from "./zstd-jsonl.mjs";
+import { validateSnapshotWire } from "../lib/snapshot.js";
 
 // Open the SSE stream with auth, read until the hello frame, then disconnect.
 // This exercises the production stream seam which now subscribes through
@@ -136,13 +137,21 @@ try {
     if (caps.historyRead !== true) throw new Error("historyRead must be true");
   });
 
-  await scenario("adapter-runtime: fresh connectionEpoch per authenticated bootstrap, stable serverGeneration", async () => {
+  await scenario("adapter-runtime: fresh connectionEpoch, stable attachmentId+serverGeneration, wire law satisfied on real output", async () => {
     const r1 = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
     const r2 = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
     if (r1.status !== 200 || r2.status !== 200) throw new Error(`bootstrap status ${r1.status}/${r2.status}`);
     if (typeof r1.json.connectionEpoch !== "string" || !r1.json.connectionEpoch) throw new Error("connectionEpoch missing");
     if (r1.json.connectionEpoch === r2.json.connectionEpoch) throw new Error("connectionEpoch must be fresh per bootstrap");
     if (r1.json.serverGeneration !== r2.json.serverGeneration) throw new Error("serverGeneration must be stable per process");
+    if (r1.json.attachments?.[0]?.attachmentId !== r2.json.attachments?.[0]?.attachmentId) throw new Error("attachmentId must be stable across bootstraps of one attachment lifetime");
+    if (Object.hasOwn(r1.json, "ok")) throw new Error("canonical snapshot must not carry an ok envelope");
+    const att = r1.json.attachments[0];
+    if (att.attachmentId === r1.json.serverGeneration || att.attachmentId.includes(r1.json.serverGeneration)) throw new Error("attachmentId must be independent of serverGeneration");
+    // The frozen wire law accepts the REAL runtime output as-is.
+    const law = validateSnapshotWire(r1.json, { expectedSessionId: realA });
+    if (!law.ok) throw new Error(`real bootstrap violates frozen wire law: ${law.code}: ${law.message}`);
+    if (law.ok && validateSnapshotWire(r2.json, { expectedSessionId: realA }).ok !== true) throw new Error("second bootstrap violates frozen wire law");
   });
 
   await scenario("adapter-runtime: M1 write routes quarantined (404) and no draft/writeState leak", async () => {

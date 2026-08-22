@@ -83,8 +83,9 @@ export async function apply(ctx, config) {
   const serverGeneration = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
   // Independently opaque attachment identity: one per plugin/attachment
   // lifetime (stable across bootstraps; fresh on a new plugin lifetime). It is
-  // NOT derived from serverGeneration and does NOT encode the sessionId.
-  const attachmentId = `att-${randomUUID().slice(0, 12)}`;
+  // NOT derived from serverGeneration and does NOT encode the sessionId. Full
+  // randomUUID — future generation fencing relies on the untruncated identity.
+  const attachmentId = `att-${randomUUID()}`;
   // Fresh opaque connection epoch per authenticated bootstrap (never reused).
   let connectionEpochCounter = 0;
   const nextConnectionEpoch = () =>
