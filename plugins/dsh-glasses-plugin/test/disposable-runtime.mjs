@@ -213,12 +213,14 @@ async function createFromScratch(homeDir, port) {
 async function overlayPlugin(homeDir) {
   const pluginDir = join(homeDir, "profiles", "web", "node_modules", "dsh-glasses-plugin");
   if (!existsSync(pluginDir)) throw new Error(`overlayPlugin: plugin not installed at ${pluginDir}`);
-  await cp(join(PLUGIN_ROOT, "package.json"), join(pluginDir, "package.json"));
-  if (existsSync(join(PLUGIN_ROOT, "dsh-compat.json"))) {
-    await cp(join(PLUGIN_ROOT, "dsh-compat.json"), join(pluginDir, "dsh-compat.json"));
-  }
-  await rm(join(pluginDir, "lib"), { recursive: true, force: true });
-  await cp(join(PLUGIN_ROOT, "lib"), join(pluginDir, "lib"), { recursive: true });
+  // The installed node may be a pnpm hard-linked copy of the worktree (same
+  // inodes) or a junction/symlink to it. Overlaying in place on bare links is
+  // destructive and self-referential (cp(src==dest) -> EINVAL; rm(lib) can
+  // mutate the real worktree). Always replace it atomically with a fresh,
+  // detached real copy of the worktree plugin so overlays never touch the
+  // source tree regardless of how the profile was installed/cloned.
+  await rm(pluginDir, { recursive: true, force: true });
+  await cp(PLUGIN_ROOT, pluginDir, { recursive: true });
 }
 
 /** Build an isolated disposable home for one test run and load the worktree plugin. */

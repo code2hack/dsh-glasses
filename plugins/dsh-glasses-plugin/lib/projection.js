@@ -20,10 +20,30 @@
 //   * stable block identities: history/user/assistant message content children
 //     keyed under the accepted root identity (message:u-<id>:content:<i> /
 //     message:a-<id>:content:<i>), partial streams (partial:<turn>:<step>),
-//     tool call/result (tool:<callId>:call / tool:<callId>:result),
-//     status/error/request turn/tool-scoped identities.
+//     tool call/result (tool:<callId>:call / tool:<callId>:result plus
+//     tool:<callId>:result:content:<i> nested-result children), status/error/
+//     request turn/tool-scoped identities.
 //   * raw provider/storage/internal payloads and raw positional surfaceOp
 //     semantics are NOT leaked: folding to stable block identity happens here.
+//   * SURFACE REPLACEMENTS STAY MODEL-ONLY: a surface-eligible event whose
+//     surfaceOp is not 'append' (e.g. {op:'replace',start,end} compaction
+//     rewrite) remains in durable seq space but projects blocks: [] — the
+//     human transcript keeps the append-origin events the user already read.
+//     Only append-origin surface events derive human-transcript blocks
+//     (rc.2 dsh-session/surface.isAppendSurfaceEvent is the oracle).
+//   * UNKNOWN EVENTS FAIL CLOSED WHERE IT MATTERS (AC5): a recognized type is
+//     projected or non-rendered by explicit rule; an unrecognized type is
+//     skipped when it provably cannot change the visible conversation —
+//     rc.2 marks it ignorable:true, OR it carries no SurfaceOp (a non-surface
+//     meta record; observed rc.2 examples: permission/preset, sandbox/mode,
+//     approval/policy, which DSH persists in the same seq-space log without an
+//     ignorable marker). An unrecognized event that CARRIES a SurfaceOp is a
+//     future surface rewrite of user-visible content → throws
+//     'unsupported-required-event' so a session whose visible transcript
+//     semantics changed cannot be silently gutted.
+//   * empty-content user/assistant messages are VALID (a max-token cutoff
+//     hosts usage only): the canonical event is accepted with blocks: [] and
+//     the durable seq advances; nothing renders.
 
 export class ProjectionValidationError extends Error {
   constructor(code, message) {
@@ -39,6 +59,19 @@ function stringOrEmpty(value) {
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// rc.2 surface vocabulary (dsh-session lib/types/types.d.ts): only these
+// message-producing event types may carry a SurfaceOp; a surfaceOp that is not
+// exactly 'append' is a positional replacement copy (model-only).
+const SURFACE_TYPES = new Set(["user/message", "assistant/message", "tool/result"]);
+
+function isReplacementSurfaceEvent(evt) {
+  return SURFACE_TYPES.has(evt?.type) && evt?.surfaceOp != null && evt.surfaceOp !== "append";
 }
 
 // -- Stable block identity laws --------------------------------------------
@@ -72,6 +105,11 @@ function partialBlockId(event, data) {
  * Project ordered message content blocks into typed projection blocks in EXACT
  * source order. Content kinds that are valid DSH but not rendered by this M1
  * slice (reasoning, unknown) are skipped (the event/watermark still advances).
+ *
+ * Every projected content child carries its explicit canonical `contentIndex`
+ * (= its position in the durable source content array). The page law validates
+ * contentIndex against the `:content:<i>` blockId suffix; ordering is derived
+ * from contentIndex (never by reparsing the opaque message id).
  */
 function projectContentBlocks(rootId, content) {
   const blocks = [];
@@ -80,7 +118,7 @@ function projectContentBlocks(rootId, content) {
     const block = content[i];
     if (!block || typeof block !== "object") continue;
     if (block.type === "text" && typeof block.text === "string") {
-      blocks.push({ blockId: contentBlockId(rootId, i), kind: "text", text: block.text });
+      blocks.push({ blockId: contentBlockId(rootId, i), kind: "text", text: block.text, contentIndex: i });
     } else if (block.type === "image") {
       const ref = block.attachment;
       // Safe canonical image identity: opaque attachmentId (never path/URL).
@@ -93,6 +131,7 @@ function projectContentBlocks(rootId, content) {
           mediaType: typeof ref.mediaType === "string" ? ref.mediaType : "",
           width: Number.isInteger(ref.width) ? ref.width : null,
           height: Number.isInteger(ref.height) ? ref.height : null,
+          contentIndex: i,
         });
       }
     } else if (block.type === "tool-call") {
@@ -104,16 +143,21 @@ function projectContentBlocks(rootId, content) {
           callId: id,
           name: stringOrEmpty(block.name),
           arguments: stringOrEmpty(block.arguments),
+          contentIndex: i,
         });
       }
     } else if (block.type === "tool-result") {
-      blocks.push({
-        blockId: contentBlockId(rootId, i),
-        kind: "tool/result",
-        callId: stringOrEmpty(block.toolCallId),
-        text: textFromBlocks(block.content),
-        error: block.isError === true,
-      });
+      const callId = stringOrEmpty(block.toolCallId);
+      if (callId) {
+        blocks.push({
+          blockId: contentBlockId(rootId, i),
+          kind: "tool/result",
+          callId,
+          text: textFromBlocks(block.content),
+          error: block.isError === true,
+          contentIndex: i,
+        });
+      }
     }
     // Other content kinds (reasoning/unknown) are valid DSH but not projected.
   }
@@ -141,6 +185,13 @@ export function projectEvent(evt) {
   const type = stringOrEmpty(evt?.type);
   const projected = { seq, type, blocks: [] };
   const data = evt?.data ?? {};
+
+  // A replacement surface copy (surfaceOp != 'append') is a model-surface
+  // rewrite (e.g. compaction summary) shadowing a range the user already read.
+  // It must NOT render as another ordinary transcript message: it stays in
+  // durable seq space with blocks: [] and the human transcript keeps the
+  // append-origin history (rc.2 isAppendSurfaceEvent oracle).
+  if (isReplacementSurfaceEvent(evt)) return projected;
 
   if (type === "user/message") {
     const root = messageRoot("user", evt);
@@ -200,16 +251,51 @@ export function projectEvent(evt) {
   if (type === "tool/result") {
     const callId = stringOrEmpty(data?.message?.source?.callId ?? data?.callId);
     if (!callId) return projected;
+    // rc.2 ToolResultMessage.content = [ToolResultBlock]; nested visible
+    // content lives under ToolResultBlock.content (a ContentBlock[] that may
+    // include images — never silently dropped).
     const resultBlock = Array.isArray(data?.message?.content) ? data?.message?.content?.[0] : undefined;
-    const failed = Boolean(resultBlock?.isError) === true || Boolean(data?.error);
-    const text = textFromBlocks(resultBlock?.content ?? data?.message?.content);
-    projected.blocks = [{
+    const failed = resultBlock?.isError === true || Boolean(data?.error) === true;
+    const shell = {
       blockId: `tool:${callId}:result`,
       kind: "tool/result",
       callId,
-      text,
       error: failed,
-    }];
+    };
+    const children = [];
+    const nested = Array.isArray(resultBlock?.content) ? resultBlock.content : [];
+    for (let i = 0; i < nested.length; i++) {
+      const child = nested[i];
+      if (!child || typeof child !== "object") continue;
+      if (child.type === "text" && typeof child.text === "string") {
+        children.push({
+          blockId: `tool:${callId}:result:content:${i}`,
+          kind: "text",
+          role: "tool",
+          text: child.text,
+          contentIndex: i,
+        });
+      } else if (child.type === "image") {
+        const ref = child.attachment;
+        const attachmentId = typeof ref?.attachmentId === "string" ? ref.attachmentId : "";
+        if (attachmentId) {
+          children.push({
+            blockId: `tool:${callId}:result:content:${i}`,
+            kind: "image",
+            role: "tool",
+            attachmentId,
+            mediaType: typeof ref.mediaType === "string" ? ref.mediaType : "",
+            width: Number.isInteger(ref.width) ? ref.width : null,
+            height: Number.isInteger(ref.height) ? ref.height : null,
+            contentIndex: i,
+          });
+        }
+      }
+      // Nested reasoning/tool-call/tool-result content is not a visible render
+      // block for this M1 slice; the child index is preserved in blockId only
+      // when a block is derived (deterministic, never renumbered).
+    }
+    projected.blocks = [shell, ...children];
     return projected;
   }
 
@@ -255,9 +341,30 @@ export function projectEvent(evt) {
     return projected;
   }
 
-  // step/start, step/end, todo/write, session/end-seed, unknown/future types:
-  // valid DSH events with blocks: [] — watermark advances, nothing renders.
-  return projected;
+  // step/start, step/end, todo/write, session/end-seed and similar recognized
+  // non-renderable DSH records: valid events with blocks: [] — the watermark
+  // advances, nothing renders.
+  if (KNOWN_NONRENDERABLE_TYPES.has(type)) return projected;
+
+  // An unrecognized FUTURE type is safe to skip ONLY when it provably cannot
+  // change the visible conversation.
+  //   1. rc.2 marks it ignorable:true -> always skip.
+  //   2. It carries NO SurfaceOp -> it is a non-surface meta record (observed
+  //      rc.2 records include permission/preset, sandbox/mode, approval/policy,
+  //      plus any future informational record DSH persists in the same log).
+  //      It cannot be a replacement copy of anything the user saw and cannot
+  //      gut the transcript, so skipping is safe.
+  if (evt?.ignorable === true || evt?.surfaceOp == null) return projected;
+
+  //   3. An unknown event carrying a SurfaceOp is a FUTURE surface rewrite of
+  //      user-visible content whose shape we cannot render -> FAIL CLOSED
+  //      (AC5): reject so writes are disabled and the caller takes its
+  //      complete-resynchronization path instead of silently dropping a record
+  //      that changed what the user saw.
+  throw new ProjectionValidationError(
+    "unsupported-required-event",
+    `event ${String(seq)} has unknown required surface type ${JSON.stringify(type)} (surfaceOp ${JSON.stringify(evt.surfaceOp)})`,
+  );
 }
 
 function withRole(projected, role) {
@@ -280,8 +387,12 @@ const BLOCK_KINDS = new Set(["text", "image", "partial", "tool/call", "tool/resu
 const REPEATABLE_KINDS = new Set(["partial", "status"]);
 // DSH source types that are valid but carry no derived render blocks.
 const KNOWN_NONRENDERABLE_TYPES = new Set([
-  "step/start", "step/end", "todo/write", "session/end-seed", "session/end", "unknown",
+  "step/start", "step/end", "todo/write", "session/end-seed", "session/end",
 ]);
+// Tool-result events project a status/result SHELL plus (when the nested
+// rc.2 ToolResultBlock.content carries visible content) deterministic
+// tool:<callId>:result:content:<i> text/image children.
+const TOOL_RESULT_TYPE = "tool/result";
 
 function expect(condition, code, message) {
   if (!condition) throw new ProjectionValidationError(code, message);
@@ -345,7 +456,9 @@ export function validateCanonicalProjectionPage(projectedEvents) {
     expect(Array.isArray(event?.blocks), "malformed-blocks", `event ${seq} lacks a blocks array`);
 
     if (MESSAGE_TYPES.has(type)) {
-      expect(event.blocks.length > 0, "message-no-blocks", `message event ${seq} has no derived blocks`);
+      // Empty-content user/assistant messages are VALID non-renderable events
+      // (a max-token cutoff hosts usage only): blocks: [] is accepted and the
+      // durable seq advances. When blocks exist they must obey the root/role law.
       const expectedPrefix = type === "user/message" ? "message:u-" : "message:a-";
       const wantedRole = type === "user/message" ? "user" : "assistant";
       for (const block of event.blocks) {
@@ -370,11 +483,38 @@ export function validateCanonicalProjectionPage(projectedEvents) {
           : `partial:s${seq}`;
         expect(block.blockId === expected, "type-blockId-mismatch", `chunk blockId ${String(block.blockId)} != expected ${expected}`);
       }
+    } else if (type === TOOL_RESULT_TYPE) {
+      // Nested rc.2 ToolResultBlock content is projected deterministically: a
+      // status/result shell plus tool:<callId>:result:content:<i> children.
+      // The shell is REQUIRED (fail closed); child roots must match it.
+      const shellBlocks = event.blocks.filter((b) => b && b.kind === "tool/result");
+      expect(shellBlocks.length >= 1, "tool-result-shell-mismatch", `tool/result event ${seq} lacks a result shell`);
+      for (const shell of shellBlocks) {
+        expect(typeof shell.callId === "string" && shell.callId !== "", "malformed-projected-event", `tool/result shell at seq ${seq} lacks callId`);
+        expect(shell.blockId === `tool:${shell.callId}:result`, "blockId-root-mismatch", `tool result shell ${String(shell.blockId)} != tool:${shell.callId}:result`);
+        const toolPattern = new RegExp(`^tool:${escapeRegExp(shell.callId)}:result:content:\\d+$`);
+        for (const block of event.blocks) {
+          if (block.kind === "text" || block.kind === "image") {
+            expect(typeof block.blockId === "string" && toolPattern.test(block.blockId), "blockId-root-mismatch", `tool result child ${String(block.blockId)} not rooted under tool:${shell.callId}:result:content:<i>`);
+            expect(block.role === "tool", "type-role-mismatch", `tool result child ${String(block.blockId)} must carry role 'tool'`);
+          }
+        }
+      }
     }
 
     for (const block of event.blocks) {
       expect(typeof block.blockId === "string" && block.blockId !== "", "missing-blockId", `event ${seq} block lacks blockId`);
       expect(BLOCK_KINDS.has(block.kind), "unknown-block-kind", `block ${block.blockId} has unknown kind ${String(block.kind)}`);
+      // Canonical content children carry an explicit contentIndex validated
+      // against the :content:<i> suffix (ordering never reparses opaque ids).
+      const contentMatch = /:content:(\d+)$/.exec(block.blockId);
+      if (contentMatch) {
+        expect(
+          Number.isInteger(block.contentIndex) && block.contentIndex === Number(contentMatch[1]),
+          "content-index-mismatch",
+          `block ${block.blockId} contentIndex must equal its :content: suffix (${contentMatch[1]})`,
+        );
+      }
       validateBlockShape(block, seq);
       if (!REPEATABLE_KINDS.has(block.kind) && seenBlockIds.has(block.blockId)) {
         expect(false, "duplicate-blockId", `duplicate blockId ${block.blockId}`);

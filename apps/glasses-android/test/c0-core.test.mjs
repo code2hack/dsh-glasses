@@ -40,7 +40,7 @@ assert.equal(core.insertClipboard('one', 0, '   ').changed, false);
   core.applyConversationEvent(conversation, {
     seq: 1,
     type: 'user/message',
-    blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', role: 'user', text: 'hello' }],
+    blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'hello' }],
   });
   core.applyConversationEvent(conversation, {
     seq: 2,
@@ -71,7 +71,7 @@ assert.equal(core.insertClipboard('one', 0, '   ').changed, false);
     type: 'assistant/message',
     turn: 1,
     step: 1,
-    blocks: [{ blockId: 'message:a-a1:content:0', kind: 'text', role: 'assistant', text: 'partial replaced' }],
+    blocks: [{ blockId: 'message:a-a1:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'partial replaced' }],
   });
   const after = JSON.parse(JSON.stringify(core.conversationItems(conversation)));
   assert.deepEqual(after, [
@@ -82,11 +82,11 @@ assert.equal(core.insertClipboard('one', 0, '   ').changed, false);
 
 // ---- canonical snapshot replay: identical ordered stable block identities ----
 const canonicalHistory = [
-  { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-u9:content:0', kind: 'text', role: 'user', text: 'again' }] },
+  { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-u9:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'again' }] },
   { seq: 2, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } }] },
   { seq: 3, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: 'never-final' } }] },
   { seq: 4, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'block-end', index: 0, text: 'never-final' } }] },
-  { seq: 5, type: 'assistant/message', turn: 2, step: 1, blocks: [{ blockId: 'message:a-a9:content:0', kind: 'text', role: 'assistant', text: 'final answer' }] },
+  { seq: 5, type: 'assistant/message', turn: 2, step: 1, blocks: [{ blockId: 'message:a-a9:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'final answer' }] },
 ];
 
 function replayItems(history) {
@@ -114,9 +114,9 @@ assert.equal(assistantBlocks[0].partial, false);
     seq: 30,
     type: 'user/message',
     blocks: [
-      { blockId: 'message:u-mix:content:0', kind: 'text', role: 'user', text: 'see' },
-      { blockId: 'message:u-mix:content:1', kind: 'image', role: 'user', attachmentId: 'att-x', mediaType: 'image/png', width: 40, height: 30 },
-      { blockId: 'message:u-mix:content:2', kind: 'text', role: 'user', text: 'this' },
+      { blockId: 'message:u-mix:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'see' },
+      { blockId: 'message:u-mix:content:1', kind: 'image', contentIndex: 1, role: 'user', attachmentId: 'att-x', mediaType: 'image/png', width: 40, height: 30 },
+      { blockId: 'message:u-mix:content:2', kind: 'text', contentIndex: 2, role: 'user', text: 'this' },
     ],
   });
   const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
@@ -160,7 +160,7 @@ assert.equal(assistantBlocks[0].partial, false);
   core.applyConversationEvent(s, {
     seq: 42,
     type: 'user/message',
-    blocks: [{ blockId: 'message:u-s42:content:0', kind: 'text', role: 'user', text: 'annealed' }],
+    blocks: [{ blockId: 'message:u-s42:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'annealed' }],
   });
   const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
   assert.equal(items.length, 1);
@@ -172,12 +172,12 @@ assert.equal(assistantBlocks[0].partial, false);
 // ---- chunk stream resolves to exactly one final assistant block ----
 {
   const stream = [
-    { seq: 10, type: 'user/message', blocks: [{ blockId: 'message:u-u9:content:0', kind: 'text', role: 'user', text: 'chunk stream' }] },
+    { seq: 10, type: 'user/message', blocks: [{ blockId: 'message:u-u9:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'chunk stream' }] },
     { seq: 11, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } }] },
     { seq: 12, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } }] },
     { seq: 13, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'text-delta', index: 1, text: 'tial' } }] },
     { seq: 14, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'block-end', index: 0, text: 'partial' } }] },
-    { seq: 20, type: 'assistant/message', turn: 2, step: 1, blocks: [{ blockId: 'message:a-a9:content:0', kind: 'text', role: 'assistant', text: 'final answer' }] },
+    { seq: 20, type: 'assistant/message', turn: 2, step: 1, blocks: [{ blockId: 'message:a-a9:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'final answer' }] },
   ];
   const s = core.createConversationState();
   for (const evt of stream) core.applyConversationEvent(s, evt);

@@ -54,7 +54,7 @@ assert.deepEqual(user.blocks.map(id), [
   "message:u-user-1:content:1",
   "message:u-user-1:content:2",
 ]);
-assert.deepEqual(user.blocks[0], { blockId: "message:u-user-1:content:0", kind: "text", role: "user", text: "hello" });
+assert.deepEqual(user.blocks[0], { blockId: "message:u-user-1:content:0", kind: "text", role: "user", text: "hello", contentIndex: 0 });
 // Image block carries ONLY the safe opaque attachment identity — never a
 // filesystem path, bearer URL, or base64 dump.
 assert.deepEqual(user.blocks[1], {
@@ -65,8 +65,9 @@ assert.deepEqual(user.blocks[1], {
   mediaType: "image/png",
   width: 40,
   height: 30,
+  contentIndex: 1,
 });
-assert.deepEqual(user.blocks[2], { blockId: "message:u-user-1:content:2", kind: "text", role: "user", text: " world" });
+assert.deepEqual(user.blocks[2], { blockId: "message:u-user-1:content:2", kind: "text", role: "user", text: " world", contentIndex: 2 });
 // No raw DSH/internals leaked onto the canonical event.
 assert.deepEqual(Object.keys(user).sort(), ["blocks", "seq", "type"]);
 assert.ok(!("message" in user) && !("data" in user) && !("chunk" in user) && !("usage" in user));
@@ -127,7 +128,7 @@ assert.equal(assistant.type, "assistant/message");
 assert.equal(assistant.turn, 1);
 assert.equal(assistant.step, 1);
 assert.deepEqual(assistant.blocks, [
-  { blockId: "message:a-assistant-1:content:0", kind: "text", role: "assistant", text: "TB0 assistant passed" },
+  { blockId: "message:a-assistant-1:content:0", kind: "text", role: "assistant", text: "TB0 assistant passed", contentIndex: 0 },
 ]);
 assert.ok(!("usage" in assistant) && !("message" in assistant), "raw usage/message payloads must not leak");
 
@@ -160,6 +161,8 @@ assert.deepEqual(call, {
   blocks: [{ blockId: "tool:call-9:call", kind: "tool/call", callId: "call-9", name: "dsh-tool-fs.read", arguments: '{"path":"a.txt"}' }],
 });
 
+// A tool result projects a status/result SHELL plus deterministic nested
+// content children (rc.2 ToolResultBlock.content may carry text AND image).
 const result = projectEvent({
   seq: 31,
   type: "tool/result",
@@ -177,10 +180,42 @@ const result = projectEvent({
 assert.deepEqual(result, {
   seq: 31,
   type: "tool/result",
-  blocks: [{ blockId: "tool:call-9:result", kind: "tool/result", callId: "call-9", text: "ok: 42", error: false }],
+  blocks: [
+    { blockId: "tool:call-9:result", kind: "tool/result", callId: "call-9", error: false },
+    { blockId: "tool:call-9:result:content:0", kind: "text", role: "tool", text: "ok: 42", contentIndex: 0 },
+  ],
 });
 
-// A failed tool result projects the error flag (tool error projection).
+// Nested tool-result content preserves text/image ORDER with stable child
+// identities, and images carry only the durable opaque attachment ref + safe
+// metadata (never bytes/path/URL) — AC2 no-silent-image-drop + no-leak rule.
+const resultMixed = projectEvent({
+  seq: 33,
+  type: "tool/result",
+  data: {
+    turn: 1,
+    step: 1,
+    message: {
+      id: "tr-3",
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "call-9", isError: false, content: [
+        { type: "text", text: "saw " },
+        { type: "image", attachment: { attachmentId: "att-tool-2a", mediaType: "image/jpeg", width: 80, height: 60, bytes: 987 } },
+        { type: "text", text: "matches" },
+      ] }],
+      source: { kind: "tool", callId: "call-9" },
+    },
+  },
+});
+assert.deepEqual(resultMixed.blocks, [
+  { blockId: "tool:call-9:result", kind: "tool/result", callId: "call-9", error: false },
+  { blockId: "tool:call-9:result:content:0", kind: "text", role: "tool", text: "saw ", contentIndex: 0 },
+  { blockId: "tool:call-9:result:content:1", kind: "image", role: "tool", attachmentId: "att-tool-2a", mediaType: "image/jpeg", width: 80, height: 60, contentIndex: 1 },
+  { blockId: "tool:call-9:result:content:2", kind: "text", role: "tool", text: "matches", contentIndex: 2 },
+]);
+
+// A failed tool result projects the error flag on the shell (tool error
+// projection); the nested visible text still derives a stable content child.
 const failedResult = projectEvent({
   seq: 32,
   type: "tool/result",
@@ -197,7 +232,8 @@ const failedResult = projectEvent({
   },
 });
 assert.deepEqual(failedResult.blocks, [
-  { blockId: "tool:call-9:result", kind: "tool/result", callId: "call-9", text: "boom", error: true },
+  { blockId: "tool:call-9:result", kind: "tool/result", callId: "call-9", error: true },
+  { blockId: "tool:call-9:result:content:0", kind: "text", role: "tool", text: "boom", contentIndex: 0 },
 ]);
 
 // ---- (5) turn start/end status + error projection --------------------------
@@ -255,8 +291,49 @@ const todo = projectEvent({ seq: 61, type: "todo/write", data: { todos: [{ id: "
 assert.deepEqual(todo, { seq: 61, type: "todo/write", blocks: [] });
 const endSeed = projectEvent({ seq: 62, type: "session/end-seed", data: {} });
 assert.deepEqual(endSeed, { seq: 62, type: "session/end-seed", blocks: [] });
-const unknown = projectEvent({ seq: 63, type: "something/future", data: { whatever: 1 } });
-assert.deepEqual(unknown, { seq: 63, type: "something/future", blocks: [] });
+
+// Empty-content user/assistant messages are VALID non-renderable events: a
+// max-token cutoff assistant message hosts usage/provenance only and must not
+// inject a content-less turn. blocks: [] — the durable seq still advances.
+const emptyAssistant = projectEvent({
+  seq: 65,
+  type: "assistant/message",
+  data: { turn: 4, step: 0, message: { id: "empty-a", role: "assistant", content: [], source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 9, outputTokens: 0 } },
+});
+assert.deepEqual(emptyAssistant, { seq: 65, type: "assistant/message", turn: 4, step: 0, blocks: [] });
+const emptyUser = projectEvent({
+  seq: 66,
+  type: "user/message",
+  data: { id: "empty-u", role: "user", content: [], source: { kind: "user" } },
+});
+assert.deepEqual(emptyUser, { seq: 66, type: "user/message", blocks: [] });
+
+// A truly UNRECOGNIZED type skips safely when the rc.2 envelope marks it
+// ignorable:true.
+const unknownIgnorable = projectEvent({ seq: 63, type: "something/future", ignorable: true, data: { whatever: 1 } });
+assert.deepEqual(unknownIgnorable, { seq: 63, type: "something/future", blocks: [] });
+
+// An unrecognized NON-SURFACE record (no SurfaceOp, no ignorable marker) is a
+// DSH meta record that cannot change the visible conversation. Observed rc.2
+// reality: DSH persists permission/preset, sandbox/mode, approval/policy in
+// the same seq-space log WITHOUT an ignorable marker; rejecting them would
+// break every real session. They are skipped with blocks: [] (watermark
+// advances, nothing renders).
+for (const metaType of ["permission/preset", "sandbox/mode", "approval/policy", "some/future-meta"]) {
+  const projected = projectEvent({ seq: 70, type: metaType, data: { whatever: 1 } });
+  assert.deepEqual(projected, { seq: 70, type: metaType, blocks: [] }, `non-surface unknown ${metaType} must skip`);
+}
+
+// An unrecognized event that CARRIES a SurfaceOp is a FUTURE surface rewrite
+// of user-visible content whose shape we cannot render -> FAIL CLOSED (AC5):
+// the projection throws so writes are disabled and the caller takes its
+// complete-resynchronization path instead of silently gutting a session that
+// changed visible-transcript semantics.
+assert.throws(
+  () => projectEvent({ seq: 64, type: "something/future-surface", surfaceOp: "append", data: { whatever: 1 } }),
+  (e) => e instanceof ProjectionValidationError && e.code === "unsupported-required-event",
+  "unknown surface-eligible event must reject, never silently skip",
+);
 
 // ---- (8) replay is deterministic: identical ordered stable block IDs -------
 const rawPage = [
@@ -277,22 +354,48 @@ assert.deepEqual(
   "replay must reproduce identical ordered block identities",
 );
 
-// ---- (9) surfaceOp is normalized away: append vs replace project identically
-// The canon FORM must not depend on position ranges; both forms collapse to the
-// same stable child identities.
+// ---- (9) surfaceOp semantics: append derives transcript blocks; replace does NOT
+// An append-origin surface event is the human transcript's durable source
+// material and renders. A positional REPLACEMENT copy (model-surface rewrite,
+// e.g. compaction) shadows a range the user already read: it stays in durable
+// seq space with blocks: [] so it never renders as another ordinary transcript
+// message (rc.2 isAppendSurfaceEvent / isReplacementSurfaceEvent oracle).
 const appended = projectEvent({
   seq: 70,
   type: "assistant/message",
-  surfaceOp: { op: "append", start: 3, end: 3 },
+  surfaceOp: "append",
   data: { turn: 3, step: 0, message: { id: "m70", role: "assistant", content: [{ type: "text", text: "z" }], source: { kind: "model", provider: "p", model: "m" } } },
 });
+assert.deepEqual(appended.blocks.map(id), ["message:a-m70:content:0"]);
+assert.equal(appended.blocks[0].text, "z");
+
 const replaced = projectEvent({
   seq: 70,
   type: "assistant/message",
   surfaceOp: { op: "replace", start: 0, end: 4 },
-  data: { turn: 3, step: 0, message: { id: "m70", role: "assistant", content: [{ type: "text", text: "z" }], source: { kind: "model", provider: "p", model: "m" } } },
+  data: { turn: 3, step: 0, message: { id: "m70", role: "assistant", content: [{ type: "text", text: "compaction summary" }], source: { kind: "model", provider: "p", model: "m" } } },
 });
-assert.deepEqual(appended.blocks, replaced.blocks, "surfaceOp must not leak into projection blocks");
+assert.deepEqual(replaced, { seq: 70, type: "assistant/message", blocks: [] },
+  "replacement surface copies stay model-only: seq advances, no transcript block");
+
+// Same for a replaced user message and a replaced tool result (the whole
+// surface-eligible vocabulary).
+assert.deepEqual(projectEvent({ seq: 71, type: "user/message", surfaceOp: { op: "replace", start: 0, end: 4 }, data: { id: "u70", role: "user", content: [{ type: "text", text: "x" }], source: { kind: "user" } } }),
+  { seq: 71, type: "user/message", blocks: [] });
+assert.deepEqual(projectEvent({ seq: 72, type: "tool/result", surfaceOp: { op: "replace", start: 0, end: 4 }, data: { turn: 3, step: 0, message: { id: "tr70", role: "tool", content: [{ type: "tool-result", toolCallId: "c70", isError: false, content: [{ type: "text", text: "y" }] }], source: { kind: "tool", callId: "c70" } } } }),
+  { seq: 72, type: "tool/result", blocks: [] });
+
+// A replace-folded canonical event is a VALID non-renderable page entry: the
+// wire law accepts blocks: [] for user/assistant messages, so the snapshot can
+// still adopt it and keep watermarks monotonic.
+assert.equal(
+  validateCanonicalProjectionPage([
+    { seq: 70, type: "assistant/message", blocks: [] },
+    { seq: 71, type: "user/message", blocks: [] },
+  ]),
+  true,
+  "replacement-folded message events (blocks: []) are valid non-renderable page entries",
+);
 
 // ---- (10) deterministic seq-fallback identity (no durable id) --------------
 const fallbackUser = projectEvent({ seq: 99, type: "user/message", data: { role: "user", content: [{ type: "text", text: "x" }], source: { kind: "user" } } });
@@ -339,9 +442,9 @@ assert.equal(
 
 // (c) Sequence validation still rejects globally: duplicate, backwards, negative.
 for (const [name, bad] of [
-  ["duplicate-seq", [{ seq: 3, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 3, type: "user/message", blocks: [{ blockId: "message:u-b:content:0", kind: "text", role: "user", text: "y" }] }]],
-  ["backwards-seq", [{ seq: 3, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-b:content:0", kind: "text", role: "user", text: "y" }] }]],
-  ["negative-seq", [{ seq: -1, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x" }] }]],
+  ["duplicate-seq", [{ seq: 3, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x", contentIndex: 0 }] }, { seq: 3, type: "user/message", blocks: [{ blockId: "message:u-b:content:0", kind: "text", role: "user", text: "y", contentIndex: 0 }] }]],
+  ["backwards-seq", [{ seq: 3, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x", contentIndex: 0 }] }, { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-b:content:0", kind: "text", role: "user", text: "y", contentIndex: 0 }] }]],
+  ["negative-seq", [{ seq: -1, type: "user/message", blocks: [{ blockId: "message:u-a:content:0", kind: "text", role: "user", text: "x", contentIndex: 0 }] }]],
 ]) {
   assert.throws(() => validateCanonicalProjectionPage(bad), (e) => e instanceof ProjectionValidationError && (e.code === "non-monotonic-seq" || e.code === "malformed-seq"), name);
 }
@@ -378,13 +481,15 @@ assert.throws(
   (e) => e instanceof ProjectionValidationError && e.code === "chunk-no-block",
 );
 
-// (f) A message event that lost its content children is malformed.
-assert.throws(
-  () =>
-    validateCanonicalProjectionPage([
-      { seq: 1, type: "user/message", blocks: [] },
-    ]),
-  (e) => e instanceof ProjectionValidationError && e.code === "message-no-blocks",
+// (f) An empty-content message event is VALID — NOT malformed. It renders
+// nothing, the durable seq advances, and the page law accepts it.
+assert.equal(
+  validateCanonicalProjectionPage([
+    { seq: 65, type: "assistant/message", turn: 4, step: 0, blocks: [] },
+    { seq: 66, type: "user/message", blocks: [] },
+  ]),
+  true,
+  "empty-content message events are valid non-renderable page entries",
 );
 
 // (g) A wrongly-rooted message child blockId is rejected.
@@ -403,6 +508,83 @@ assert.throws(
       { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "banana", text: "x" }] },
     ]),
   (e) => e instanceof ProjectionValidationError && e.code === "unknown-block-kind",
+);
+
+// ---- (i) contentIndex law: explicit canonical index, validated against the
+// :content:<i> suffix — ordering NEVER reparses the opaque message id.
+// Missing contentIndex on a content child is rejected.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "x" }] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "content-index-mismatch",
+);
+// A contentIndex that disagrees with the blockId suffix is rejected.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:1", kind: "text", role: "user", text: "x", contentIndex: 0 }] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "content-index-mismatch",
+);
+// A tool-result content child with a mismatched contentIndex is rejected too.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "tool/result", blocks: [
+        { blockId: "tool:c1:result", kind: "tool/result", callId: "c1", error: false },
+        { blockId: "tool:c1:result:content:0", kind: "text", role: "tool", text: "x", contentIndex: 5 },
+      ] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "content-index-mismatch",
+);
+
+// ---- (j) tool/result page law: a result SHELL is required and children must
+// be rooted under it with role 'tool' (fail closed).
+// Missing shell -> tool-result-shell-mismatch.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "tool/result", blocks: [
+        { blockId: "tool:c1:result:content:0", kind: "text", role: "tool", text: "x", contentIndex: 0 },
+      ] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "tool-result-shell-mismatch",
+);
+// Child not rooted under its shell -> blockId-root-mismatch.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "tool/result", blocks: [
+        { blockId: "tool:c1:result", kind: "tool/result", callId: "c1", error: false },
+        { blockId: "tool:other:result:content:0", kind: "text", role: "tool", text: "x", contentIndex: 0 },
+      ] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "blockId-root-mismatch",
+);
+// Child with the wrong role -> type-role-mismatch.
+assert.throws(
+  () =>
+    validateCanonicalProjectionPage([
+      { seq: 1, type: "tool/result", blocks: [
+        { blockId: "tool:c1:result", kind: "tool/result", callId: "c1", error: false },
+        { blockId: "tool:c1:result:content:0", kind: "text", role: "assistant", text: "x", contentIndex: 0 },
+      ] },
+    ]),
+  (e) => e instanceof ProjectionValidationError && e.code === "type-role-mismatch",
+);
+// A valid nested tool-result page (shell + children) is ACCEPTED.
+assert.equal(
+  validateCanonicalProjectionPage([
+    { seq: 1, type: "tool/result", blocks: [
+      { blockId: "tool:c1:result", kind: "tool/result", callId: "c1", error: false },
+      { blockId: "tool:c1:result:content:0", kind: "text", role: "tool", text: "ok", contentIndex: 0 },
+      { blockId: "tool:c1:result:content:1", kind: "image", role: "tool", attachmentId: "att-9", mediaType: "image/png", width: 10, height: 10, contentIndex: 1 },
+    ] },
+  ]),
+  true,
+  "valid nested tool-result pages are accepted",
 );
 
 console.log("projection.test.mjs: PASS");

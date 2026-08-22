@@ -86,11 +86,16 @@
   // Canonical reducer over blocks[] projection events.
   // -------------------------------------------------------------------------
 
-  // Content-index order for message content children is encoded in the stable
-  // blockId suffix (message:<role>:<id>:content:<i>). Recover it for
-  // deterministic intra-event ordering.
-  function contentOrder(blockId) {
-    const m = /^message:(u|a)-[^:]+:content:(\d+)$/.exec(text(blockId));
+  // Content ordering for canonical children comes from the EXPLICIT canonical
+  // `contentIndex` field that the page law validates against the :content:<i>
+  // suffix — never by reparsing the opaque durable message id. Non-content
+  // blocks (no contentIndex, no :content: suffix) order at 0; the key
+  // localeCompare tiebreak keeps the total order deterministic.
+  function contentOrder(block) {
+    if (block && Number.isInteger(block.contentIndex) && block.contentIndex >= 0) {
+      return block.contentIndex;
+    }
+    const m = /:content:(\d+)$/.exec(text(block && block.blockId));
     return m ? Number(m[2]) : 0;
   }
 
@@ -99,8 +104,69 @@
     const turn = event.turn;
     const step = event.step;
     if (Number.isInteger(turn) && Number.isInteger(step)) {
-      state.partials.delete('partial:' + turn + ':' + step);
+      return state.partials.delete('partial:' + turn + ':' + step);
     }
+    return false;
+  }
+
+  // FOLD nested rc.2 ToolResultBlock content into its status/result SHELL at
+  // the WIRE level. The projection law already validated the shell + stable
+  // children; here the children are folded deterministically (contentIndex
+  // order) into a SINGLE bounded conversation item so a tool result renders
+  // once and never duplicates the same visible content as stray articles.
+  function foldToolResult(state, event, seq, blocks) {
+    let shell = null;
+    for (const block of blocks) {
+      if (block && block.kind === 'tool/result') { shell = block; break; }
+    }
+    if (!shell || typeof shell.blockId !== 'string' || !shell.blockId) return null;
+    const key = shell.blockId;
+    const entry = {
+      key,
+      blockId: key,
+      kind: 'tool/result',
+      callId: text(shell.callId),
+      error: shell.error === true,
+      seq,
+      order: 0,
+      partial: false,
+    };
+    const children = blocks.filter((b) => b && (b.kind === 'text' || b.kind === 'image') && b.role === 'tool');
+    if (children.length) {
+      const ordered = children.slice().sort((a, b) => contentOrder(a) - contentOrder(b));
+      const texts = [];
+      const images = [];
+      for (const child of ordered) {
+        if (child.kind === 'text') {
+          const childText = text(child.text);
+          if (childText) texts.push(childText);
+        } else {
+          images.push({
+            attachmentId: text(child.attachmentId),
+            mediaType: text(child.mediaType),
+            width: Number.isInteger(child.width) ? child.width : null,
+            height: Number.isInteger(child.height) ? child.height : null,
+          });
+        }
+      }
+      const joined = texts.join('');
+      if (joined) entry.text = joined;
+      if (images.length) entry.images = images;
+    } else if (typeof shell.text === 'string' && shell.text) {
+      // Legacy/shell-only projection form: the result text rides the shell.
+      entry.text = shell.text;
+    }
+    if (state.blocks.has(key)) {
+      // Same-stable-block update: refresh payload, keep the first-seq anchor.
+      const existing = state.blocks.get(key);
+      for (const k of Object.keys(entry)) {
+        if (k === 'key' || k === 'blockId' || k === 'kind' || k === 'seq' || k === 'order' || k === 'partial') continue;
+        existing[k] = entry[k];
+      }
+    } else {
+      state.blocks.set(key, entry);
+    }
+    return true;
   }
 
   function applyConversationEvent(state, event) {
@@ -108,10 +174,19 @@
     const seq = finiteNumber(event.seq, -1);
     if (seq < 0) return false;
     const blocks = Array.isArray(event.blocks) ? event.blocks : [];
-    if (!blocks.length) return false;
 
-    if (event.type === 'assistant/message') {
-      finalizeTurnStep(state, event);
+    const finalizing = event.type === 'assistant/message';
+    if (finalizing) {
+      const removed = finalizeTurnStep(state, event);
+      if (!blocks.length) return removed;
+    } else if (!blocks.length) {
+      return false;
+    }
+
+    if (event.type === 'tool/result') {
+      const folded = foldToolResult(state, event, seq, blocks);
+      if (folded !== null) return folded;
+      // shell-less tool/result: fall through to the generic law-checked loop.
     }
 
     let changed = false;
@@ -130,7 +205,7 @@
           role: text(block.role),
           text: text(block.text),
           seq,
-          order: contentOrder(blockId),
+          order: contentOrder(block),
           partial: false,
         });
         changed = true;
@@ -145,7 +220,7 @@
           width: Number.isInteger(block.width) ? block.width : null,
           height: Number.isInteger(block.height) ? block.height : null,
           seq,
-          order: contentOrder(blockId),
+          order: contentOrder(block),
           partial: false,
         });
         changed = true;
@@ -193,7 +268,7 @@
           }
           changed = true;
         } else {
-          const entry = { key: blockId, blockId, kind, seq, order: contentOrder(blockId), partial: false };
+          const entry = { key: blockId, blockId, kind, seq, order: contentOrder(block), partial: false };
           for (const key of Object.keys(block)) {
             if (key === 'blockId' || key === 'kind' || key === 'partial') continue;
             entry[key] = block[key];

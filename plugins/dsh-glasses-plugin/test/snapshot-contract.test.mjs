@@ -21,10 +21,10 @@ function canonicalSnapshot(over = {}) {
     projected: {
       asOfSeq: 4,
       events: [
-        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "hello" }] },
+        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "hello" }] },
         { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }] },
         { seq: 3, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } }] },
-        { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", role: "assistant", text: "final" }] },
+        { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", contentIndex: 0, role: "assistant", text: "final" }] },
       ],
     },
     agentState: "idle",
@@ -78,7 +78,7 @@ const record = (name, verdict, detail) => {
         attachmentGeneration: 1,
         asOfSeq: 2,
         events: [
-          { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-s1:content:0", kind: "text", role: "user", text: "x" }] },
+          { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-s1:content:0", kind: "text", contentIndex: 0, role: "user", text: "x" }] },
           { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:s2", kind: "partial", turn: null, step: null, chunk: { type: "text-delta", index: 0, text: "p" } }] },
         ],
       },
@@ -166,8 +166,8 @@ const NEGATIVES = [
     s.streamSequence = 2;
     s.attachments[0].history.asOfSeq = 2;
     s.attachments[0].history.events = [
-      { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "a" }] },
-      { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "b" }] },
+      { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "a" }] },
+      { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "b" }] },
     ];
   }, "duplicate-blockId"],
   ["message blockId wrong prefix", (s) => { s.attachments[0].history.events[0].blocks[0].blockId = "message:a-u1:content:0"; }, "blockId-root-mismatch"],

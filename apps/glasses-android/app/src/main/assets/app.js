@@ -729,6 +729,7 @@ function renderBlockItem(item) {
 
 function roleLabel(item, kind) {
   if (kind === 'text' || kind === 'image') {
+    if (item.role === 'tool') return 'tool result';
     return item.role === 'user' ? 'you' : (item.partial ? 'assistant · streaming' : 'assistant');
   }
   if (kind === 'partial') return 'assistant · streaming';
@@ -740,17 +741,27 @@ function roleLabel(item, kind) {
   return kind;
 }
 
+function imageMarker(value) {
+  const dims = Number.isInteger(value && value.width) && Number.isInteger(value && value.height)
+    ? ' ' + String(value.width) + 'x' + String(value.height)
+    : '';
+  return '[image ' + (typeof value === 'object' && typeof value.mediaType === 'string' ? value.mediaType : 'raster') + dims + ']';
+}
+
 function appendBoundedBody(bodyNode, item, kind) {
   const text = (v) => (typeof v === 'string' ? v : '');
   if (kind === 'text' || kind === 'partial') {
     bodyNode.textContent = text(item.text);
   } else if (kind === 'image') {
-    const dims = Number.isInteger(item.width) && Number.isInteger(item.height) ? ` ${item.width}x${item.height}` : '';
-    bodyNode.textContent = '[image ' + (text(item.mediaType) || 'raster') + dims + ']';
+    bodyNode.textContent = imageMarker(item);
   } else if (kind === 'tool/call') {
     bodyNode.textContent = 'call ' + text(item.name) + '(' + (text(item.arguments) || '').slice(0, 60) + ')';
   } else if (kind === 'tool/result') {
-    bodyNode.textContent = (item.error === true ? 'error: ' : '') + text(item.text);
+    const parts = [];
+    if (item.error === true) parts.push('error');
+    if (text(item.text)) parts.push(text(item.text));
+    for (const img of (Array.isArray(item.images) ? item.images : [])) parts.push(imageMarker(img));
+    bodyNode.textContent = parts.join(' ');
   } else if (kind === 'status') {
     bodyNode.textContent = 'turn ' + String(item.turn != null ? item.turn : '?') + ' ' + text(item.state);
   } else if (kind === 'request') {

@@ -34,6 +34,10 @@
     return Object.prototype.hasOwnProperty.call(obj, key);
   }
 
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   // -------------------------------------------------------------------------
   // Frozen wire law (mirror of validateSnapshotWire).
   // Rejects with the SAME codes; malformed/untrusted input can never be
@@ -123,7 +127,10 @@
 
       if (!Array.isArray(ev.blocks)) return fail('malformed-blocks', 'event lacks a blocks array');
       if (ev.type === 'user/message' || ev.type === 'assistant/message') {
-        if (ev.blocks.length === 0) return fail('message-no-blocks', 'message event has no derived blocks');
+        // Empty-content user/assistant messages are VALID non-renderable
+        // events (a max-token cutoff hosts usage only): blocks: [] is accepted
+        // and the durable seq advances. When blocks exist they must obey the
+        // root/role law.
         var msgPrefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
         var wantedRole = ev.type === 'user/message' ? 'user' : 'assistant';
         var contentIndex = /:content:\d+$/;
@@ -145,6 +152,29 @@
           var expected = (Number.isInteger(pblock.turn) && Number.isInteger(pblock.step)) ? 'partial:' + pblock.turn + ':' + pblock.step : 'partial:s' + ev.seq;
           if (pblock.blockId !== expected) return fail('type-blockId-mismatch', 'chunk blockId does not match its turn/step');
         }
+      } else if (ev.type === 'tool/result') {
+        // Nested rc.2 ToolResultBlock content is projected deterministically:
+        // a status/result shell plus tool:<callId>:result:content:<i> children.
+        // The shell is REQUIRED (fail closed); child roots must match it.
+        var shellCount = 0;
+        var shellCallId = '';
+        for (var sj = 0; sj < ev.blocks.length; sj++) {
+          if (ev.blocks[sj] && ev.blocks[sj].kind === 'tool/result') {
+            shellCount += 1;
+            shellCallId = ev.blocks[sj].callId;
+            if (typeof shellCallId !== 'string' || shellCallId === '' ) return fail('malformed-projected-event', 'tool result shell lacks callId');
+            if (ev.blocks[sj].blockId !== 'tool:' + shellCallId + ':result') return fail('blockId-root-mismatch', 'tool result shell blockId mismatch');
+          }
+        }
+        if (shellCount < 1) return fail('tool-result-shell-mismatch', 'tool/result event lacks a result shell');
+        var toolPattern = new RegExp('^tool:' + escapeRegExp(shellCallId) + ':result:content:\\d+$');
+        for (var tj = 0; tj < ev.blocks.length; tj++) {
+          var tblock = ev.blocks[tj];
+          if (tblock && (tblock.kind === 'text' || tblock.kind === 'image')) {
+            if (typeof tblock.blockId !== 'string' || !toolPattern.test(tblock.blockId)) return fail('blockId-root-mismatch', 'tool result child not rooted under its shell');
+            if (tblock.role !== 'tool') return fail('type-role-mismatch', 'tool result child must carry role tool');
+          }
+        }
       }
 
       for (var bi = 0; bi < ev.blocks.length; bi++) {
@@ -152,6 +182,14 @@
         if (!block || typeof block !== 'object') return fail('malformed-block', 'event block must be an object');
         if (typeof block.blockId !== 'string' || block.blockId === '') return fail('missing-blockId', 'event block lacks blockId');
         if (!hasOwn(BLOCK_KINDS, block.kind)) return fail('unknown-block-kind', 'block has unknown kind');
+        // Canonical content children carry an explicit contentIndex validated
+        // against the :content:<i> suffix (ordering never reparses opaque ids).
+        var contentIdxMatch = /:content:(\d+)$/.exec(block.blockId);
+        if (contentIdxMatch) {
+          if (!Number.isInteger(block.contentIndex) || block.contentIndex !== Number(contentIdxMatch[1])) {
+            return fail('content-index-mismatch', 'block contentIndex must equal its :content: suffix');
+          }
+        }
         // Structured per-kind shape law (mirror of the projection law).
         if (block.kind === 'text' && typeof block.text !== 'string') return fail('malformed-projected-event', 'text block lacks text');
         if (block.kind === 'image' && (typeof block.attachmentId !== 'string' || block.attachmentId === '')) return fail('malformed-projected-event', 'image block lacks attachmentId');

@@ -19,10 +19,10 @@ const EPOCH_B = "epoch-2-bbbb";
 
 function canonicalEvents() {
   return [
-    { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "hello" }] },
+    { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "hello" }] },
     { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }] },
     { seq: 3, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } }] },
-    { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", role: "assistant", text: "final" }] },
+    { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", contentIndex: 0, role: "assistant", text: "final" }] },
   ];
 }
 
@@ -105,8 +105,8 @@ rejects(
     projected: {
       asOfSeq: 2,
       events: [
-        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "a" }] },
-        { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "b" }] },
+        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "a" }] },
+        { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "b" }] },
       ],
     },
   },
@@ -142,7 +142,7 @@ rejects({ projected: { asOfSeq: -2, events: [] } }, "malformed-asOfSeq", "asOfSe
 rejects({ attachmentId: "g", serverGeneration: "g" }, "attachmentId-couples-serverGeneration", "attachmentId == serverGeneration must be rejected");
 // Frozen-law block identity / event type codes surface identically from the builder.
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:a-u1:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:a-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "blockId-root-mismatch",
   "wrong message blockId identity rejected like the law",
 );
@@ -152,12 +152,12 @@ rejects(
   "chunk blockId not matching its turn/step rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "assistant", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "assistant", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "type-role-mismatch",
   "user/message wrong role rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "malformed-projected-event",
   "message missing text rejected like the law",
 );
@@ -167,7 +167,7 @@ rejects(
   "chunk missing chunk.type rejected like the law",
 );
 rejects(
-  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
+  { projected: { asOfSeq: 2, events: [{ seq: 1, type: "", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "x" }] }, { seq: 2, type: "step/end", blocks: [] }] } },
   "malformed-type",
   "event missing type rejected like the law",
 );
