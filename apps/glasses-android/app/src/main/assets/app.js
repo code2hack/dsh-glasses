@@ -358,8 +358,9 @@ function fetchSnapshot() {
 
   const snapshot = response.body;
   const expectedSession = configuredSession();
-  const actualSession = snapshot?.attachment
-    ? String(snapshot.attachment.sessionId || '').trim()
+  // M1 schema: the server body is { attachments: [ { sessionId, ... } ] }.
+  const actualSession = snapshot?.attachments?.[0]
+    ? String(snapshot.attachments[0].sessionId || '').trim()
     : '';
   if (!expectedSession || actualSession !== expectedSession) {
     enterSessionMismatch(expectedSession, actualSession, 'bootstrap');
