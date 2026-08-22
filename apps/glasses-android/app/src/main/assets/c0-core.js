@@ -77,6 +77,26 @@
     return String(event.turn ?? '?') + ':' + String(event.step ?? '?');
   }
 
+  // Canonical identity of a partial stream block. The normalized projection
+  // (projection.js) attaches `partial:<turn>:<step>` as blockId; legacy TB0
+  // chunk events without blockId fall back to the turn/step-derived key.
+  function partialIdentity(event) {
+    const blockId = event.blockId;
+    if (typeof blockId === 'string' && blockId) return blockId;
+    return 'partial:' + partialKey(event);
+  }
+
+  // Canonical identity of a finalized message block. Prefer the projection's
+  // stable blockId; otherwise reconstruct the same deterministic identity the
+  // projection would have produced from the durable (or seq) id.
+  function messageIdentity(role, event, seq) {
+    const blockId = event.blockId;
+    if (typeof blockId === 'string' && blockId) return blockId;
+    const prefix = role === 'user' ? 'message:u-' : 'message:a-';
+    const id = text(event.message?.id) || text(event.message?.rpcId) || '';
+    return prefix + (id || ('s' + String(seq)));
+  }
+
   function partialText(partial) {
     return [...partial.blocks.entries()]
       .sort((a, b) => a[0] - b[0])
@@ -90,9 +110,10 @@
     const seq = finiteNumber(event.seq, -1);
 
     if (event.type === 'user/message' && event.message?.role === 'user') {
-      const id = text(event.message.id) || text(event.message.rpcId) || String(seq);
-      state.messages.set('user:' + id, {
-        key: 'user:' + id,
+      const key = messageIdentity('user', event, seq);
+      state.messages.set(key, {
+        key,
+        blockId: key,
         role: 'user',
         text: text(event.message.text),
         seq: seq,
@@ -102,10 +123,10 @@
     }
 
     if (event.type === 'assistant/chunk' && event.chunk && typeof event.chunk.type === 'string') {
-      const key = partialKey(event);
+      const key = partialIdentity(event);
       let partial = state.partials.get(key);
       if (!partial) {
-        partial = { key: 'partial:' + key, role: 'assistant', firstSeq: seq, lastSeq: seq, blocks: new Map() };
+        partial = { key, blockId: key, role: 'assistant', firstSeq: seq, lastSeq: seq, blocks: new Map() };
         state.partials.set(key, partial);
       }
       partial.firstSeq = partial.firstSeq < 0 ? seq : Math.min(partial.firstSeq, seq);
@@ -139,11 +160,20 @@
     }
 
     if (event.type === 'assistant/message' && event.message?.role === 'assistant') {
-      const key = partialKey(event);
-      state.partials.delete(key);
-      const id = text(event.message.id) || key || String(seq);
-      state.messages.set('assistant:' + id, {
-        key: 'assistant:' + id,
+      // Final-message replacement of any earlier partial output for the same
+      // turn/step: a finalized answer must never render as partial AND final.
+      const turn = event.turn;
+      const step = event.step;
+      if (Number.isInteger(turn) && Number.isInteger(step)) {
+        state.partials.delete('partial:' + turn + ':' + step);
+      }
+      if (typeof event.blockId === 'string' && event.blockId) state.partials.delete(event.blockId);
+      state.partials.delete('partial:' + partialKey(event));
+
+      const key = messageIdentity('assistant', event, seq);
+      state.messages.set(key, {
+        key,
+        blockId: key,
         role: 'assistant',
         text: text(event.message.text),
         seq: seq,
@@ -164,6 +194,7 @@
       if (!body) continue;
       items.push({
         key: partial.key,
+        blockId: partial.blockId,
         role: 'assistant',
         text: body,
         seq: partial.firstSeq,
