@@ -298,7 +298,7 @@ export async function startInstance({ homeDir, port, sessionId, token }) {
     if (proc.exitCode !== null) break;
     try {
       const r = await httpReq({ port, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${token}` } });
-      if (r.status === 200 && r.json?.attachment?.sessionId === sessionId) {
+      if (r.status === 200 && r.json?.attachments?.[0]?.sessionId === sessionId) {
         verbose("boot ok on", sessionId, "try", i);
         return { proc, logTail: () => logBuf.join("").slice(-2000) };
       }

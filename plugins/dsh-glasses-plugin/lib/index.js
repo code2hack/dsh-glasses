@@ -1,17 +1,21 @@
-// TB0-H0 read-only runtime proof plugin for dsh-glasses.
+// M1 read-only runtime plugin for dsh-glasses (#27).
 //
-// Loads as an out-of-tree DSH (cordis) plugin on the pinned rc.7 runtime.
-// Exposes the authenticated /glasses/v1/* read projection only:
-//   GET  /glasses/v1/bootstrap         bounded history + status + draft projection
-//   GET  /glasses/v1/stream            live SSE projection (monotonic seq, heartbeat, resume)
-//   POST /glasses/v1/draft/mutations   durable draft writes (monotonic revision)
-//   POST /glasses/v1/actions           Send-only action (operationId + ledger + 0-or-1)
+// Loads as an out-of-tree DSH (cordis) plugin on the pinned rc.2 runtime.
+// Exposes the authenticated /glasses/v1/* namespace:
+//   GET  /glasses/v1/bootstrap         canonical M1 snapshot (single attachment)
+//   GET  /glasses/v1/stream            pre-existing TB0 SSE (legacy, unadvertised)
+//   other /glasses/v1/*                -> 404 fallback (write routes quarantined)
+//
+// M1 intentionally does NOT register /glasses/v1/draft/mutations or
+// /glasses/v1/actions; their TB0 implementations remain in this file,
+// unregistered (AC5: all mutation actions disabled).
 //
 // Session identity comes ONLY from the runtime environment
 // (DSH_GLASSES_TB0_SESSION_ID); never from committed config. The dev bearer
 // credential comes from DSH_GLASSES_TB0_TOKEN.
 //
-// Seams pinned from installed @deepseek-ai/dsh@0.1.0-rc.7 sources:
+// Seams pinned from installed @deepseek-ai/dsh@0.1.1-rc.2 sources and isolated
+// behind the project-owned adapter (SPEC §5):
 //   ctx.webServer      — @deepseek-ai/dsh-host-webserver  (register exact/prefix routes)
 //   ctx.sessionQuery   — @deepseek-ai/dsh-session-query   (readSession -> bounded snapshot)
 //   ctx.sessions       — @deepseek-ai/dsh-session         ('session/event' channel, monotonic seq)
@@ -21,6 +25,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 import { projectEvent } from "./projection.js";
 import { createGlassesDshAdapter } from "./dsh-adapter.js";
+import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from "./snapshot.js";
 
 export const name = "dsh-glasses-plugin";
 
@@ -66,13 +71,21 @@ export async function apply(ctx, config) {
     throw new Error("dsh-glasses-plugin: DSH_GLASSES_TB0_TOKEN is required (dev bearer credential)");
   }
 
+  // Hard M1 bound: an arbitrary configured value can trim the bound smaller
+  // but can never remove it (SPEC §2, plan T27-04).
+  const effBootstrapMaxEvents = Math.max(1, Math.min(bootstrapMaxEvents, M1_BOOTSTRAP_MAX_EVENTS));
+
   const serverGeneration = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  // Fresh opaque connection epoch per authenticated bootstrap (never reused).
+  let connectionEpochCounter = 0;
+  const nextConnectionEpoch = () =>
+    `epoch-${(++connectionEpochCounter).toString(36)}-${randomUUID().slice(0, 8)}`;
   const log = (...args) => console.log("[dsh-glasses-plugin]", ...args);
 
   // SPEC §5 isolation: the M1 read path touches DSH internals only through the
   // project-owned adapter. Construction fails fast if a required read seam is
   // absent (boot-time ABI complement to test/dsh-compat.test.mjs).
-  const adapter = createGlassesDshAdapter(ctx, { maxEvents: bootstrapMaxEvents });
+  const adapter = createGlassesDshAdapter(ctx, { maxEvents: effBootstrapMaxEvents });
 
   const requireAuth = (req) => {
     const h = req.headers.authorization ?? "";
@@ -80,45 +93,22 @@ export async function apply(ctx, config) {
     return !!m && safeEqual(m[1], token);
   };
 
-  const readSnapshot = async () => {
-    // Bounded canonical history + mapped agent state, both adapter-provided.
-    // Malformed/non-monotonic pages throw here and surface as a 500 rather
-    // than being silently normalized.
-    const { asOfSeq, events } = await adapter.readProjectionPage(sessionId);
-    const status = adapter.getAgentState(sessionId);
-    return { events, asOfSeq, status };
-  };
-
   const handleBootstrap = async (req, res) => {
     if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
     try {
-      const { events, asOfSeq, status } = await readSnapshot();
-      // Reconcile unresolved operations (under the session-wide mutex) before
-      // composing authoritative draft/write state.
-      try {
-        await chainSession(() => reconcileUnresolved());
-      } catch (e) {
-        log("bootstrap reconcile failed:", String(e?.message ?? e));
-      }
-      let draftProj = { revision: 0, text: "", locked: false };
-      let writeState = "ready";
-      try {
-        const st = await readState();
-        draftProj = { revision: st.draft.revision, text: st.draft.text, locked: !!st.draft.lockedByOperationId };
-        const unresolved = Object.values(st.operations).some((o) => ["prepared", "dispatching", "unknown"].includes(o.state));
-        writeState = unresolved ? "reconciling" : "ready";
-      } catch {
-        /* storage not yet materialized -> defaults */
-      }
-      return sendJson(res, 200, {
-        ok: true,
-        protocolMajor: PROTOCOL_MAJOR,
+      // Bootstrap path touches ONLY the adapter + the pure snapshot builder.
+      // No draft state, reconciliation, storage, or apiProxy here (M1).
+      const { asOfSeq, events } = await adapter.readProjectionPage(sessionId);
+      const agentState = adapter.getAgentState(sessionId);
+      const snapshot = buildCanonicalSnapshot({
+        sessionId,
+        projected: { asOfSeq, events },
+        agentState,
         serverGeneration,
-        attachment: { attachmentId: `tb0:${sessionId}:${serverGeneration}`, sessionId, status },
-        history: { asOfSeq, events },
-        draft: draftProj,
-        writeState,
+        connectionEpoch: nextConnectionEpoch(),
+        maxEvents: effBootstrapMaxEvents,
       });
+      return sendJson(res, 200, snapshot);
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
     }
@@ -303,7 +293,10 @@ export async function apply(ctx, config) {
   };
 
   // Startup reconcile sweep under the session-wide mutex.
-  chainSession(() => reconcileUnresolved()).catch((e) => log("startup reconcile errors:", String(e?.message ?? e)));
+  // QUARANTINED in M1: write routes are not registered and bootstrap no longer
+  // uses draft state/reconciliation, so this legacy sweep is intentionally NOT
+  // invoked during ordinary M1 startup (the TB0 implementation remains intact).
+  // chainSession(() => reconcileUnresolved()).catch((e) => log(...));
 
   const readBody = async (req) => {
     const chunks = [];
@@ -515,8 +508,10 @@ export async function apply(ctx, config) {
 
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/bootstrap", handler: handleBootstrap }), "glasses.bootstrap");
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/stream", handler: handleStream }), "glasses.stream");
-  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/draft/mutations", handler: handleDraftMutations }), "glasses.draft");
-  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/actions", handler: handleActions }), "glasses.actions");
+  // M1 write quarantine: /glasses/v1/draft/mutations and /glasses/v1/actions
+  // are NOT registered in ordinary M1 startup, so those paths fall through to
+  // the /glasses/v1 prefix handler and return 404. The TB0 implementations
+  // above remain intact and unregistered (AC5: all mutation actions disabled).
   // Prove the namespace prefix registration also works and catches unknown sub-paths.
   ctx.effect(() => ctx.webServer.register({ kind: "prefix", path: "/glasses/v1", handler: handleGlassesRoot }), "glasses.prefix");
 

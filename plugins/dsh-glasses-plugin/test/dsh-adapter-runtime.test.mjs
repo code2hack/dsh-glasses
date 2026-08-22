@@ -98,27 +98,63 @@ try {
     if (nextId < 5) throw new Error(`seeding did not advance seq (got ${nextId})`);
   });
 
-  await scenario("adapter-runtime: authenticated bootstrap serves canonical adapter projection of the real session", async () => {
+  await scenario("adapter-runtime: authenticated bootstrap serves canonical M1 snapshot of the real session", async () => {
     configured = await startInstance({ homeDir: HOME, port: PORT, sessionId: realA, token: TOKEN });
     const r = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
     if (r.status !== 200) throw new Error(`bootstrap ${r.status}: ${r.text}`);
     const body = r.json;
-    if (body.attachment?.sessionId !== realA) throw new Error(`exposed session ${body.attachment?.sessionId} != ${realA}`);
-    const events = body.history?.events;
+    const attachments = body.attachments;
+    if (!Array.isArray(attachments) || attachments.length !== 1) throw new Error(`expected exactly one attachment (got ${JSON.stringify(attachments)})`);
+    if (attachments[0].sessionId !== realA) throw new Error(`attached session ${attachments[0].sessionId} != ${realA}`);
+    if (attachments[0].attachmentId === realA || attachments[0].attachmentId.includes(realA)) throw new Error("attachmentId must be opaque, not encoding sessionId");
+    if (body.connectionEpoch && typeof body.connectionEpoch !== "string" && !body.connectionEpoch) throw new Error("connectionEpoch missing");
+    const events = attachments[0].history?.events;
     if (!Array.isArray(events) || !events.length) throw new Error("no canonical events");
-    // strictly increasing unique seq
+    if (body.streamSequence !== attachments[0].history.asOfSeq) throw new Error("streamSequence must equal history.asOfSeq");
+    // strictly increasing unique seq, within asOfSeq
     let prev = -1;
     for (const ev of events) {
       if (!Number.isInteger(ev.seq) || ev.seq <= prev) throw new Error(`non-monotonic/dup seq ${ev.seq}`);
+      if (ev.seq > attachments[0].history.asOfSeq) throw new Error(`event seq ${ev.seq} > asOfSeq`);
       prev = ev.seq;
     }
-    if (body.history.asOfSeq !== events[events.length - 1].seq) throw new Error("asOfSeq mismatch");
     const texts = events.map((e) => e.message?.text ?? "").join("|");
     if (!texts.includes("M1-SYNTHETIC-USER-A")) throw new Error("synthetic user sentinel missing from real-runtime projection");
     if (!texts.includes("M1-SYNTHETIC-ASSISTANT-A")) throw new Error("synthetic assistant sentinel missing from real-runtime projection");
-    // agent state must be in the SPEC vocabulary (this slice yields unavailable/idle/running)
-    const state = body.attachment?.status;
-    if (!["idle", "running", "unavailable", "waiting-user", "unknown"].includes(state)) throw new Error(`bad agent state ${state}`);
+    // agent projection agrees with attachment; state in SPEC vocabulary
+    const state = attachments[0].state;
+    if (!["idle", "running", "waiting-user", "unavailable", "unknown"].includes(state)) throw new Error(`bad agent state ${state}`);
+    if (attachments[0].agent?.state !== state) throw new Error("agent.state must equal attachment.state");
+    if (attachments[0].agent?.serverGeneration !== body.serverGeneration || attachments[0].history.serverGeneration !== body.serverGeneration) throw new Error("generation agreement broken (serverGeneration)");
+    if (attachments[0].agent?.attachmentGeneration !== attachments[0].attachmentGeneration || attachments[0].history.attachmentGeneration !== attachments[0].attachmentGeneration) throw new Error("generation agreement broken (attachmentGeneration)");
+    // drafts empty + all write capabilities false (AC5)
+    if (!Array.isArray(body.drafts) || body.drafts.length !== 0) throw new Error("drafts must be []");
+    const caps = attachments[0].capabilities || {};
+    for (const key of ["liveUpdates", "draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
+      if (caps[key] !== false) throw new Error(`capability ${key} must be false in M1`);
+    }
+    if (caps.historyRead !== true) throw new Error("historyRead must be true");
+  });
+
+  await scenario("adapter-runtime: fresh connectionEpoch per authenticated bootstrap, stable serverGeneration", async () => {
+    const r1 = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const r2 = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (r1.status !== 200 || r2.status !== 200) throw new Error(`bootstrap status ${r1.status}/${r2.status}`);
+    if (typeof r1.json.connectionEpoch !== "string" || !r1.json.connectionEpoch) throw new Error("connectionEpoch missing");
+    if (r1.json.connectionEpoch === r2.json.connectionEpoch) throw new Error("connectionEpoch must be fresh per bootstrap");
+    if (r1.json.serverGeneration !== r2.json.serverGeneration) throw new Error("serverGeneration must be stable per process");
+  });
+
+  await scenario("adapter-runtime: M1 write routes quarantined (404) and no draft/writeState leak", async () => {
+    const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+    const m = await httpReq({ port: PORT, method: "POST", path: "/glasses/v1/draft/mutations", headers, body: { operationId: "x", expectedRevision: 0, mutation: { kind: "replace", text: "hi" } } });
+    if (m.status !== 404) throw new Error(`draft/mutations not quarantined: ${m.status}`);
+    const a = await httpReq({ port: PORT, method: "POST", path: "/glasses/v1/actions", headers, body: { kind: "send", operationId: "x", draftRevision: 0 } });
+    if (a.status !== 404) throw new Error(`actions not quarantined: ${a.status}`);
+    const u = await httpReq({ port: PORT, path: "/glasses/v1/nonexistent", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (u.status !== 404) throw new Error(`unknown /glasses/v1 path not 404: ${u.status}`);
+    const b = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    if ("draft" in (b.json || {}) || "writeState" in (b.json || {})) throw new Error("TB0 draft/writeState leaked into M1 bootstrap");
   });
 
   await scenario("adapter-runtime: unauthenticated bootstrap is rejected", async () => {
