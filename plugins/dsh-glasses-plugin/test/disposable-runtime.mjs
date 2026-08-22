@@ -68,7 +68,14 @@ export function processStartTicks(pid) {
 // Only these PIDs (with matching start-time identity) may ever be signaled.
 const ownedChildren = new Map();
 export function registerOwnedChild(pid, opts = {}) {
-  const start = Number.isInteger(opts.start) ? opts.start : processStartTicks(pid);
+  const start = opts.start === undefined ? processStartTicks(pid) : opts.start;
+  if (start === null) {
+    // Fail closed: no stable identity -> ownsProcessWithIdentity() below never
+    // signals this PID, so an unrelated reused PID can never be killed. The
+    // leak this may create is a loud diagnostic (test-port-in-use / lingering
+    // child) rather than a silent wrong kill.
+    console.warn(`[disposable-runtime] no /proc start-time identity for pid ${pid}; cleanup will fail closed (never signal)`);
+  }
   ownedChildren.set(pid, { start, port: opts.port ?? null });
 }
 export function isOwnedChild(pid) {
@@ -86,8 +93,8 @@ export function unregisterOwnedChild(pid) {
 export function ownsProcessWithIdentity(pid) {
   const entry = ownedChildren.get(pid);
   if (!entry) return false;
+  if (entry.start === null) return false; // no recorded identity -> fail closed, never signal
   const now = processStartTicks(pid);
-  if (entry.start === null) return now !== null; // could not capture at spawn; require it to still exist
   return now !== null && now === entry.start;
 }
 

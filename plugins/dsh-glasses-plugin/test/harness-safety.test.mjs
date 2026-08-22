@@ -60,6 +60,19 @@ function alive(proc) {
   console.log("[harness-safety] stopOwnedProcess refuses unregistered pid: PASS");
 }
 
+// 3b) Registered child with NO recorded start-time identity -> fail closed:
+//     the fence never signals it (a reused PID would otherwise be killed).
+{
+  const victim = spawnSleeper();
+  registerOwnedChild(victim.pid, { port: 0, start: null }); // explicit no-identity
+  assert.equal(ownsProcessWithIdentity(victim.pid), false, "null identity must fail closed");
+  await stopOwnedProcess(victim.pid, 0); // must NOT signal
+  assert.equal(alive(victim), true, "null-identity child survived (fail closed)");
+  unregisterOwnedChild(victim.pid);
+  victim.kill("SIGKILL");
+  console.log("[harness-safety] null/no-identity registered child fails closed: PASS");
+}
+
 // 4) Stranger PROCESS occupying the port -> assertPortSpawnable fails
 //    test-port-in-use and the stranger survives (the old killPortOwner defect
 //    would have killed it). Note: a same-process socket is legitimately
