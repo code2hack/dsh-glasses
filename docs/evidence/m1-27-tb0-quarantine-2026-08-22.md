@@ -29,6 +29,8 @@ and must yield empty output / rc=0:
 
 ```bash
 BASE=e770e4d39b0df32ce7ee5d8cb7f5c914463fca94
+VERIFIED_CODE_HEAD=e88548b0aa37f9fb3573688267307b13f925a8d5
+
 # The two explicitly protected files:
 git diff --exit-code "$BASE" HEAD -- \
   docs/evidence/tb0-dsh-compat-2026-08-19.md \
@@ -36,10 +38,11 @@ git diff --exit-code "$BASE" HEAD -- \
   dev/d0-host-write-recovery.mjs
 # -> empty / rc=0
 
-# ALL pre-existing docs/evidence records (excluding THIS new M1 record):
-git diff --exit-code "$BASE" HEAD -- \
-  docs/evidence/ \
-  ':(exclude)docs/evidence/m1-27-tb0-quarantine-2026-08-22.md'
+# ALL records that already existed under docs/evidence/ at BASE are unchanged
+# (operates on the base file set, so later M1 evidence additions are ignored
+# by construction — robust at any future final head):
+git ls-tree -r -z --name-only "$BASE" docs/evidence/ \
+  | xargs -0 git diff --exit-code "$BASE" HEAD --
 # -> empty / rc=0
 
 # Historical check BEFORE this evidence record was added:
@@ -48,8 +51,10 @@ git diff --name-only "$BASE" "$VERIFIED_CODE_HEAD" -- docs/evidence/
 ```
 
 In particular:
-- No pre-existing `docs/evidence/*` record changed; this ticket adds **exactly
-  one** new M1 evidence record: `docs/evidence/m1-27-tb0-quarantine-2026-08-22.md`.
+- No record that existed under `docs/evidence/` at BASE was modified. New M1
+  evidence records (this quarantine record and any later M1 acceptance
+  records) are additions only; the base-file-set command above ignores them by
+  construction and remains reproducible at any final head.
 - `docs/evidence/tb0-dsh-compat-2026-08-19.md` — unchanged.
 - `dev/d0-runtime.mjs` — unchanged.
 - `dev/d0-host-write-recovery.mjs` — still committed, unchanged.
