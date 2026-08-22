@@ -67,6 +67,55 @@ const record = (name, verdict, detail) => {
   record("positive: buildCanonicalSnapshot output is wire-valid", res.ok ? "PASS" : "FAIL", res.ok ? null : res.code);
   assert.equal(res.ok, true);
 }
+// Legal seq-based fallback identities (no durable id / no turn-step) validate.
+{
+  const snap = canonicalSnapshot({
+    streamSequence: 2,
+    attachments: [{
+      ...canonicalSnapshot().attachments[0],
+      history: {
+        serverGeneration: "gen-abcdef01",
+        attachmentGeneration: 1,
+        asOfSeq: 2,
+        events: [
+          { seq: 1, type: "user/message", blockId: "message:u-s1", message: { role: "user", id: "", text: "x" } },
+          { seq: 2, type: "assistant/chunk", blockId: "partial:s2", chunk: { type: "text-delta", index: 0, text: "p" } },
+        ],
+      },
+    }],
+  });
+  const res = validateSnapshotWire(snap, { expectedSessionId: SESSION });
+  record("positive: seq-fallback blockIds accepted", res.ok ? "PASS" : "FAIL", res.ok ? null : res.code);
+  assert.equal(res.ok, true);
+}
+// validateSnapshotWire NEVER throws on untrusted input — returns a rejection.
+{
+  const base = canonicalSnapshot();
+  const intactHistory = base.attachments[0].history;
+  let neverThrew = true;
+  let res = null;
+  try {
+    res = validateSnapshotWire({
+      ...base,
+      attachments: [{ ...base.attachments[0], history: { ...intactHistory, events: undefined } }],
+    });
+  } catch { neverThrew = false; }
+  if (!neverThrew || !res || res.ok !== false || res.code !== "history-events-not-array") throw new Error("events=undefined must be a normal rejection (never throw)");
+  let res2 = null;
+  try {
+    res2 = validateSnapshotWire({
+      ...base,
+      attachments: [{ ...base.attachments[0], history: { ...intactHistory, events: null } }],
+    });
+  } catch { throw new Error("events=null must not throw"); }
+  assert.equal(res2.ok, false);
+  for (const [idx, blob] of [undefined, null, 42, "garbage"].entries()) {
+    const out = validateSnapshotWire(blob);
+    assert.notEqual(out.ok, true, `blob${idx} must be rejected`);
+    assert.equal(typeof out.code, "string");
+  }
+  record("negative: validator never throws on missing/null events + garbage input", "PASS", null);
+}
 
 // ---- Negative fixtures (each must be rejected, never repaired) ----
 const NEGATIVES = [
@@ -106,9 +155,13 @@ const NEGATIVES = [
   ["history wrong serverGeneration", (s) => { s.attachments[0].history.serverGeneration = "other-gen"; }, "history-serverGeneration-mismatch"],
   ["history wrong attachmentGeneration", (s) => { s.attachments[0].history.attachmentGeneration = 9; }, "history-attachmentGeneration-mismatch"],
   ["history.events not array", (s) => { s.attachments[0].history.events = {}; }, "history-events-not-array"],
-  ["descending event sequence", (s) => { s.attachments[0].history.events = [{ seq: 4, type: "step/end" }, { seq: 3, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
-  ["duplicate sequence", (s) => { s.attachments[0].history.events = [{ seq: 2, type: "step/end" }, { seq: 2, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
-  ["event seq > asOfSeq", (s) => { s.attachments[0].history.events = [{ seq: 5, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "seq-beyond-asOfSeq"],
+  ["history.events undefined (never throws)", (s) => { s.attachments[0].history.events = undefined; }, "history-events-not-array"],
+  ["history.events null (never throws)", (s) => { s.attachments[0].history.events = null; }, "history-events-not-array"],
+  ["message blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[0].blockId = "message:a-u1"; }, "type-blockId-mismatch"],
+  ["chunk blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[1].blockId = "message:a-1"; }, "type-blockId-mismatch"],
+  ["chunk blockId does not match its turn/step", (s) => { s.attachments[0].history.events[1].blockId = "partial:9:9"; }, "type-blockId-mismatch"],
+  ["assistant message blockId does not match its id", (s) => { s.attachments[0].history.events[3].blockId = "message:a-other"; }, "type-blockId-mismatch"],
+  ["projected event without type", (s) => { s.attachments[0].history.events[0].type = undefined; }, "malformed-projected-event"],
   ["duplicate message blockId", (s) => {
     s.streamSequence = 2;
     s.attachments[0].history.asOfSeq = 2;
@@ -119,8 +172,12 @@ const NEGATIVES = [
   }, "duplicate-blockId"],
   ["message blockId wrong prefix", (s) => { s.attachments[0].history.events[0].blockId = "message:a-u1"; }, "type-blockId-mismatch"],
   ["chunk blockId wrong prefix", (s) => { s.attachments[0].history.events[1].blockId = "message:a-1"; }, "type-blockId-mismatch"],
-  ["malformed projected message (no role)", (s) => { s.attachments[0].history.events[0].message = { text: "x" }; }, "malformed-projected-event"],
+  ["user/message wrong role", (s) => { s.attachments[0].history.events[0].message = { role: "assistant", id: "u1", text: "x" }; }, "type-role-mismatch"],
+  ["message missing text (structural)", (s) => { s.attachments[0].history.events[0].message = { role: "user", id: "u1" }; }, "malformed-projected-event"],
   ["malformed projected chunk (no chunk.type)", (s) => { s.attachments[0].history.events[1].chunk = {}; }, "malformed-projected-event"],
+  ["descending event sequence", (s) => { s.attachments[0].history.events = [{ seq: 4, type: "step/end" }, { seq: 3, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
+  ["duplicate sequence", (s) => { s.attachments[0].history.events = [{ seq: 2, type: "step/end" }, { seq: 2, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
+  ["event seq > asOfSeq", (s) => { s.attachments[0].history.events = [{ seq: 5, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "seq-beyond-asOfSeq"],
   ["streamSequence != history.asOfSeq", (s) => { s.streamSequence = 99; }, "streamSequence-mismatch"],
   ["history beyond configured maximum", (s) => { /* maxEvents passed as option */ }, "history-beyond-max"],
   ["envelope ok field present", (s) => { s.ok = true; }, "envelope-ok-not-allowed"],

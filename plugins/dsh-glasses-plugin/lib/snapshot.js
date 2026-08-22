@@ -61,9 +61,8 @@ function bad(code, message) {
 
 const SNAPSHOT_KEYS = ["protocolMajor", "serverGeneration", "connectionEpoch", "attachmentSetRevision", "streamSequence", "attachments", "drafts"];
 const MUTATION_CAPABILITIES = ["draftMutations", "send", "steer", "interrupt", "resolveRequest"];
-const EVENT_ROLES = new Set(["user", "assistant"]);
 
-export function validateSnapshotWire(snapshot, { expectedSessionId, maxEvents = M1_BOOTSTRAP_MAX_EVENTS } = {}) {
+function validateSnapshotWireInner(snapshot, { expectedSessionId, maxEvents = M1_BOOTSTRAP_MAX_EVENTS } = {}) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return bad("not-snapshot", "snapshot must be an object");
   if (Object.hasOwn(snapshot, "ok")) return bad("envelope-ok-not-allowed", "the canonical snapshot carries no ok field");
   for (const key of SNAPSHOT_KEYS) {
@@ -116,41 +115,63 @@ export function validateSnapshotWire(snapshot, { expectedSessionId, maxEvents = 
   if (history.serverGeneration !== sg) return bad("history-serverGeneration-mismatch", "history.serverGeneration must equal snapshot.serverGeneration");
   if (history.attachmentGeneration !== attachmentGeneration) return bad("history-attachmentGeneration-mismatch", "history.attachmentGeneration must equal attachment.attachmentGeneration");
   if (!Number.isInteger(history.asOfSeq) || history.asOfSeq < -1) return bad("history-malformed-asOfSeq", "history.asOfSeq must be an integer >= -1");
-  if (history.events.length === 0 ? history.asOfSeq !== -1 : history.asOfSeq < 0) return bad("asOfSeq-mismatch", "asOfSeq must be -1 for empty history and >= 0 otherwise");
-  if (snapshot.streamSequence !== history.asOfSeq) return bad("streamSequence-mismatch", "streamSequence must equal history.asOfSeq");
-
+  // Array check BEFORE any .length access: this validator never throws.
   if (!Array.isArray(history.events)) return bad("history-events-not-array", "history.events must be an array");
+  if (snapshot.streamSequence !== history.asOfSeq) return bad("streamSequence-mismatch", "streamSequence must equal history.asOfSeq");
+  if (history.events.length === 0 ? history.asOfSeq !== -1 : history.asOfSeq < 0) return bad("asOfSeq-mismatch", "asOfSeq must be -1 for empty history and >= 0 otherwise");
   if (history.events.length > maxEvents || history.events.length > M1_BOOTSTRAP_MAX_EVENTS) return bad("history-beyond-max", `history length ${history.events.length} exceeds bound`);
-  if (history.events.length === 0 && history.asOfSeq !== -1) return bad("asOfSeq-mismatch", "empty history requires asOfSeq -1");
   if (history.events.length > 0 && history.events[history.events.length - 1]?.seq !== history.asOfSeq) return bad("asOfSeq-mismatch", "last event seq must equal asOfSeq");
 
-  // ---- Per-event untrusted-wire checks (seq, blockId, type correspondence) ----
+  // ---- Per-event untrusted-wire checks ----
+  // blockId must match the EXACT deterministic identity the projection produces
+  // (durable id when present, else seq fallback); a mismatched partial/message
+  // identity would let a leftover partial render alongside a final answer (the
+  // AC4 duplication). Every event must carry a non-empty type.
+  const expectedMessageIdentity = (prefix, ev) => {
+    const id = ev?.message?.id;
+    return typeof id === "string" && id !== "" ? `${prefix}${id}` : `${prefix}s${ev.seq}`;
+  };
   let previous = -1;
   const seenMessageBlockIds = new Set();
   for (const ev of history.events) {
     if (!ev || typeof ev !== "object") return bad("malformed-projected-event", "history event must be an object");
     if (!Number.isInteger(ev.seq) || ev.seq < 0) return bad("malformed-seq", `event seq ${String(ev.seq)} invalid`);
+    if (typeof ev.type !== "string" || ev.type === "") return bad("malformed-projected-event", "history event must carry a non-empty type");
     if (ev.seq <= previous) return bad("non-monotonic-seq", `event seq ${ev.seq} not strictly after ${previous}`);
     if (ev.seq > history.asOfSeq) return bad("seq-beyond-asOfSeq", `event seq ${ev.seq} exceeds asOfSeq ${history.asOfSeq}`);
     previous = ev.seq;
 
     if (ev.type === "user/message" || ev.type === "assistant/message") {
-      const expectedPrefix = ev.type === "user/message" ? "message:u-" : "message:a-";
-      if (typeof ev.blockId !== "string" || !ev.blockId.startsWith(expectedPrefix)) return bad("type-blockId-mismatch", `event ${ev.type} blockId ${String(ev.blockId)} must start with ${expectedPrefix}`);
+      const prefix = ev.type === "user/message" ? "message:u-" : "message:a-";
+      const expected = expectedMessageIdentity(prefix, ev);
+      if (ev.blockId !== expected) return bad("type-blockId-mismatch", `event ${ev.type} blockId ${String(ev.blockId)} != expected ${expected}`);
       if (seenMessageBlockIds.has(ev.blockId)) return bad("duplicate-blockId", `duplicate message blockId ${ev.blockId}`);
       seenMessageBlockIds.add(ev.blockId);
       const msg = ev.message;
-      if (!msg || typeof msg !== "object" || !EVENT_ROLES.has(msg.role)) return bad("malformed-projected-event", `event ${ev.type} lacks a valid message.role`);
-      if ((ev.type === "user/message" ? msg.role !== "user" : msg.role !== "assistant")) return bad("type-role-mismatch", `event ${ev.type} has role ${msg.role}`);
+      if (!msg || typeof msg !== "object") return bad("malformed-projected-event", `event ${ev.type} lacks message`);
+      const wantedRole = prefix === "message:u-" ? "user" : "assistant";
+      if (msg.role !== wantedRole) return bad("type-role-mismatch", `event ${ev.type} has role ${String(msg.role)}`);
       if (typeof msg.text !== "string") return bad("malformed-projected-event", `event ${ev.type} lacks message.text`);
     } else if (ev.type === "assistant/chunk") {
-      if (typeof ev.blockId !== "string" || !ev.blockId.startsWith("partial:")) return bad("type-blockId-mismatch", `chunk blockId ${String(ev.blockId)} must start with partial:`);
+      const expected = Number.isInteger(ev.turn) && Number.isInteger(ev.step) ? `partial:${ev.turn}:${ev.step}` : `partial:s${ev.seq}`;
+      if (ev.blockId !== expected) return bad("type-blockId-mismatch", `chunk blockId ${String(ev.blockId)} != expected ${expected}`);
       if (!ev.chunk || typeof ev.chunk.type !== "string") return bad("malformed-projected-event", "chunk event lacks chunk.type");
     }
-    // Other projected types (step/end, permission/preset) carry no blockId.
+    // Other non-renderable projected types (step/end, permission/preset) carry
+    // no blockId requirement and are permitted.
   }
 
   return { ok: true };
+}
+
+// validateSnapshotWire() is a never-throwing gate over untrusted input. Any
+// unexpected internal fault is converted to a normal {ok:false} rejection.
+export function validateSnapshotWire(snapshot, opts) {
+  try {
+    return validateSnapshotWireInner(snapshot, opts);
+  } catch (e) {
+    return { ok: false, code: "validator-error", message: String(e?.message ?? e) };
+  }
 }
 
 /**
