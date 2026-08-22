@@ -217,6 +217,113 @@ const chatTexts = (rt) =>
   rt.dom.window.close();
 }
 
+// ---- Regression: valid install, then wrong-session snapshot (atomic) -------
+{
+  const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
+  const wrong = validSnapshot({ generation: 'gen-wrong', user: 'other-user', asst: 'other-answer' });
+  wrong.attachments[0].sessionId = 'session-other';
+  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: wrong }] });
+  await rt.settled('wrong-session-initial');
+  const before = JSON.stringify(chatTexts(rt));
+  assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
+
+  rt.w.run(); // bridge serves wrong-session -> stage fence rejects
+  await sleep(120);
+  record('rw: wrong-session keeps previous screen byte-identical', JSON.stringify(chatTexts(rt)) === before, 'changed=' + (JSON.stringify(chatTexts(rt)) !== before));
+  assert.equal(JSON.stringify(chatTexts(rt)), before);
+  record('rw: wrong-session leaves generation unchanged', rt.w.c0DebugState().generation === 'gen-v1', rt.w.c0DebugState().generation);
+  assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
+  record('rw: wrong-session rejection code surface', rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous') && t.includes('wrong-sessionId')), 'trace missing');
+  assert.ok(rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous') && t.includes('wrong-sessionId')));
+  record('rw: no destructive session-mismatch clear (identity-error stays hidden)', rt.$('identity-error').classList.contains('hidden') === true, 'identity-error visible=' + !rt.$('identity-error').classList.contains('hidden'));
+  assert.equal(rt.$('identity-error').classList.contains('hidden'), true);
+  assert.equal(rt.$('session').classList.contains('hidden'), false, 'session must stay visible');
+  rt.dom.window.close();
+}
+
+// ---- Regression: valid install, then incomplete snapshot (no attachments) ---
+{
+  const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
+  const incomplete = validSnapshot({ generation: 'gen-incomplete', user: 'x', asst: 'y' });
+  delete incomplete.attachments; // incomplete (missing attachments) -> missing-attachments
+  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: incomplete }] });
+  await rt.settled('incomplete-initial');
+  const before = JSON.stringify(chatTexts(rt));
+  assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
+
+  rt.w.run();
+  await sleep(120);
+  record('ri: incomplete snapshot keeps previous screen byte-identical', JSON.stringify(chatTexts(rt)) === before, 'changed=' + (JSON.stringify(chatTexts(rt)) !== before));
+  assert.equal(JSON.stringify(chatTexts(rt)), before);
+  assert.equal(rt.w.c0DebugState().generation, 'gen-v1');
+  record('ri: incomplete rejection is non-destructive (missing-attachments keep-previous)', rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous') && t.includes('missing-attachments')), 'trace missing');
+  assert.ok(rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous') && t.includes('missing-attachments')));
+  assert.equal(rt.$('identity-error').classList.contains('hidden'), true, 'no session-mismatch destructive clear');
+  assert.equal(rt.$('session').classList.contains('hidden'), false, 'session must stay visible');
+  rt.dom.window.close();
+}
+
+// ---- Regression: initial bootstrap is wrong-session (never installs) --------
+{
+  const wrong = validSnapshot({ generation: 'gen-wrong', user: 'u', asst: 'a' });
+  wrong.attachments[0].sessionId = 'session-other';
+  const rt = await boot({ responses: [{ status: 200, body: wrong }] });
+  await rt.settled('initial-wrong-session');
+  record('rw0: initial wrong-session stays hidden', rt.$('session').classList.contains('hidden') === true, 'hidden=' + rt.$('session').classList.contains('hidden'));
+  assert.equal(rt.$('session').classList.contains('hidden'), true);
+  record('rw0: initial wrong-session installs no content', rt.$('chat').querySelectorAll('article.message').length === 0, 'articles=' + rt.$('chat').querySelectorAll('article.message').length);
+  assert.equal(rt.$('chat').querySelectorAll('article.message').length, 0);
+  record('rw0: initial wrong-session rejected label', rt.$('conn').textContent === 'snapshot-rejected', rt.$('conn').textContent);
+  assert.equal(rt.$('conn').textContent, 'snapshot-rejected');
+  assert.equal(rt.w.c0DebugState().generation, '');
+  rt.dom.window.close();
+}
+
+// ---- Regression: native SSE callback invocation has zero effect in M1 -------
+{
+  const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
+  const rt = await boot({ responses: [{ status: 200, body: v1 }] });
+  await rt.settled('sse-callback-initial');
+  const before = JSON.stringify(chatTexts(rt));
+  const genBefore = rt.w.c0DebugState().generation;
+  const lastSeqBefore = rt.w.c0DebugState().lastSeq;
+
+  // Native bridge still calls the M1-published bounded no-ops.
+  rt.w.glassesOnLine('hello', JSON.stringify({ sessionId: SESSION, serverGeneration: 'gen-x', seq: 99 }), 'evt-1');
+  rt.w.glassesOnStream('open', null);
+  rt.w.glassesOnStream('error', 'x');
+
+  record('ss: SSE callbacks mutate nothing (no legacy recovery/applySnapshot)', JSON.stringify(chatTexts(rt)) === before && rt.w.c0DebugState().generation === genBefore && rt.w.c0DebugState().lastSeq === lastSeqBefore, 'mutated=' + (JSON.stringify(chatTexts(rt)) !== before || rt.w.c0DebugState().generation !== genBefore));
+  assert.equal(JSON.stringify(chatTexts(rt)), before);
+  assert.equal(rt.w.c0DebugState().generation, genBefore);
+  assert.equal(rt.w.c0DebugState().lastSeq, lastSeqBefore);
+  record('ss: SSE callbacks emit bounded ignore traces', rt.traces().some((t) => t.includes('m1-sse-ignored')), 'trace missing');
+  assert.ok(rt.traces().some((t) => t.includes('m1-sse-ignored')));
+  record('ss: no legacy onSseLine/recoverSnapshot path reached', !rt.traces().some((t) => t.includes('server-gap')) && !rt.requests().includes('OPEN_STREAM'), 'legacy path active');
+  assert.ok(!rt.traces().some((t) => t.includes('server-gap')));
+  rt.dom.window.close();
+}
+
+// ---- Regression: explicit projection clear resets installed-state marker ----
+{
+  const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
+  const rt = await boot({ responses: [{ status: 200, body: v1 }, { status: 200, body: invalidSnapshot() }] });
+  await rt.settled('clear-initial');
+  assert.equal(rt.w.c0DebugState().installed, true, 'installed marker true after install');
+
+  rt.w.clearSessionProjection(); // explicit reconfigure clear
+  record('cl: explicit clear resets installed marker', rt.w.c0DebugState().installed === false, 'installed=' + rt.w.c0DebugState().installed);
+  assert.equal(rt.w.c0DebugState().installed, false);
+  assert.equal(rt.w.c0DebugState().generation, '', 'projection cleared');
+
+  rt.w.run(); // next bootstrap is invalid -> must classify NO-INSTALL (keep-previous only when a previous install exists)
+  await sleep(120);
+  record('cl: post-clear invalid bootstrap classified as no-install', rt.traces().some((t) => t.includes('snapshot-rejected-no-install')) && !rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous')), 'trace missing');
+  assert.ok(rt.traces().some((t) => t.includes('snapshot-rejected-no-install')));
+  assert.ok(!rt.traces().some((t) => t.includes('snapshot-rejected-keep-previous')));
+  rt.dom.window.close();
+}
+
 console.log('=== m1-render SUMMARY ===');
 for (const r of RESULTS) console.log(`${r.verdict} ${r.name}`);
 for (const r of RESULTS) console.log(`RESULT\t${JSON.stringify(r)}`);

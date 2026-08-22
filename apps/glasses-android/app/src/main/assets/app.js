@@ -163,6 +163,9 @@ function setHudVisible(visible) {
 }
 
 function clearSessionProjection() {
+  // Explicit projection clearing also resets the installed-state marker: after
+  // this, any rejected snapshot is a no-install (never classified keep-previous).
+  hasInstalled = false;
   generation = '';
   lastSeq = -1;
   sessionStatus = 'unavailable';
@@ -277,8 +280,21 @@ function init() {
     run();
   });
 
-  window.glassesOnLine = onSseLine;
-  window.glassesOnStream = onStreamState;
+  // M1 is strictly read-only: the legacy SSE recovery path (onSseLine ->
+  // recoverSnapshot -> applySnapshot) and stream state handling must have no
+  // externally reachable effect. Publish bounded no-ops instead of wiring the
+  // TB0 handlers.
+  if (M1_READ_ONLY) {
+    window.glassesOnLine = (eventName, data, id) => {
+      trace('m1-sse-ignored', { event: eventName || null, id: id || null });
+    };
+    window.glassesOnStream = (state, detail) => {
+      trace('m1-sse-ignored-stream', { state: String(state || ''), detail: detail || null });
+    };
+  } else {
+    window.glassesOnLine = onSseLine;
+    window.glassesOnStream = onStreamState;
+  }
   window.glassesOnSemanticControl = handleSemanticControl;
   window.onNativeTrace = (line) => {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 7000);
@@ -299,6 +315,7 @@ function init() {
     ...window.g0DebugState(),
     mode: mode,
     hudVisible: hudVisible,
+    installed: hasInstalled,
     wheel: { open: wheelOpen, selection: wheelSelection },
     sessionStatus: sessionStatus,
     writeState: writeState,
@@ -340,33 +357,28 @@ function run() {
   // M1 strictly read-only: no SSE auto-open, no pending-op resume.
 }
 
-// fetchSnapshot() fetches the raw bootstrap body and applies the identity
-// guard (configured-session vs endpoint-session). It returns the RAW body on
-// success or null (having handled mismatch/failure/reconnect) otherwise.
+// fetchSnapshot() is TRANSPORT-ONLY: it verifies an HTTP-200 object body and
+// returns the RAW body. Every snapshot-data decision (session identity,
+// unsupported major, malformed shape, generation...) belongs to stageSnapshot()
+// so that a rejected snapshot can NEVER destructively clear an installed
+// screen (no enterSessionMismatch/clearSessionProjection before staging).
 function fetchSnapshot() {
   if (identityFailure) return null;
   const response = nativeFetch('/glasses/v1/bootstrap');
   if (response.status !== 200 || !response.body || typeof response.body !== 'object') {
     trace('bootstrap-failed', { status: response.status });
-    if (response.status === 401 || response.status === 403) {
-      showProvision(true);
-      showSession(false);
+    if (!hasInstalled) {
+      if (response.status === 401 || response.status === 403) {
+        showProvision(true);
+        showSession(false);
+      }
+    } else {
+      trace('bootstrap-transport-failed-keep-previous', { status: response.status });
     }
     scheduleReconnect(response.status === 0 ? 'unreachable' : ('HTTP ' + response.status));
     return null;
   }
-
-  const snapshot = response.body;
-  const expectedSession = configuredSession();
-  // M1 schema: the server body is { attachments: [ { sessionId, ... } ] }.
-  const actualSession = snapshot?.attachments?.[0]
-    ? String(snapshot.attachments[0].sessionId || '').trim()
-    : '';
-  if (!expectedSession || actualSession !== expectedSession) {
-    enterSessionMismatch(expectedSession, actualSession, 'bootstrap');
-    return null;
-  }
-  return snapshot;
+  return response.body;
 }
 
 // M1 fetch->stage->install entry. Pure staging is atomic by structure: a
