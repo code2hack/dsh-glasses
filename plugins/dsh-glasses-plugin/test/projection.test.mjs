@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { projectEvent, validateCanonicalProjection, ProjectionValidationError } from "../lib/projection.js";
+import {
+  projectEvent,
+  projectAndValidatePage,
+  validateCanonicalProjectionPage,
+  ProjectionValidationError,
+} from "../lib/projection.js";
 
 // Canonical projection now attaches stable blockId to renderable content.
 const user = projectEvent({
@@ -104,34 +109,67 @@ for (let run = 0; run < 2; run++) {
   assert.equal(projectEvent({ seq: 21, type: "assistant/message", data: { message: { id: "assistant-1" } } }).blockId, "message:a-assistant-1");
 }
 
-// validateCanonicalProjection: accepts a well-formed page.
+// ---- Validation operating on the canonical PROJECTED page (what the snapshot
+// builder receives; raw DSH payloads never leak upward for validation) ----
+
+// (a) A well-formed page is accepted.
 assert.equal(
-  validateCanonicalProjection([
+  projectAndValidatePage([
     { seq: 0, type: "permission/preset" },
     { seq: 1, type: "user/message", data: { id: "u1", role: "user", content: [{ type: "text", text: "hi" }], source: { kind: "user" } } },
     { seq: 2, type: "assistant/message", data: { turn: 0, step: 0, message: { id: "a1", role: "assistant", content: [{ type: "text", text: "yo" }], source: { kind: "model", provider: "p", model: "m" } } } },
-  ]),
-  true,
+  ]).length,
+  3,
 );
 
-// validateCanonicalProjection: rejects duplicate seq, backwards seq, negative seq.
+// (b) A normal chunk stream — repeated partial identity across block-start,
+// text-delta, text-delta, block-end — is VALID, not a duplicate-blockId reject.
+const chunkStream = [
+  { seq: 10, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } } },
+  { seq: 11, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } } },
+  { seq: 12, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 1, text: "tial" } } },
+  { seq: 13, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "block-end", index: 0, text: "partial" } } },
+  { seq: 20, type: "assistant/message", data: { turn: 2, step: 1, message: { id: "a2", role: "assistant", content: [{ type: "text", text: "final" }], source: { kind: "model", provider: "p", model: "m" } } } },
+];
+const chunkProjected = projectAndValidatePage(chunkStream);
+assert.deepEqual(
+  chunkProjected.filter((e) => e.type === "assistant/chunk").map((e) => e.blockId),
+  ["partial:2:1", "partial:2:1", "partial:2:1", "partial:2:1"],
+);
+// All four chunk events share one logical partial identity; the forward
+// validator must not treat that repetition as duplication.
+assert.equal(validateCanonicalProjectionPage(chunkProjected), true);
+
+// (c) Sequence validation still rejects globally: duplicate, backwards, negative.
 for (const [name, bad] of [
   ["duplicate-seq", [{ seq: 3 }, { seq: 3 }]],
   ["backwards-seq", [{ seq: 3 }, { seq: 2 }]],
   ["negative-seq", [{ seq: -1 }]],
 ]) {
-  assert.throws(() => validateCanonicalProjection(bad), (e) => e instanceof ProjectionValidationError && e.code === "non-monotonic-seq" || e.code === "malformed-seq", name);
+  assert.throws(() => validateCanonicalProjectionPage(bad), (e) => e instanceof ProjectionValidationError && (e.code === "non-monotonic-seq" || e.code === "malformed-seq"), name);
 }
-assert.throws(() => validateCanonicalProjection(null), (e) => e instanceof ProjectionValidationError && e.code === "malformed-page");
+assert.throws(() => validateCanonicalProjectionPage(null), (e) => e instanceof ProjectionValidationError && e.code === "malformed-page");
 
-// validateCanonicalProjection: rejects duplicate render blockIds.
+// (d) A repeated MESSAGE identity (two user/message for the same durable id)
+// is still a reject.
+for (const fn of [projectAndValidatePage, (evts) => validateCanonicalProjectionPage(evts.map(projectEvent))]) {
+  assert.throws(
+    () =>
+      fn([
+        { seq: 1, type: "user/message", data: { id: "same", role: "user", content: [{ type: "text", text: "a" }], source: { kind: "user" } } },
+        { seq: 2, type: "user/message", data: { id: "same", role: "user", content: [{ type: "text", text: "b" }], source: { kind: "user" } } },
+      ]),
+    (e) => e instanceof ProjectionValidationError && e.code === "duplicate-blockId",
+  );
+}
+
+// (e) A projected chunk event that lost its partial blockId is malformed.
 assert.throws(
   () =>
-    validateCanonicalProjection([
-      { seq: 1, type: "user/message", data: { id: "same", role: "user", content: [{ type: "text", text: "a" }], source: { kind: "user" } } },
-      { seq: 2, type: "user/message", data: { id: "same", role: "user", content: [{ type: "text", text: "b" }], source: { kind: "user" } } },
+    validateCanonicalProjectionPage([
+      { seq: 10, type: "assistant/chunk", turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: "x" } },
     ]),
-  (e) => e instanceof ProjectionValidationError && e.code === "duplicate-blockId",
+  (e) => e instanceof ProjectionValidationError && e.code === "malformed-blockId",
 );
 
 console.log("projection.test.mjs: PASS");

@@ -87,13 +87,14 @@
   }
 
   // Canonical identity of a finalized message block. Prefer the projection's
-  // stable blockId; otherwise reconstruct the same deterministic identity the
-  // projection would have produced from the durable (or seq) id.
+  // stable blockId; otherwise reconstruct the SAME deterministic identity the
+  // projection would produce: durable message id, else seq-only fallback.
+  // rpcId is deliberately NOT identity (it is operation-transient).
   function messageIdentity(role, event, seq) {
     const blockId = event.blockId;
     if (typeof blockId === 'string' && blockId) return blockId;
     const prefix = role === 'user' ? 'message:u-' : 'message:a-';
-    const id = text(event.message?.id) || text(event.message?.rpcId) || '';
+    const id = text(event.message?.id);
     return prefix + (id || ('s' + String(seq)));
   }
 

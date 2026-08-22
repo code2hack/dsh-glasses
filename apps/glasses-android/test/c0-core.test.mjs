@@ -126,4 +126,44 @@ assert.equal(assistantBlocks.length, 1, 'finalized assistant answer must render 
 assert.equal(assistantBlocks[0].text, 'final answer');
 assert.equal(assistantBlocks[0].partial, false);
 
+// rpcId is NOT identity: a legacy-shaped user event with an empty durable id
+// but a non-empty rpcId must resolve to the projection-identical seq fallback.
+{
+  const s = core.createConversationState();
+  core.applyConversationEvent(s, {
+    seq: 42,
+    type: 'user/message',
+    message: { role: 'user', id: '', text: 'annealed', rpcId: 'operation-transient-123' },
+  });
+  const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
+  assert.equal(items.length, 1);
+  assert.equal(items[0].key, 'message:u-s42');
+  assert.equal(items[0].blockId, 'message:u-s42');
+  assert.equal(items[0].text, 'annealed');
+}
+
+// A normal chunk stream must be accepted and, on final-assistant-message, the
+// reducer contains ONLY the finalized answer (never partial + final).
+{
+  const stream = [
+    { seq: 10, type: 'user/message', blockId: 'message:u-u9', message: { role: 'user', id: 'u9', text: 'chunk stream' } },
+    { seq: 11, type: 'assistant/chunk', blockId: 'partial:2:1', turn: 2, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+    { seq: 12, type: 'assistant/chunk', blockId: 'partial:2:1', turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } },
+    { seq: 13, type: 'assistant/chunk', blockId: 'partial:2:1', turn: 2, step: 1, chunk: { type: 'text-delta', index: 1, text: 'tial' } },
+    { seq: 14, type: 'assistant/chunk', blockId: 'partial:2:1', turn: 2, step: 1, chunk: { type: 'block-end', index: 0, text: 'partial' } },
+    { seq: 20, type: 'assistant/message', blockId: 'message:a-a9', turn: 2, step: 1, message: { role: 'assistant', id: 'a9', text: 'final answer', provider: 'p', model: 'm' } },
+  ];
+  const s = core.createConversationState();
+  for (const evt of stream) core.applyConversationEvent(s, evt);
+  const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
+  assert.deepEqual(
+    items.map((item) => item.blockId),
+    ['message:u-u9', 'message:a-a9'],
+  );
+  const assistantBlocks = items.filter((item) => item.role === 'assistant');
+  assert.equal(assistantBlocks.length, 1, 'chunk stream must resolve to exactly one assistant block');
+  assert.equal(assistantBlocks[0].text, 'final answer');
+  assert.equal(assistantBlocks[0].partial, false);
+}
+
 console.log('c0-core.test.mjs: PASS');

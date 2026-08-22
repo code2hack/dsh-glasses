@@ -133,9 +133,31 @@ export function projectEvent(evt) {
   return projected;
 }
 
-function assertCanonicalEventSeq(rawEvents) {
+const MESSAGE_TYPES = new Set(["user/message", "assistant/message"]);
+const PARTIAL_TYPES = new Set(["assistant/chunk"]);
+
+/**
+ * Reject — never silently sort or de-duplicate — a canonical PROJECTED page
+ * before a snapshot may be created from it. Operates on the already-projected
+ * canonical events (with blockId) that the snapshot builder actually receives,
+ * so raw DSH payloads never leak upward for validation.
+ *
+ * Invariants:
+ *   * events must be an array with globally strictly-increasing, unique seq
+ *   * MESSAGE blockIds (message:u-* / message:a-*) must be unique — each IDs
+ *     exactly one finalized/user message event; a repeated message blockId is a
+ *     reject
+ *   * PARTIAL blockIds (partial:<turn>:<step>) MAY recur across the
+ *     assistant/chunk events of one logical turn/step — that repetition is
+ *     expected (they mutate one rendered partial block), never a reject
+ */
+export function validateCanonicalProjectionPage(projectedEvents) {
+  if (!Array.isArray(projectedEvents)) {
+    throw new ProjectionValidationError("malformed-page", "events must be an array");
+  }
   let previous = -1;
-  for (const event of rawEvents) {
+  const seenMessageBlockIds = new Set();
+  for (const event of projectedEvents) {
     const seq = event?.seq;
     if (!Number.isInteger(seq) || seq < 0) {
       throw new ProjectionValidationError("malformed-seq", `invalid seq ${String(seq)}`);
@@ -144,29 +166,42 @@ function assertCanonicalEventSeq(rawEvents) {
       throw new ProjectionValidationError("non-monotonic-seq", `seq ${seq} not strictly after ${previous}`);
     }
     previous = seq;
+
+    if (MESSAGE_TYPES.has(event?.type)) {
+      const id = event?.blockId;
+      if (typeof id !== "string" || id === "") {
+        throw new ProjectionValidationError("missing-blockId", `message event at seq ${seq} lacks a blockId`);
+      }
+      if (seenMessageBlockIds.has(id)) {
+        throw new ProjectionValidationError("duplicate-blockId", `duplicate message blockId ${id}`);
+      }
+      seenMessageBlockIds.add(id);
+    } else if (PARTIAL_TYPES.has(event?.type)) {
+      const id = event?.blockId;
+      if (typeof id !== "string" || !id.startsWith("partial:")) {
+        throw new ProjectionValidationError("malformed-blockId", `chunk event at seq ${seq} lacks a partial blockId`);
+      }
+      // Repeated partial identity across a chunk stream is expected, not a reject.
+    }
   }
+  return true;
 }
 
 /**
- * Reject — never silently sort or de-duplicate — a canonical projection page
- * before a snapshot may be created from it. Enforces: array of events with
- * strictly increasing unique seq, and (after projection) unique non-empty
- * blockIds on every renderable message block.
+ * Project a raw page and fail closed via validateCanonicalProjectionPage().
+ * Convenience for tests / callers holding raw DSH events; the snapshot builder
+ * (T27-04) consumes the already-projected page instead.
  */
-export function validateCanonicalProjection(rawEvents) {
+export function projectAndValidatePage(rawEvents) {
   if (!Array.isArray(rawEvents)) {
     throw new ProjectionValidationError("malformed-page", "events must be an array");
   }
-  assertCanonicalEventSeq(rawEvents);
-  const seenBlockIds = new Set();
-  for (const raw of rawEvents) {
-    const projected = projectEvent(raw);
-    if (!projected.blockId) continue; // non-renderable events carry no blockId
-    const id = projected.blockId;
-    if (seenBlockIds.has(id)) {
-      throw new ProjectionValidationError("duplicate-blockId", `duplicate render blockId ${id}`);
-    }
-    seenBlockIds.add(id);
-  }
-  return true;
+  const projected = rawEvents.map(projectEvent);
+  validateCanonicalProjectionPage(projected);
+  return projected;
+}
+
+/** Backward-compatible alias for projectAndValidatePage (raw input). */
+export function validateCanonicalProjection(rawEvents) {
+  return projectAndValidatePage(rawEvents);
 }
