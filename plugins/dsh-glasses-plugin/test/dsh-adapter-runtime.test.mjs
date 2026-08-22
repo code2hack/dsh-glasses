@@ -14,6 +14,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import http from "node:http";
 import {
   ensureHome,
   spawnInstance,
@@ -23,9 +24,34 @@ import {
   createSession,
   seedSyntheticHistory,
   httpReq,
-  killPortOwner,
 } from "./disposable-runtime.mjs";
 import { syntheticUserEvent, syntheticAssistantEvent } from "./zstd-jsonl.mjs";
+
+// Open the SSE stream with auth, read until the hello frame, then disconnect.
+// This exercises the production stream seam which now subscribes through
+// adapter.observeSession (SPEC §5 isolation) against the real runtime.
+function openStreamUntilHello(port, token) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: "/glasses/v1/stream", headers: { authorization: `Bearer ${token}` } },
+      (res) => {
+        let buf = "";
+        const timer = setTimeout(() => { req.destroy(); reject(new Error("stream hello timeout")); }, 8000);
+        res.on("data", (chunk) => {
+          buf += chunk.toString();
+          if (buf.includes("event: hello") && buf.includes('"protocolMajor":1')) {
+            clearTimeout(timer);
+            req.destroy();
+            resolve(buf);
+          }
+        });
+        res.on("error", (e) => { clearTimeout(timer); reject(e); });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 const PORT = Number(process.env.M1_TEST_PORT || 3191);
 const TOKEN = `dev-m1-${process.pid.toString(36)}-${Date.now().toString(36)}`;
@@ -43,12 +69,13 @@ const sessionA = `session-a-${process.pid.toString(36)}-${Date.now().toString(36
 // session.create returns, so we create-then-restart with the real returned id.
 
 try {
-  killPortOwner(PORT);
+  // spawnInstance -> assertPortSpawnable fails deterministically (test-port-in-use)
+  // when a NON-harness process holds :PORT; we never kill a stranger's process.
   await ensureHome(HOME, PORT);
   const seedId = `seed-${process.pid.toString(36)}`;
 
   await scenario("adapter-runtime: dispose instance boots with auth + reaches HTTP surface", async () => {
-    seed = spawnInstance({ homeDir: HOME, port: PORT, sessionId: seedId, token: TOKEN });
+    seed = await spawnInstance({ homeDir: HOME, port: PORT, sessionId: seedId, token: TOKEN });
     await waitForServer({ port: PORT, proc: seed.proc, logBuf: seed.logBuf, token: TOKEN });
   });
 
@@ -98,12 +125,18 @@ try {
     const r = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap" });
     if (r.status !== 401) throw new Error(`bootstrap unauth ${r.status} (wanted 401)`);
   });
+
+  await scenario("adapter-runtime: stream seam (adapter.observeSession) opens authenticated against the real runtime", async () => {
+    const hello = await openStreamUntilHello(PORT, TOKEN);
+    if (!hello.includes("event: hello") || !hello.includes('"protocolMajor":1')) {
+      throw new Error(`stream hello missing protocolMajor: ${JSON.stringify(hello).slice(0, 200)}`);
+    }
+  });
 } catch (error) {
   fail("dsh-adapter-runtime.fatal", error?.stack || error);
 } finally {
   if (configured) await stopInstance(configured.proc, PORT);
   if (seed) await stopInstance(seed.proc, PORT);
-  killPortOwner(PORT);
   if (process.env.KEEP_HOME !== "1") await rm(HOME, { recursive: true, force: true }).catch(() => {});
 }
 

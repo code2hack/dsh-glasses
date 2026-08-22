@@ -148,9 +148,8 @@ export async function apply(ctx, config) {
       res.write(`: hb ${Date.now() - t0}\n\n`);
     }, heartbeatMs);
 
-    const onEvent = (session, evt) => {
+    const onEvent = (evt) => {
       if (closed) return;
-      if (session.id !== sessionId) return;
       const s = typeof evt?.seq === "number" ? evt.seq : -1;
       if (lastSeq !== -1 && s !== lastSeq + 1 && s > lastSeq + 1) {
         res.write(`id: ${s}\nevent: gap\ndata: ${JSON.stringify({ reason: "sequence-gap", lastSeq, nextSeq: s })}\n\n`);
@@ -160,9 +159,10 @@ export async function apply(ctx, config) {
       res.write(`data: ${JSON.stringify({ ...projectEvent(evt), generation: serverGeneration })}\n\n`);
     };
 
-    // 'session/event' is emitted on the host cordis Context (see dsh-session
-    // Context.Events); filter by the configured session id below.
-    const offEvents = ctx.on("session/event", onEvent);
+    // The stream read seam now goes through the adapter (SPEC §5 isolation):
+    // observeSession strictly filters the configured session and returns a
+    // disposer. No new SSE semantics are added by #27.
+    const offEvents = adapter.observeSession(sessionId, onEvent);
 
     req.on("close", () => {
       closed = true;

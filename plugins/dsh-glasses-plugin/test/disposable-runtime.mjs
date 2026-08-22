@@ -27,17 +27,77 @@ export function verbose(...args) {
   if (process.env.VERBOSE) console.log("[verbose]", ...args);
 }
 
-export function killPortOwner(port) {
+// PIDs currently LISTENing on a port (via `ss -tlnp`). Returns [] when the port
+// is free or ss is unavailable.
+export function portOwners(port) {
   try {
+    const owners = [];
     const out = execFileSync("ss", ["-tlnp"], { encoding: "utf8" });
     for (const line of out.split("\n")) {
       if (!line.includes(`:${port} `)) continue;
       const m = line.match(/pid=(\d+)/);
-      if (m) {
-        try { process.kill(Number(m[1]), "SIGKILL"); } catch {}
-      }
+      if (m) owners.push(Number(m[1]));
     }
-  } catch {}
+    return owners;
+  } catch {
+    return [];
+  }
+}
+
+// PIDs this harness spawned in the current process run (terminate only these).
+const ownedChildren = new Set();
+export function registerOwnedChild(pid) {
+  ownedChildren.add(pid);
+}
+export function isOwnedChild(pid) {
+  return ownedChildren.has(pid);
+}
+function unregisterOwnedChild(pid) {
+  ownedChildren.delete(pid);
+}
+
+/**
+ * Before spawning, the test port must be either free or held by OUR OWN
+ * previous (already stopped) child. Any other holder is a shared-resource
+ * collision: fail deterministically as `test-port-in-use` instead of killing an
+ * unrelated process. Owned-but-still-releasing sockets are awaited (TIME_WAIT
+ * has no pid, so only a genuine lingering LISTEN by our own dying child occurs).
+ */
+export async function assertPortSpawnable(port, { timeoutMs = 8000 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    const owners = portOwners(port).filter((pid) => pid !== process.pid);
+    const strangers = owners.filter((pid) => !isOwnedChild(pid));
+    if (strangers.length > 0) {
+      throw new Error(`test-port-in-use: :${port} is held by pid ${strangers.join(",")}; fix the conflicting service or choose M1_TEST_PORT`);
+    }
+    if (owners.length === 0) return;
+    if (Date.now() - t0 > timeoutMs) {
+      throw new Error(`test-port-in-use: :${port} still held by our own child after ${timeoutMs}ms`);
+    }
+    await sleep(300);
+  }
+}
+
+// Wait until the exact pid is gone (SIGTERM, then SIGKILL) and the port our
+// child listened on is released — never touching another process.
+export async function stopOwnedProcess(pid, port, timeoutMs = 8000) {
+  if (!pid) return;
+  const t0 = Date.now();
+  const alive = () => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  try { process.kill(pid, "SIGTERM"); } catch {}
+  while (alive() && Date.now() - t0 < timeoutMs / 2) await sleep(200);
+  try { process.kill(pid, "SIGKILL"); } catch {}
+  unregisterOwnedChild(pid);
+  // Wait for the LISTEN socket to actually free (avoid racing a re-spawn).
+  const rt0 = Date.now();
+  while (Date.now() - rt0 < timeoutMs) {
+    const owners = portOwners(port).filter((p) => p !== process.pid);
+    if (owners.every((p) => !isOwnedChild(p))) break;
+    await sleep(200);
+  }
 }
 
 /** Parse the pid dsh printed for the child it spawned, if the wrapper is pid 1. */
@@ -154,8 +214,8 @@ export async function waitForServer({ port, proc, logBuf, token, timeoutMs = 600
   throw new Error(`disposable instance did not surface plugin JSON on :${port}; child log:\n${tail}`);
 }
 
-export function spawnInstance({ homeDir, port, sessionId, token, extraEnv = {} }) {
-  killPortOwner(port);
+export async function spawnInstance({ homeDir, port, sessionId, token, extraEnv = {} }) {
+  await assertPortSpawnable(port);
   const proc = spawn(resolveDshBin(), ["--profile", "web", "--port", String(port)], {
     cwd: homeDir,
     env: {
@@ -167,6 +227,8 @@ export function spawnInstance({ homeDir, port, sessionId, token, extraEnv = {} }
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  registerOwnedChild(proc.pid);
+  proc.once("exit", () => unregisterOwnedChild(proc.pid));
   const logBuf = [];
   proc.stdout?.on("data", (d) => { logBuf.push(String(d)); if (process.env.VERBOSE) process.stdout.write("[child] " + String(d)); });
   proc.stderr?.on("data", (d) => { logBuf.push(String(d)); });
@@ -176,10 +238,10 @@ export function spawnInstance({ homeDir, port, sessionId, token, extraEnv = {} }
 /**
  * Boot a disposable instance configured to `sessionId`. Returns {proc, logTail}
  * once /glasses/v1/bootstrap returns 200 for that session. Throws (with child
- * log) if it never comes up — including the stale-instance case.
+ * log) if it never comes up. Only OUR spawned child is ever terminated.
  */
 export async function startInstance({ homeDir, port, sessionId, token }) {
-  const { proc, logBuf } = spawnInstance({ homeDir, port, sessionId, token });
+  const { proc, logBuf } = await spawnInstance({ homeDir, port, sessionId, token });
   for (let i = 0; i < 90; i++) {
     await sleep(500);
     if (proc.exitCode !== null) break;
@@ -195,17 +257,12 @@ export async function startInstance({ homeDir, port, sessionId, token }) {
     } catch {}
   }
   const tail = logBuf.join("").slice(-2500);
-  killPortOwner(port);
-  try { proc.kill("SIGKILL"); } catch {}
+  await stopOwnedProcess(proc.pid, port);
   throw new Error(`disposable instance did not serve bootstrap for ${sessionId} on :${port}; child log:\n${tail}`);
 }
 
 export async function stopInstance(proc, port) {
-  try { proc.kill("SIGTERM"); } catch {}
-  await sleep(800);
-  try { proc.kill("SIGKILL"); } catch {}
-  killPortOwner(port);
-  await sleep(500);
+  await stopOwnedProcess(proc?.pid, port);
 }
 
 /** Create a real session through the disposable instance's own RPC and wait for its durable log. */
