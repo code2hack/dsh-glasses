@@ -9,14 +9,14 @@
 // through the real runtime + real adapter — no vLLM, no device.
 //
 // Run:
-//   DSH_BIN=/home/code2hack/.npm-global/bin/dsh node plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs
+//   DSH_HOME=/tmp/dsh-glasses-adapter-unique DSH_BIN=/home/code2hack/.npm-global/bin/dsh node plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs
 
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import http from "node:http";
 import {
   ensureHome,
+  assertDisposableDshHome,
   spawnInstance,
   startInstance,
   waitForServer,
@@ -56,7 +56,7 @@ function openStreamUntilHello(port, token) {
 
 const PORT = Number(process.env.M1_TEST_PORT || 3191);
 const TOKEN = `dev-m1-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-const HOME = join(tmpdir(), `dsh-glasses-m1-adapter-${process.pid}`);
+const HOME = assertDisposableDshHome(process.env.DSH_HOME);
 
 const results = [];
 const ok = (name) => results.push(["PASS", name]);
