@@ -20,7 +20,6 @@ import { appendEvents, readLines } from "./zstd-jsonl.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PLUGIN_ROOT = resolve(HERE, ".."); // plugins/dsh-glasses-plugin
-const BASE_HOME = process.env.DSH_M1_BASE_HOME || "/tmp/dsh-tb0-home";
 
 function resolvesInside(candidate, shared) {
   let current = candidate;
@@ -263,16 +262,7 @@ async function overlayPlugin(homeDir) {
 /** Build an isolated disposable home for one test run and load the worktree plugin. */
 export async function ensureHome(homeDir, port) {
   homeDir = assertDisposableDshHome(homeDir);
-  if (!existsSync(homeDir)) {
-    if (existsSync(BASE_HOME)) {
-      verbose("cloning base disposable home", BASE_HOME, "->", homeDir);
-      await cp(BASE_HOME, homeDir, { recursive: true, verbatimSymlinks: true });
-      // The base profile has its own settings/port; point it at our port.
-      await writeProfileFiles(homeDir, port);
-    } else {
-      await createFromScratch(homeDir, port);
-    }
-  }
+  if (!existsSync(homeDir)) await createFromScratch(homeDir, port);
   await overlayPlugin(homeDir);
   return homeDir;
 }
