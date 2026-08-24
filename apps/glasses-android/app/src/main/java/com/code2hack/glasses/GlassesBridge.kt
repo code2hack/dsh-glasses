@@ -25,7 +25,7 @@ import java.util.concurrent.Future
  *   endpoint()                         configured base, never a credential
  *   sessionId()                        expected configured DSH session
  *   fetch(path, bodyJson)              authenticated glasses/v1 path only
- *   openStream()                       one authenticated SSE connection
+ *   openStream(epoch, baseSequence)    one authenticated SSE connection
  *   closeStream()                      cancel the current SSE connection
  *   clipboardText()                    current plain/coerced clipboard text
  *   debugSemanticControl(name)         DEBUG-only semantic reducer injection
@@ -168,10 +168,10 @@ class GlassesBridge(private val context: Context) {
 
     @JavascriptInterface
     @Synchronized
-    fun openStream() {
-        if (closed) return
+    fun openStream(connectionEpoch: String, baseStreamSequence: Long) {
+        if (closed || connectionEpoch.isBlank() || baseStreamSequence < -1) return
         stopStreamLocked()
-        streamTask = network.submit { runStream() }
+        streamTask = network.submit { runStream(connectionEpoch, baseStreamSequence) }
     }
 
     /** Cancel the stream without closing the reusable bridge/executor. */
@@ -204,7 +204,7 @@ class GlassesBridge(private val context: Context) {
         task?.cancel(true)
     }
 
-    private fun runStream() {
+    private fun runStream(connectionEpoch: String, baseStreamSequence: Long) {
         val endpoint = base()
         val credential = token()
         if (endpoint.isEmpty() || credential.isEmpty()) {
@@ -215,7 +215,9 @@ class GlassesBridge(private val context: Context) {
         var conn: HttpURLConnection? = null
         var opened = false
         try {
-            val connection = (URL(endpoint + "/glasses/v1/stream").openConnection() as HttpURLConnection).apply {
+            val epoch = java.net.URLEncoder.encode(connectionEpoch, StandardCharsets.UTF_8.name())
+            val streamUrl = "$endpoint/glasses/v1/stream?epoch=$epoch&baseStreamSequence=$baseStreamSequence"
+            val connection = (URL(streamUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8_000
                 readTimeout = 0

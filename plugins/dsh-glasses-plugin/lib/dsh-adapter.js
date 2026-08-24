@@ -12,8 +12,8 @@
 // write path.
 //
 // M1 scope: one selected session, bounded canonical history, explicit durable-
-// sequence predecessor/successor reads, and read access through this adapter
-// only. Live deltas and multiple attachments remain future work.
+// sequence predecessor/successor reads, and canonical live observation through
+// this adapter only. Multiple attachments remain future work.
 
 import { projectAndValidatePage } from "./projection.js";
 
@@ -185,12 +185,18 @@ export function createGlassesDshAdapter(ctx, options = {}) {
    * disposer. Exists to move the pre-existing TB0 stream seam behind the
    * adapter; live-delta semantics are not developed by #27.
    */
-  function observeSession(sessionId, listener) {
+  function observeSession(sessionId, listener, onError) {
     if (typeof listener !== "function") {
       throw new AdapterValidationError("invalid-listener", "observeSession: listener must be a function");
     }
     const off = ctx.on("session/event", (session, event) => {
-      if (session?.id === sessionId) listener(event);
+      if (session?.id !== sessionId) return;
+      try {
+        listener(projectAndValidatePage([event])[0]);
+      } catch (error) {
+        if (typeof onError === "function") onError(error);
+        else throw error;
+      }
     });
     return typeof off === "function" ? off : () => {};
   }

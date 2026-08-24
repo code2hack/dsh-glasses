@@ -31,10 +31,10 @@ import { validateSnapshotWire } from "../lib/snapshot.js";
 // Open the SSE stream with auth, read until the hello frame, then disconnect.
 // This exercises the production stream seam which now subscribes through
 // adapter.observeSession (SPEC §5 isolation) against the real runtime.
-function openStreamUntilHello(port, token) {
+function openStreamUntilHello(port, token, epoch, baseStreamSequence) {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { host: "127.0.0.1", port, path: "/glasses/v1/stream", headers: { authorization: `Bearer ${token}` } },
+      { host: "127.0.0.1", port, path: `/glasses/v1/stream?epoch=${encodeURIComponent(epoch)}&baseStreamSequence=${baseStreamSequence}`, headers: { authorization: `Bearer ${token}` } },
       (res) => {
         let buf = "";
         const timer = setTimeout(() => { req.destroy(); reject(new Error("stream hello timeout")); }, 8000);
@@ -173,10 +173,24 @@ try {
   });
 
   await scenario("adapter-runtime: stream seam (adapter.observeSession) opens authenticated against the real runtime", async () => {
-    const hello = await openStreamUntilHello(PORT, TOKEN);
-    if (!hello.includes("event: hello") || !hello.includes('"protocolMajor":1')) {
+    const bootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const epoch = bootstrap.json?.connectionEpoch;
+    const base = bootstrap.json?.streamSequence;
+    const hello = await openStreamUntilHello(PORT, TOKEN, epoch, base);
+    if (!hello.includes("event: hello") || !hello.includes('"protocolMajor":1') || !hello.includes(`"connectionEpoch":"${epoch}"`)) {
       throw new Error(`stream hello missing protocolMajor: ${JSON.stringify(hello).slice(0, 200)}`);
     }
+    const repeat = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(epoch)}&baseStreamSequence=${base}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (repeat.status !== 409 || repeat.json?.error !== "stream-already-claimed") throw new Error(`repeat stream claim not rejected: ${repeat.status} ${repeat.text}`);
+    const wrongBaseBootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const wrongBase = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(wrongBaseBootstrap.json.connectionEpoch)}&baseStreamSequence=${wrongBaseBootstrap.json.streamSequence + 1}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (wrongBase.status !== 409 || wrongBase.json?.error !== "baseStreamSequence-mismatch") throw new Error(`wrong stream base not rejected: ${wrongBase.status} ${wrongBase.text}`);
+    const afterWrongBase = await openStreamUntilHello(PORT, TOKEN, wrongBaseBootstrap.json.connectionEpoch, wrongBaseBootstrap.json.streamSequence);
+    if (!afterWrongBase.includes(`"connectionEpoch":"${wrongBaseBootstrap.json.connectionEpoch}"`)) throw new Error("wrong-base attempt consumed the valid epoch claim");
+    const afterClaim = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(wrongBaseBootstrap.json.connectionEpoch)}&baseStreamSequence=${wrongBaseBootstrap.json.streamSequence}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (afterClaim.status !== 409 || afterClaim.json?.error !== "stream-already-claimed") throw new Error(`second exact stream claim not rejected: ${afterClaim.status} ${afterClaim.text}`);
+    const stale = await httpReq({ port: PORT, path: "/glasses/v1/stream?epoch=never-issued&baseStreamSequence=0", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (stale.status !== 409 || stale.json?.error !== "stale-connectionEpoch") throw new Error(`stale stream epoch not rejected: ${stale.status} ${stale.text}`);
   });
 } catch (error) {
   fail("dsh-adapter-runtime.fatal", error?.stack || error);

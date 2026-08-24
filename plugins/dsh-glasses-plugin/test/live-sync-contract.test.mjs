@@ -70,6 +70,8 @@ const delta = buildProjectionDelta(base, { baseStreamSequence: 42, event: event(
 assert.equal(delta.streamSequence, 43);
 assert.equal(delta.event.seq, 57);
 assert.equal(validateProjectionDelta(delta, { issuedBase: base, expectedBaseStreamSequence: 42 }).ok, true);
+assert.equal(validateProjectionDelta({ ...delta, connectionEpoch: "other" }, { issuedBase: base, expectedBaseStreamSequence: 42 }).code, "connectionEpoch-mismatch");
+assert.equal(validateProjectionDelta({ ...delta, serverGeneration: "other" }, { issuedBase: base, expectedBaseStreamSequence: 42 }).code, "serverGeneration-mismatch");
 assert.equal(validateProjectionDelta({ ...delta, streamSequence: 44 }, { issuedBase: base, expectedBaseStreamSequence: 42 }).code, "stream-sequence-gap");
 assert.equal(validateProjectionDelta(delta, { issuedBase: base, expectedBaseStreamSequence: 41 }).code, "baseStreamSequence-mismatch");
 assert.equal(validateProjectionDelta({ ...delta, event: event(42) }, { issuedBase: base, expectedBaseStreamSequence: 42 }).code, "durable-seq-not-after-base");

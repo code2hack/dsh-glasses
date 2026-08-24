@@ -206,6 +206,16 @@ try {
     assert.throws(() => adapter.observeSession("s", "not-a-fn"), AdapterValidationError);
   });
 
+  await scenario("observeSession: malformed live event reaches the explicit error seam", async () => {
+    const ctx = makeCtx();
+    const adapter = createGlassesDshAdapter(ctx);
+    let error = null;
+    const off = adapter.observeSession("s-target", () => assert.fail("malformed event must not be delivered"), (value) => { error = value; });
+    ctx._emit({ id: "s-target" }, { seq: "bad", type: "user/message" });
+    assert.equal(typeof error?.code, "string");
+    off();
+  });
+
   await scenario("getAgentState: maps known states explicitly", async () => {
     const adapter = createGlassesDshAdapter(makeCtx({ agentMap: { "s-1": { status: "running" }, "s-2": { status: "idle" } } }));
     assert.equal(adapter.getAgentState("s-1"), "running");
