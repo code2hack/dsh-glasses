@@ -45,6 +45,7 @@ let actionTone = '';
 // The installed conversation is replaced wholesale (atomically) by
 // installSnapshot() adopting the staged detached state.
 let conversation = core.createConversationState();
+let syncModel = core.createSyncState();
 let pendingMutation = null;
 let pendingSend = null;
 let mutationInFlight = false;
@@ -174,6 +175,7 @@ function clearSessionProjection() {
   cursorWord = 0;
   seenSeqs.clear();
   core.resetConversation(conversation);
+  syncModel = core.createSyncState();
   $('session-id').textContent = '';
   $('proto').textContent = '';
   $('gen').textContent = '';
@@ -296,6 +298,12 @@ function init() {
     window.glassesOnStream = onStreamState;
   }
   window.glassesOnSemanticControl = handleSemanticControl;
+  $('chat').addEventListener('scroll', () => {
+    if (!hasInstalled) return;
+    if (isNearBottom($('chat'))) core.enterFollowing(syncModel);
+    else core.enterHistoryReading(syncModel, captureViewportAnchor($('chat')));
+    renderNewOutputState();
+  });
   window.onNativeTrace = (line) => {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 7000);
   };
@@ -324,6 +332,9 @@ function init() {
     pendingSend: pendingSend?.body?.operationId || null,
     action: actionMessage,
     conversation: core.conversationItems(conversation).map((item) => ({ ...item })),
+    presentationMode: syncModel.presentationMode,
+    unread: syncModel.unread,
+    anchor: syncModel.anchor ? { ...syncModel.anchor } : null,
   });
 
   renderStatus();
@@ -414,8 +425,14 @@ function stageAndInstall() {
 function installSnapshot(staged) {
   if (identityFailure) return;
   const chat = $('chat');
-  const preserveBottom = isNearBottom(chat);
-  const previousTop = chat.scrollTop;
+  const preserveBottom = !hasInstalled || isNearBottom(chat);
+  if (hasInstalled && !preserveBottom) core.enterHistoryReading(syncModel, captureViewportAnchor(chat));
+  else core.enterFollowing(syncModel);
+  const installedSync = core.installCompleteSnapshot(syncModel, staged);
+  if (!installedSync.ok) {
+    trace('sync-snapshot-rejected', { code: installedSync.code });
+    return;
+  }
 
   generation = String(staged.serverGeneration || '');
   lastSeq = Number(staged.attachment.history.asOfSeq);
@@ -431,8 +448,7 @@ function installSnapshot(staged) {
     if (Number.isFinite(seq)) seenSeqs.add(seq);
   }
 
-  // Atomic adoption: the staged detached conversation becomes the live one.
-  conversation = staged.conversation === undefined ? conversation : staged.conversation;
+  conversation = syncModel.conversation;
   hasInstalled = true;
 
   $('events').innerHTML = '';
@@ -446,7 +462,7 @@ function installSnapshot(staged) {
   showProvision(false);
   showIdentityError(false, '', '');
   showSession(true);
-  renderChat(preserveBottom, previousTop);
+  renderChat(preserveBottom);
   renderStatus();
   renderComposer();
   trace('snapshot-installed', {
@@ -683,8 +699,9 @@ function isNearBottom(node) {
 
 function renderChat(forceBottom, preservedTop) {
   const chat = $('chat');
-  const shouldStick = Boolean(forceBottom) || isNearBottom(chat);
+  const shouldStick = Boolean(forceBottom) || syncModel.presentationMode === 'following';
   const oldTop = Number.isFinite(preservedTop) ? preservedTop : chat.scrollTop;
+  const anchor = shouldStick ? null : (syncModel.anchor || captureViewportAnchor(chat));
   const items = core.conversationItems(conversation);
   chat.innerHTML = '';
 
@@ -700,7 +717,34 @@ function renderChat(forceBottom, preservedTop) {
   }
 
   if (shouldStick) chat.scrollTop = chat.scrollHeight;
-  else chat.scrollTop = oldTop;
+  else if (!restoreViewportAnchor(chat, anchor)) chat.scrollTop = oldTop;
+  renderNewOutputState();
+}
+
+function captureViewportAnchor(chat) {
+  if (!chat || typeof chat.getBoundingClientRect !== 'function') return null;
+  const viewportTop = chat.getBoundingClientRect().top;
+  const blocks = [...chat.querySelectorAll('[data-block-id]')];
+  const node = blocks.find((candidate) => typeof candidate.getBoundingClientRect === 'function' && candidate.getBoundingClientRect().bottom > viewportTop) || blocks[0];
+  if (!node) return null;
+  const rect = node.getBoundingClientRect();
+  return { blockId: node.dataset.blockId || '', sourceSeq: Number(node.dataset.seq), offsetPx: rect.top - viewportTop };
+}
+
+function restoreViewportAnchor(chat, anchor) {
+  if (!anchor || !anchor.blockId || typeof chat.getBoundingClientRect !== 'function') return false;
+  const node = [...chat.querySelectorAll('[data-block-id]')].find((candidate) => candidate.dataset.blockId === anchor.blockId);
+  if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+  const currentOffset = node.getBoundingClientRect().top - chat.getBoundingClientRect().top;
+  chat.scrollTop += currentOffset - anchor.offsetPx;
+  return true;
+}
+
+function renderNewOutputState() {
+  const node = $('new-output');
+  if (!node) return;
+  node.classList.toggle('hidden', !syncModel.unread);
+  node.textContent = 'New output';
 }
 
 // Renders ONE canonical projection block as a stable message article. The

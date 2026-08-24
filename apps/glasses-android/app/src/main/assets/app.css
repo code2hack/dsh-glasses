@@ -90,6 +90,7 @@ button {
 .hint { color: var(--muted); font-size: 12px; }
 
 #session {
+  position: relative;
   height: calc(100% - 34px);
   display: flex;
   flex-direction: column;
@@ -101,6 +102,20 @@ button {
   overscroll-behavior: contain;
   padding: 8px 9px 20px;
   scroll-behavior: auto;
+}
+.new-output {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  color: #d8f7e3;
+  background: #17472d;
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+  border-radius: 999px;
 }
 .empty-chat {
   padding: 28px 10px;

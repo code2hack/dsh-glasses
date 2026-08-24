@@ -462,10 +462,17 @@
       unread: false,
       unreadFromStreamSequence: null,
       anchor: null,
+      replacements: new Map(),
     };
   }
 
   function installCompleteSnapshot(state, snapshot) {
+    var preserveReading = state.installed && state.presentationMode === 'history-reading';
+    var previousAnchor = preserveReading ? state.anchor : null;
+    var previousUnread = preserveReading && state.unread;
+    var previousForwardSeq = state.historyAsOfSeq;
+    var previousTimeline = new Map(state.timeline);
+    var previousVisible = JSON.stringify(conversationItems(state.conversation));
     var attachment = snapshot && snapshot.attachment;
     var history = attachment && attachment.history;
     if (!snapshot || typeof snapshot !== 'object' || snapshot.protocolMajor !== 1 ||
@@ -504,10 +511,23 @@
     state.nextBeforeSeq = state.oldestLoadedSeq;
     state.timeline = timeline;
     state.conversation = conversationFromTimeline(timeline);
-    state.presentationMode = 'following';
-    state.unread = false;
-    state.unreadFromStreamSequence = null;
-    state.anchor = null;
+    var replacements = new Map();
+    history.events.forEach(function (event) {
+      if (event.type !== 'assistant/message' || !Number.isInteger(event.turn) || !Number.isInteger(event.step)) return;
+      var replacement = event.blocks.find(function (block) { return block.kind === 'text' || block.kind === 'image'; });
+      if (replacement) replacements.set('partial:' + event.turn + ':' + event.step, replacement.blockId);
+    });
+    state.replacements = replacements;
+    state.presentationMode = preserveReading ? 'history-reading' : 'following';
+    var visibleNewOutput = false;
+    if (preserveReading) {
+      history.events.forEach(function (event) { if (event.seq > previousForwardSeq) previousTimeline.set(event.seq, cloneWire(event)); });
+      previousTimeline = new Map(Array.from(previousTimeline.entries()).sort(function (a, b) { return a[0] - b[0]; }));
+      visibleNewOutput = JSON.stringify(conversationItems(conversationFromTimeline(previousTimeline))) !== previousVisible;
+    }
+    state.unread = Boolean(preserveReading && (previousUnread || visibleNewOutput));
+    state.unreadFromStreamSequence = state.unread ? snapshot.streamSequence : null;
+    state.anchor = preserveReading ? selectStableAnchor(conversationItems(state.conversation), previousAnchor, replacements) : null;
     return { ok: true, state: state };
   }
 
@@ -548,18 +568,28 @@
     if (!deltaLaw.ok) return syncFail(state, deltaLaw.code);
     timeline = new Map(orderedEvents.map(function (event) { return [event.seq, event]; }));
     var conversation = conversationFromTimeline(timeline);
+    var visibleChanged = JSON.stringify(conversationItems(conversation)) !== JSON.stringify(conversationItems(state.conversation));
+    var replacements = new Map(state.replacements);
+    if (delta.event.type === 'assistant/message' && Number.isInteger(delta.event.turn) && Number.isInteger(delta.event.step)) {
+      var replacement = delta.event.blocks.find(function (block) { return block.kind === 'text' || block.kind === 'image'; });
+      if (replacement) replacements.set('partial:' + delta.event.turn + ':' + delta.event.step, replacement.blockId);
+    }
     state.timeline = timeline;
     state.conversation = conversation;
+    state.replacements = replacements;
     state.streamSequence = delta.streamSequence;
     state.historyAsOfSeq = delta.event.seq;
     if (state.oldestLoadedSeq === null) state.oldestLoadedSeq = delta.event.seq;
     if (state.presentationMode === 'history-reading') {
-      state.unread = true;
-      if (state.unreadFromStreamSequence === null) state.unreadFromStreamSequence = delta.streamSequence;
+      if (visibleChanged) {
+        state.unread = true;
+        if (state.unreadFromStreamSequence === null) state.unreadFromStreamSequence = delta.streamSequence;
+      }
     } else {
       state.unread = false;
       state.unreadFromStreamSequence = null;
     }
+    if (state.presentationMode === 'history-reading') state.anchor = selectStableAnchor(conversationItems(conversation), state.anchor, replacements);
     return { ok: true, state: state };
   }
 
@@ -622,15 +652,35 @@
   }
 
   function reanchor(state, preferredBlockIds) {
-    var ids = Array.isArray(preferredBlockIds) ? preferredBlockIds : [];
     var items = conversationItems(state.conversation);
-    var available = new Set(items.map(function (item) { return item.blockId; }));
-    var current = state.anchor && state.anchor.blockId;
-    var chosen = current && available.has(current) ? current : null;
-    for (var i = 0; !chosen && i < ids.length; i++) if (available.has(ids[i])) chosen = ids[i];
-    var chosenItem = chosen ? items.find(function (item) { return item.blockId === chosen; }) : null;
-    state.anchor = chosen ? { blockId: chosen, sourceSeq: chosenItem ? chosenItem.seq : null, offsetPx: state.anchor && state.anchor.offsetPx || 0 } : null;
+    var ids = Array.isArray(preferredBlockIds) ? preferredBlockIds : [];
+    var anchor = state.anchor;
+    for (var i = ids.length - 1; i >= 0; i--) {
+      if (!anchor) anchor = { blockId: ids[i], sourceSeq: null, offsetPx: 0 };
+      else if (!state.replacements.has(anchor.blockId)) state.replacements.set(anchor.blockId, ids[i]);
+    }
+    state.anchor = selectStableAnchor(items, anchor, state.replacements);
     return state.anchor;
+  }
+
+  function selectStableAnchor(items, anchor, replacements) {
+    if (!Array.isArray(items) || !items.length) return null;
+    var byId = new Map(items.map(function (item) { return [item.blockId, item]; }));
+    var currentId = anchor && anchor.blockId;
+    var chosen = currentId && byId.get(currentId);
+    var visited = new Set();
+    while (!chosen && currentId && replacements && replacements.has(currentId) && !visited.has(currentId)) {
+      visited.add(currentId);
+      currentId = replacements.get(currentId);
+      chosen = byId.get(currentId);
+    }
+    if (!chosen && anchor && Number.isFinite(anchor.sourceSeq)) {
+      chosen = items.slice().sort(function (a, b) {
+        return Math.abs(a.seq - anchor.sourceSeq) - Math.abs(b.seq - anchor.sourceSeq) || a.seq - b.seq || a.blockId.localeCompare(b.blockId);
+      })[0];
+    }
+    if (!chosen) chosen = items.slice().sort(function (a, b) { return a.seq - b.seq || a.blockId.localeCompare(b.blockId); })[0];
+    return { blockId: chosen.blockId, sourceSeq: chosen.seq, offsetPx: anchor && Number.isFinite(anchor.offsetPx) ? anchor.offsetPx : 0 };
   }
 
   root.C0Core = Object.freeze({
@@ -651,6 +701,7 @@
     enterHistoryReading,
     markResyncRequired,
     reanchor,
+    selectStableAnchor,
     validateCanonicalTimeline,
   });
 })(globalThis);

@@ -380,3 +380,72 @@ console.log('c0-core.test.mjs: PASS');
 }
 
 console.log('c0-core sync reducer: PASS');
+
+// ---- viewport anchor selection: stable -> replacement -> nearest -> fallback ----
+{
+  const items = [
+    { blockId: 'a', seq: 3 },
+    { blockId: 'final', seq: 10 },
+    { blockId: 'z', seq: 20 },
+  ];
+  assert.equal(core.selectStableAnchor(items, { blockId: 'final', sourceSeq: 9 }, new Map()).blockId, 'final');
+  assert.equal(core.selectStableAnchor(items, { blockId: 'partial:2:1', sourceSeq: 9 }, new Map([['partial:2:1', 'final']])).blockId, 'final');
+  assert.equal(core.selectStableAnchor(items, { blockId: 'gone', sourceSeq: 18 }, new Map()).blockId, 'z');
+  assert.equal(core.selectStableAnchor(items, null, new Map()).blockId, 'a');
+}
+
+console.log('c0-core viewport reducer: PASS');
+
+{
+  const partialEvent = { seq: 10, type: 'assistant/chunk', blocks: [{ blockId: 'partial:2:1', kind: 'partial', turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: 'draft' } }] };
+  const staged = {
+    protocolMajor: 1, serverGeneration: 'g1', connectionEpoch: 'e1', streamSequence: 10,
+    attachment: { attachmentId: 'a1', attachmentGeneration: 1, sessionId: 's1', history: { asOfSeq: 10, events: [partialEvent] } },
+  };
+  const sync = core.createSyncState();
+  core.installCompleteSnapshot(sync, staged);
+  core.acceptStreamHello(sync, { protocolMajor: 1, serverGeneration: 'g1', connectionEpoch: 'e1', attachmentId: 'a1', attachmentGeneration: 1, sessionId: 's1', baseStreamSequence: 10, baseHistoryAsOfSeq: 10 });
+  core.enterHistoryReading(sync, { blockId: 'partial:2:1', sourceSeq: 10, offsetPx: 11 });
+  const finalEvent = { seq: 11, type: 'assistant/message', turn: 2, step: 1, blocks: [{ blockId: 'message:a-final:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'final' }] };
+  assert.equal(core.applyStreamDelta(sync, { protocolMajor: 1, serverGeneration: 'g1', connectionEpoch: 'e1', attachmentId: 'a1', attachmentGeneration: 1, sessionId: 's1', baseStreamSequence: 10, streamSequence: 11, event: finalEvent }).ok, true);
+  assert.equal(sync.anchor.blockId, 'message:a-final:content:0');
+  assert.equal(sync.anchor.offsetPx, 11);
+  assert.equal(sync.unread, true);
+  assert.equal(sync.unreadFromStreamSequence, 11);
+
+  const replacement = { ...staged, serverGeneration: 'g2', connectionEpoch: 'e2', streamSequence: 11, attachment: { ...staged.attachment, history: { asOfSeq: 11, events: [finalEvent] } } };
+  core.installCompleteSnapshot(sync, replacement);
+  assert.equal(sync.presentationMode, 'history-reading');
+  assert.equal(sync.anchor.blockId, 'message:a-final:content:0');
+  assert.equal(sync.anchor.offsetPx, 11);
+  assert.equal(sync.unread, true, 'complete resync preserves unread while the history anchor remains');
+  assert.equal(sync.unreadFromStreamSequence, 11, 'epoch-local unread marker rebases to the new snapshot sequence');
+
+  const resyncVisible = core.createSyncState();
+  core.installCompleteSnapshot(resyncVisible, staged);
+  core.enterHistoryReading(resyncVisible, { blockId: 'partial:2:1', sourceSeq: 10, offsetPx: 9 });
+  core.installCompleteSnapshot(resyncVisible, replacement);
+  assert.equal(resyncVisible.unread, true, 'new visible snapshot output below preserved history creates unread');
+  assert.equal(resyncVisible.unreadFromStreamSequence, 11);
+  assert.equal(resyncVisible.anchor.blockId, 'message:a-final:content:0');
+
+  const bookkeeping = {
+    ...staged,
+    connectionEpoch: 'e-bookkeeping', streamSequence: 11,
+    attachment: { ...staged.attachment, history: { asOfSeq: 11, events: [partialEvent, { seq: 11, type: 'step/end', blocks: [] }] } },
+  };
+  const quiet = core.createSyncState();
+  core.installCompleteSnapshot(quiet, staged);
+  core.enterHistoryReading(quiet, { blockId: 'partial:2:1', sourceSeq: 10, offsetPx: 5 });
+  core.installCompleteSnapshot(quiet, bookkeeping);
+  assert.equal(quiet.historyAsOfSeq, 11);
+  assert.equal(quiet.unread, false, 'non-visible resync advancement must not invent unread');
+
+  const quietHello = { protocolMajor: 1, serverGeneration: 'g1', connectionEpoch: 'e-bookkeeping', attachmentId: 'a1', attachmentGeneration: 1, sessionId: 's1', baseStreamSequence: 11, baseHistoryAsOfSeq: 11 };
+  core.acceptStreamHello(quiet, quietHello);
+  core.enterHistoryReading(quiet, quiet.anchor);
+  assert.equal(core.applyStreamDelta(quiet, { ...quietHello, baseStreamSequence: 11, streamSequence: 12, event: { seq: 12, type: 'step/end', blocks: [] } }).ok, true);
+  assert.equal(quiet.unread, false, 'non-visible live event advances watermarks without unread');
+}
+
+console.log('c0-core viewport replacement/resync: PASS');
