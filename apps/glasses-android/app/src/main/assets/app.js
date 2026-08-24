@@ -630,6 +630,10 @@ function onStreamState(callbackEpoch, state, detail) {
 
 function requireResync(reason) {
   if (identityFailure) return;
+  if (syncModel.syncState === 'resyncing' && reconnectTimer !== null) {
+    trace('resync-coalesced', { reason: reason, epoch: syncModel.connectionEpoch });
+    return;
+  }
   core.markResyncRequired(syncModel, reason);
   stopTransport(reason);
   setConn('reconnecting', 'resyncing-readonly');
@@ -642,9 +646,21 @@ function loadOlderHistory() {
   historyLoading = true;
   const beforeSeq = syncModel.nextBeforeSeq;
   const limit = 50;
+  const issued = {
+    connectionEpoch: syncModel.connectionEpoch,
+    serverGeneration: syncModel.serverGeneration,
+    attachmentGeneration: syncModel.attachmentGeneration,
+  };
   const path = '/glasses/v1/history?epoch=' + encodeURIComponent(syncModel.connectionEpoch) + '&beforeSeq=' + beforeSeq + '&limit=' + limit;
   try {
     const response = nativeFetch(path);
+    if (syncModel.syncState === 'resyncing' ||
+        syncModel.connectionEpoch !== issued.connectionEpoch ||
+        syncModel.serverGeneration !== issued.serverGeneration ||
+        syncModel.attachmentGeneration !== issued.attachmentGeneration) {
+      trace('stale-history-response-dropped', { issuedEpoch: issued.connectionEpoch, currentEpoch: syncModel.connectionEpoch });
+      return;
+    }
     if (response.status !== 200 || !response.body || typeof response.body !== 'object') { requireResync('history-fetch-failed'); return; }
     const judged = core.prependHistoryPage(syncModel, response.body, { beforeSeq: beforeSeq, limit: limit });
     if (!judged.ok) { requireResync('history-' + judged.code); return; }

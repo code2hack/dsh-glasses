@@ -8,7 +8,8 @@
     "test:c0-core": "node test/c0-core.test.mjs",
     "test:snapshot-core": "node test/snapshot-core.test.mjs",
     "test:m1-render": "node test/m1-render.test.mjs",
-    "test": "node test/c0-core.test.mjs && node test/snapshot-core.test.mjs && node test/m1-render.test.mjs"
+    "test:m1-stream-faults": "node test/m1-stream-faults.test.mjs",
+    "test": "node test/c0-core.test.mjs && node test/snapshot-core.test.mjs && node test/m1-render.test.mjs && node test/m1-stream-faults.test.mjs"
   },
   "devDependencies": {
     "jsdom": "29.1.1"
