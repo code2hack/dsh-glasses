@@ -259,3 +259,124 @@ assert.equal(assistantBlocks[0].partial, false);
 }
 
 console.log('c0-core.test.mjs: PASS');
+
+// ---- M1 synchronization reducer: complete snapshot + hello + delta + page ----
+{
+  const ev = (seq, role, body) => ({
+    seq,
+    type: role === 'user' ? 'user/message' : 'assistant/message',
+    blocks: [{ blockId: `message:${role === 'user' ? 'u' : 'a'}-${seq}:content:0`, kind: 'text', contentIndex: 0, role, text: body }],
+  });
+  const snapshot = {
+    protocolMajor: 1,
+    serverGeneration: 'gen-sync-a',
+    connectionEpoch: 'epoch-sync-a',
+    streamSequence: 10,
+    attachment: {
+      attachmentId: 'att-sync-a', attachmentGeneration: 1, sessionId: 'session-sync-a',
+      history: { asOfSeq: 10, events: [ev(9, 'user', 'nine'), ev(10, 'assistant', 'ten')] },
+    },
+  };
+  const sync = core.createSyncState();
+  assert.equal(core.installCompleteSnapshot(sync, snapshot).ok, true);
+  assert.equal(sync.syncState, 'awaiting-hello');
+  assert.deepEqual([...sync.timeline.keys()], [9, 10]);
+
+  const hello = {
+    protocolMajor: 1, serverGeneration: 'gen-sync-a', connectionEpoch: 'epoch-sync-a',
+    attachmentId: 'att-sync-a', attachmentGeneration: 1, sessionId: 'session-sync-a',
+    baseStreamSequence: 10, baseHistoryAsOfSeq: 10,
+  };
+  assert.equal(core.acceptStreamHello(sync, hello).ok, true);
+  assert.equal(sync.syncState, 'ready');
+
+  const delta = {
+    protocolMajor: 1, serverGeneration: 'gen-sync-a', connectionEpoch: 'epoch-sync-a',
+    attachmentId: 'att-sync-a', attachmentGeneration: 1, sessionId: 'session-sync-a',
+    baseStreamSequence: 10, streamSequence: 11, event: ev(12, 'assistant', 'twelve'),
+  };
+  assert.equal(core.applyStreamDelta(sync, delta).ok, true);
+  assert.equal(sync.streamSequence, 11);
+  assert.equal(sync.historyAsOfSeq, 12);
+  assert.deepEqual([...sync.timeline.keys()], [9, 10, 12]);
+  assert.equal(sync.unread, false);
+
+  core.enterHistoryReading(sync, { blockId: 'message:u-9:content:0', sourceSeq: 9, offsetPx: 7 });
+  const modeBeforePage = sync.presentationMode;
+  const unreadBeforePage = sync.unread;
+  const page = {
+    protocolMajor: 1, serverGeneration: 'gen-sync-a', connectionEpoch: 'epoch-sync-a',
+    attachmentId: 'att-sync-a', attachmentGeneration: 1, sessionId: 'session-sync-a',
+    baseHistoryAsOfSeq: 10, beforeSeq: 9, limit: 3,
+    events: [ev(4, 'user', 'four'), ev(7, 'assistant', 'seven')], hasMore: true, nextBeforeSeq: 4,
+  };
+  assert.equal(core.prependHistoryPage(sync, page, { beforeSeq: 9, limit: 3 }).ok, true);
+  assert.deepEqual([...sync.timeline.keys()], [4, 7, 9, 10, 12]);
+  assert.equal(sync.streamSequence, 11, 'older page never advances transport watermark');
+  assert.equal(sync.historyAsOfSeq, 12, 'older page never advances forward durable watermark');
+  assert.equal(sync.presentationMode, modeBeforePage);
+  assert.equal(sync.unread, unreadBeforePage);
+  assert.equal(sync.nextBeforeSeq, 4);
+
+  const timelineBeforeFault = JSON.stringify([...sync.timeline.entries()]);
+  const badGap = { ...delta, baseStreamSequence: 11, streamSequence: 13, event: ev(13, 'assistant', 'gap') };
+  assert.equal(core.applyStreamDelta(sync, badGap).code, 'stream-sequence-gap');
+  assert.equal(JSON.stringify([...sync.timeline.entries()]), timelineBeforeFault, 'faulting delta installs nothing');
+  assert.equal(sync.syncState, 'resyncing');
+  assert.equal(sync.writeEligible, false);
+
+  assert.equal(core.installCompleteSnapshot(sync, snapshot).ok, true);
+  assert.equal(core.acceptStreamHello(sync, hello).ok, true);
+  for (const [mutate, code] of [
+    [(d) => { d.connectionEpoch = 'other'; }, 'connectionEpoch-mismatch'],
+    [(d) => { d.serverGeneration = 'other'; }, 'serverGeneration-mismatch'],
+    [(d) => { d.baseStreamSequence = 9; }, 'baseStreamSequence-mismatch'],
+    [(d) => { d.streamSequence = 12; }, 'stream-sequence-gap'],
+    [(d) => { d.event = ev(10, 'assistant', 'backwards'); }, 'durable-seq-not-after-current'],
+    [(d) => { d.event = { seq: 12, type: 'assistant/message', blocks: {} }; }, 'malformed-blocks'],
+  ]) {
+    core.installCompleteSnapshot(sync, snapshot);
+    core.acceptStreamHello(sync, hello);
+    const candidate = JSON.parse(JSON.stringify(delta));
+    mutate(candidate);
+    const before = JSON.stringify([...sync.timeline.entries()]);
+    assert.equal(core.applyStreamDelta(sync, candidate).code, code);
+    assert.equal(JSON.stringify([...sync.timeline.entries()]), before);
+  }
+
+  for (const [badEvent, code] of [
+    [{ seq: 12, type: 'step/end', blocks: [{ blockId: 'mystery:12', kind: 'mystery' }] }, 'unknown-block-kind'],
+    [{ seq: 12, type: 'assistant/message', blocks: [{ blockId: 'message:u-wrong:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'wrong' }] }, 'blockId-root-mismatch'],
+    [{ seq: 12, type: 'tool/result', blocks: [{ blockId: 'tool:r12:result:content:0', kind: 'text', contentIndex: 0, role: 'tool', text: 'orphan' }] }, 'tool-result-shell-mismatch'],
+    [{ seq: 12, type: 'step/end', blocks: [{ blockId: 'message:u-9:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'reuse' }] }, 'duplicate-blockId'],
+  ]) {
+    core.installCompleteSnapshot(sync, snapshot);
+    core.acceptStreamHello(sync, hello);
+    const before = JSON.stringify([...sync.timeline.entries()]);
+    assert.equal(core.applyStreamDelta(sync, { ...delta, event: badEvent }).code, code);
+    assert.equal(JSON.stringify([...sync.timeline.entries()]), before);
+    assert.equal(sync.syncState, 'resyncing');
+    assert.equal(sync.writeEligible, false);
+  }
+
+  core.installCompleteSnapshot(sync, snapshot);
+  const malformedPage = { ...page, events: [ev(4, 'user', 'four'), { seq: 7, type: 'step/end', blocks: [{ blockId: 'bad:7', kind: 'unknown' }] }] };
+  const beforeMalformedPage = JSON.stringify([...sync.timeline.entries()]);
+  assert.equal(core.prependHistoryPage(sync, malformedPage, { beforeSeq: 9, limit: 3 }).code, 'unknown-block-kind');
+  assert.equal(JSON.stringify([...sync.timeline.entries()]), beforeMalformedPage);
+  assert.equal(sync.syncState, 'resyncing');
+
+  assert.equal(core.installCompleteSnapshot(core.createSyncState(), {
+    protocolMajor: 1, serverGeneration: 'raw', connectionEpoch: 'raw', streamSequence: -1,
+    attachments: [],
+  }).code, 'malformed-complete-snapshot', 'raw wire snapshots are not the staged installation API');
+
+  core.installCompleteSnapshot(sync, snapshot);
+  core.enterHistoryReading(sync, { blockId: 'gone', sourceSeq: 8, offsetPx: 3 });
+  assert.equal(core.reanchor(sync, ['message:u-9:content:0']).blockId, 'message:u-9:content:0');
+  core.enterFollowing(sync);
+  assert.equal(sync.presentationMode, 'following');
+  assert.equal(sync.unread, false);
+}
+
+console.log('c0-core sync reducer: PASS');

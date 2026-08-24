@@ -225,6 +225,15 @@ const NEGATIVES = [
 // Capture a frozen valid staged snapshot; every negative must leave it intact.
 const baseline = core.stageSnapshot(structuredClone(canonicalRaw()), { expectedSessionId: SESSION });
 assert.equal(baseline.ok, true);
+{
+  const sync = context.C0Core.createSyncState();
+  const installed = context.C0Core.installCompleteSnapshot(sync, baseline.snapshot);
+  assert.equal(installed.ok, true);
+  assert.deepEqual([...sync.timeline.keys()], [1, 2, 3, 4]);
+  assert.equal(sync.streamSequence, 4);
+  assert.equal(sync.historyAsOfSeq, 4);
+  record('positive: staged snapshot installs atomically into sync reducer', true);
+}
 const baselinePlain = snapshotPlain(baseline.snapshot);
 const globalsBefore = Object.keys(context).slice().sort();
 
