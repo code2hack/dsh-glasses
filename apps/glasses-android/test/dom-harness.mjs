@@ -44,8 +44,8 @@ export async function bootClientDom({ responses, session = "default-session", en
           const r = served[Math.min(servedIndex++, served.length - 1)];
           return JSON.stringify({ status: r.status, body: r.body });
         },
-        openStream: () => { requests.push({ path: "OPEN_STREAM", hasBody: false }); },
-        closeStream: () => {},
+        openStream: (epoch, baseStreamSequence) => { requests.push({ path: "OPEN_STREAM", hasBody: false, epoch, baseStreamSequence }); },
+        closeStream: () => { requests.push({ path: "CLOSE_STREAM", hasBody: false }); },
         clipboardText: () => "clip",
       };
     },
@@ -67,6 +67,7 @@ export async function bootClientDom({ responses, session = "default-session", en
   return {
     dom, w,
     requests: () => requests.map((r) => r.path),
+    requestDetails: () => requests.map((r) => ({ ...r })),
     traces: () => traces.slice(),
     $,
     settled,

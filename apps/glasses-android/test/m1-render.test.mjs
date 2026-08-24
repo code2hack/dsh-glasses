@@ -11,7 +11,7 @@
 //   3. valid replacement bootstrap -> the whole staged snapshot replaces state
 //      in ONE install path (no partial, no duplicate, no append).
 // Plus: composer hidden, mode NAV, no paste/Send/mutation/send retry, no
-// /draft/mutations or /actions POST, no openStream().
+// /draft/mutations or /actions POST; live stream opens only after a valid snapshot.
 import assert from 'node:assert/strict';
 import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from '../../../plugins/dsh-glasses-plugin/lib/snapshot.js';
 import { bootClientDom as boot, chatTexts, sleep } from './dom-harness.mjs';
@@ -98,6 +98,43 @@ function invalidSnapshot() {
   rt.dom.window.close();
 }
 
+// ---- Stream ownership fence + one complete E1 -> E2 recovery --------------
+{
+  const e1 = validSnapshot({ generation: 'gen-e1', epoch: 'epoch-e1', user: 'one', asst: 'one-answer' });
+  const e2 = validSnapshot({ generation: 'gen-e2', epoch: 'epoch-e2', user: 'two', asst: 'two-answer' });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: e1 }, { status: 200, body: e2 }] });
+  await rt.settled('ownership-e1');
+  const a1 = e1.attachments[0];
+  rt.w.glassesOnStream('epoch-e1', 'open', null);
+  rt.w.glassesOnLine('epoch-e1', 'hello', JSON.stringify({ protocolMajor: 1, serverGeneration: e1.serverGeneration, connectionEpoch: e1.connectionEpoch, attachmentId: a1.attachmentId, attachmentGeneration: 1, sessionId: SESSION, baseStreamSequence: 4, baseHistoryAsOfSeq: 4 }), '');
+  rt.w.glassesOnLine('epoch-e1', 'projection', '{malformed', '5');
+  assert.equal(rt.w.c0DebugState().syncState, 'resyncing');
+  await sleep(1150);
+  assert.equal(rt.w.c0DebugState().generation, 'gen-e2');
+  const lastOpen = rt.requestDetails().filter((request) => request.path === 'OPEN_STREAM').at(-1);
+  assert.deepEqual({ epoch: lastOpen.epoch, baseStreamSequence: lastOpen.baseStreamSequence }, { epoch: 'epoch-e2', baseStreamSequence: 4 });
+  const a2 = e2.attachments[0];
+  rt.w.glassesOnStream('epoch-e2', 'open', null);
+  rt.w.glassesOnLine('epoch-e2', 'hello', JSON.stringify({ protocolMajor: 1, serverGeneration: e2.serverGeneration, connectionEpoch: e2.connectionEpoch, attachmentId: a2.attachmentId, attachmentGeneration: 1, sessionId: SESSION, baseStreamSequence: 4, baseHistoryAsOfSeq: 4 }), '');
+  assert.equal(rt.w.c0DebugState().syncState, 'ready');
+  const closeCount = rt.requests().filter((path) => path === 'CLOSE_STREAM').length;
+  rt.w.glassesOnLine('epoch-e1', 'projection', '{still-malformed', '6');
+  rt.w.glassesOnLine('epoch-e1', 'resync-required', JSON.stringify({ reason: 'old-overflow' }), '');
+  rt.w.glassesOnStream('epoch-e1', 'closed', null);
+  assert.equal(rt.w.c0DebugState().syncState, 'ready');
+  assert.equal(rt.w.c0DebugState().connectionEpoch, 'epoch-e2');
+  assert.equal(rt.requests().filter((path) => path === 'CLOSE_STREAM').length, closeCount, 'stale callbacks must not close E2');
+  assert.ok(chatTexts(rt).some((item) => item.body === 'two-answer'));
+  assert.ok(!chatTexts(rt).some((item) => item.body === 'one-answer'));
+  record('ownership: stale E1 callbacks drop after atomic E2 recovery', true);
+
+  const wrongWire = { protocolMajor: 1, serverGeneration: e2.serverGeneration, connectionEpoch: 'epoch-e1', attachmentId: a2.attachmentId, attachmentGeneration: 1, sessionId: SESSION, baseStreamSequence: 4, streamSequence: 5, event: { seq: 5, type: 'step/end', blocks: [] } };
+  rt.w.glassesOnLine('epoch-e2', 'projection', JSON.stringify(wrongWire), '5');
+  assert.equal(rt.w.c0DebugState().syncState, 'resyncing', 'current transport carrying wrong wire epoch must fault');
+  record('ownership: current E2 malformed/wrong-fence payload still resyncs', true);
+  rt.dom.window.close();
+}
+
 // ---- State 3: valid replacement snapshot replaces state atomically --------
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
@@ -139,8 +176,8 @@ function invalidSnapshot() {
   assert.ok(!paths.includes('/glasses/v1/draft/mutations'));
   record('m1: no POST /actions', !paths.includes('/glasses/v1/actions'), JSON.stringify(paths));
   assert.ok(!paths.includes('/glasses/v1/actions'));
-  record('m1: no auto openStream', !paths.includes('OPEN_STREAM'), JSON.stringify(paths));
-  assert.ok(!paths.includes('OPEN_STREAM'));
+  record('m1: valid snapshot opens epoch-bound stream', paths.includes('OPEN_STREAM'), JSON.stringify(paths));
+  assert.ok(paths.includes('OPEN_STREAM'));
 
   // Semantic write controls are exhausted without entering Input/mutation.
   for (const name of ['send', 'paste', 'COMMAND', 'COMMAND_LONG', 'RIGHT', 'SECONDARY']) {
@@ -214,7 +251,7 @@ function invalidSnapshot() {
   rt.dom.window.close();
 }
 
-// ---- Regression: native SSE callback invocation has zero effect in M1 -------
+// ---- Regression: malformed/wrong-fence SSE faults without partial install ----
 {
   const v1 = validSnapshot({ generation: 'gen-v1', user: 'first-request', asst: 'first-answer' });
   const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }] });
@@ -223,19 +260,59 @@ function invalidSnapshot() {
   const genBefore = rt.w.c0DebugState().generation;
   const lastSeqBefore = rt.w.c0DebugState().lastSeq;
 
-  // Native bridge still calls the M1-published bounded no-ops.
-  rt.w.glassesOnLine('hello', JSON.stringify({ sessionId: SESSION, serverGeneration: 'gen-x', seq: 99 }), 'evt-1');
-  rt.w.glassesOnStream('open', null);
-  rt.w.glassesOnStream('error', 'x');
+  // A wrong-fence hello and later transport error must preserve the last valid screen.
+  rt.w.glassesOnLine(v1.connectionEpoch, 'hello', JSON.stringify({ sessionId: SESSION, serverGeneration: 'gen-x', seq: 99 }), 'evt-1');
+  rt.w.glassesOnStream(v1.connectionEpoch, 'open', null);
+  rt.w.glassesOnStream(v1.connectionEpoch, 'error', 'x');
 
-  record('ss: SSE callbacks mutate nothing (no legacy recovery/applySnapshot)', JSON.stringify(chatTexts(rt)) === before && rt.w.c0DebugState().generation === genBefore && rt.w.c0DebugState().lastSeq === lastSeqBefore, 'mutated=' + (JSON.stringify(chatTexts(rt)) !== before || rt.w.c0DebugState().generation !== genBefore));
+  record('ss: faulting callbacks install nothing', JSON.stringify(chatTexts(rt)) === before && rt.w.c0DebugState().generation === genBefore && rt.w.c0DebugState().lastSeq === lastSeqBefore, 'mutated=' + (JSON.stringify(chatTexts(rt)) !== before || rt.w.c0DebugState().generation !== genBefore));
   assert.equal(JSON.stringify(chatTexts(rt)), before);
   assert.equal(rt.w.c0DebugState().generation, genBefore);
   assert.equal(rt.w.c0DebugState().lastSeq, lastSeqBefore);
-  record('ss: SSE callbacks emit bounded ignore traces', rt.traces().some((t) => t.includes('m1-sse-ignored')), 'trace missing');
-  assert.ok(rt.traces().some((t) => t.includes('m1-sse-ignored')));
-  record('ss: no legacy onSseLine/recoverSnapshot path reached', !rt.traces().some((t) => t.includes('server-gap')) && !rt.requests().includes('OPEN_STREAM'), 'legacy path active');
-  assert.ok(!rt.traces().some((t) => t.includes('server-gap')));
+  record('ss: fault enters readonly resync', rt.w.c0DebugState().syncState === 'resyncing' && rt.w.c0DebugState().writeEligible === false, rt.w.c0DebugState().syncState);
+  assert.equal(rt.w.c0DebugState().syncState, 'resyncing');
+  record('ss: bounded resync trace emitted', rt.traces().some((t) => t.includes('resync-required')), 'trace missing');
+  assert.ok(rt.traces().some((t) => t.includes('resync-required')));
+  rt.dom.window.close();
+}
+
+// ---- Live hello/delta and issued-epoch older-page wiring -------------------
+{
+  const v1 = validSnapshot({ generation: 'gen-live', user: 'initial', asst: 'answer' });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: v1 }] });
+  await rt.settled('live-wiring');
+  const att = v1.attachments[0];
+  const opened = rt.requestDetails().find((request) => request.path === 'OPEN_STREAM');
+  assert.deepEqual({ epoch: opened.epoch, baseStreamSequence: opened.baseStreamSequence }, { epoch: v1.connectionEpoch, baseStreamSequence: v1.streamSequence });
+  rt.w.glassesOnStream(v1.connectionEpoch, 'open', null);
+  rt.w.glassesOnLine(v1.connectionEpoch, 'hello', JSON.stringify({
+    protocolMajor: 1, serverGeneration: v1.serverGeneration, connectionEpoch: v1.connectionEpoch,
+    attachmentId: att.attachmentId, attachmentGeneration: att.attachmentGeneration, sessionId: att.sessionId,
+    baseStreamSequence: v1.streamSequence, baseHistoryAsOfSeq: att.history.asOfSeq,
+  }), '');
+  const delta = {
+    protocolMajor: 1, serverGeneration: v1.serverGeneration, connectionEpoch: v1.connectionEpoch,
+    attachmentId: att.attachmentId, attachmentGeneration: att.attachmentGeneration, sessionId: att.sessionId,
+    baseStreamSequence: 4, streamSequence: 5,
+    event: { seq: 5, type: 'user/message', blocks: [{ blockId: 'message:u-live5:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'live-five' }] },
+  };
+  rt.w.glassesOnLine(v1.connectionEpoch, 'projection', JSON.stringify(delta), '5');
+  assert.equal(rt.w.c0DebugState().syncState, 'ready');
+  assert.equal(rt.w.c0DebugState().streamSequence, 5);
+  assert.ok(chatTexts(rt).some((item) => item.body === 'live-five'));
+  record('live: exact hello and delta install through sync reducer', true);
+
+  rt.setResponses([{ status: 200, body: {
+    protocolMajor: 1, serverGeneration: v1.serverGeneration, connectionEpoch: v1.connectionEpoch,
+    attachmentId: att.attachmentId, attachmentGeneration: att.attachmentGeneration, sessionId: att.sessionId,
+    baseHistoryAsOfSeq: 4, beforeSeq: 1, limit: 50,
+    events: [{ seq: 0, type: 'user/message', blocks: [{ blockId: 'message:u-old0:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'older-zero' }] }],
+    hasMore: false, nextBeforeSeq: null,
+  } }]);
+  rt.w.loadOlderHistory();
+  assert.ok(chatTexts(rt).some((item) => item.body === 'older-zero'));
+  assert.equal(rt.w.c0DebugState().streamSequence, 5);
+  record('history: issued page prepends without advancing live watermark', true);
   rt.dom.window.close();
 }
 

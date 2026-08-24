@@ -25,6 +25,7 @@ let reconnectTimer = null;
 let reconnectAttempt = 0;
 let helloTimer = null;
 let recovering = false;
+let historyLoading = false;
 let generation = '';
 let lastSeq = -1;
 let identityFailure = null;
@@ -282,27 +283,15 @@ function init() {
     run();
   });
 
-  // M1 is strictly read-only: the legacy SSE recovery path (onSseLine ->
-  // recoverSnapshot -> applySnapshot) and stream state handling must have no
-  // externally reachable effect. Publish bounded no-ops instead of wiring the
-  // TB0 handlers.
-  if (M1_READ_ONLY) {
-    window.glassesOnLine = (eventName, data, id) => {
-      trace('m1-sse-ignored', { event: eventName || null, id: id || null });
-    };
-    window.glassesOnStream = (state, detail) => {
-      trace('m1-sse-ignored-stream', { state: String(state || ''), detail: detail || null });
-    };
-  } else {
-    window.glassesOnLine = onSseLine;
-    window.glassesOnStream = onStreamState;
-  }
+  window.glassesOnLine = onSseLine;
+  window.glassesOnStream = onStreamState;
   window.glassesOnSemanticControl = handleSemanticControl;
   $('chat').addEventListener('scroll', () => {
     if (!hasInstalled) return;
     if (isNearBottom($('chat'))) core.enterFollowing(syncModel);
     else core.enterHistoryReading(syncModel, captureViewportAnchor($('chat')));
     renderNewOutputState();
+    if ($('chat').scrollTop < 48) loadOlderHistory();
   });
   window.onNativeTrace = (line) => {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 7000);
@@ -335,6 +324,14 @@ function init() {
     presentationMode: syncModel.presentationMode,
     unread: syncModel.unread,
     anchor: syncModel.anchor ? { ...syncModel.anchor } : null,
+    syncState: syncModel.syncState,
+    connectionEpoch: syncModel.connectionEpoch,
+    streamSequence: syncModel.streamSequence,
+    historyAsOfSeq: syncModel.historyAsOfSeq,
+    oldestLoadedSeq: syncModel.oldestLoadedSeq,
+    nextBeforeSeq: syncModel.nextBeforeSeq,
+    unreadFromStreamSequence: syncModel.unreadFromStreamSequence,
+    writeEligible: syncModel.writeEligible,
   });
 
   renderStatus();
@@ -364,8 +361,13 @@ function run() {
   // screen untouched; with no prior install the session stays hidden.
   const accepted = stageAndInstall();
   if (!accepted) return;
-
-  // M1 strictly read-only: no SSE auto-open, no pending-op resume.
+  streamConnecting = true;
+  setConn('reconnecting', 'opening-live');
+  try {
+    window.GlassesBridge.openStream(syncModel.connectionEpoch, syncModel.streamSequence);
+  } catch (error) {
+    requireResync('open-stream-failed');
+  }
 }
 
 // fetchSnapshot() is TRANSPORT-ONLY: it verifies an HTTP-200 object body and
@@ -559,38 +561,27 @@ function recoverSnapshot(reason) {
   }
 }
 
-function onSseLine(eventName, data, id) {
+function onSseLine(callbackEpoch, eventName, data, id) {
   if (identityFailure) {
     trace('sse-ignored-identity-failure', { event: eventName || null, id: id || null });
     return;
   }
+  if (callbackEpoch !== syncModel.connectionEpoch) {
+    trace('stale-stream-line-dropped', { callbackEpoch: callbackEpoch || null, currentEpoch: syncModel.connectionEpoch, event: eventName || null });
+    return;
+  }
 
-  let decoded = data;
-  try { decoded = JSON.parse(data); } catch (_) {}
+  let decoded;
+  try { decoded = JSON.parse(data); }
+  catch (_) { requireResync('malformed-stream-json'); return; }
 
   if (eventName === 'hello') {
-    const expected = configuredSession();
-    const actual = decoded && typeof decoded === 'object'
-      ? String(decoded.sessionId || '').trim()
-      : '';
-    trace('sse-hello', {
-      expectedSession: expected,
-      actualSession: actual,
-      generation: decoded && decoded.serverGeneration,
-    });
-    if (!expected || actual !== expected) {
-      enterSessionMismatch(expected, actual, 'sse-hello');
-      return;
-    }
-
+    const judged = core.acceptStreamHello(syncModel, decoded);
+    if (!judged.ok) { requireResync('hello-' + judged.code); return; }
     streamVerified = true;
     cancelHelloTimer();
-    if (decoded.serverGeneration && generation && decoded.serverGeneration !== generation) {
-      recoverSnapshot('generation-change');
-      return;
-    }
     setConn('open', 'live');
-    recoverSnapshot('stream-open');
+    trace('sse-hello-accepted', { epoch: syncModel.connectionEpoch, streamSequence: syncModel.streamSequence });
     return;
   }
 
@@ -599,40 +590,24 @@ function onSseLine(eventName, data, id) {
     return;
   }
 
-  if (eventName === 'gap') {
-    trace('sse-gap', decoded);
-    recoverSnapshot('server-gap');
-    return;
-  }
-  if (eventName !== 'projection' || !decoded || typeof decoded !== 'object') {
-    renderRaw(eventName, id);
-    return;
-  }
-
-  if (decoded.generation && generation && decoded.generation !== generation) {
-    trace('projection-generation-mismatch', { expected: generation, actual: decoded.generation, seq: decoded.seq });
-    recoverSnapshot('projection-generation-change');
-    return;
-  }
-
-  const seq = Number(decoded.seq);
-  if (!Number.isFinite(seq)) {
-    trace('projection-invalid-seq', { id: id || null, type: decoded.type || null });
-    return;
-  }
-  if (seq <= lastSeq || seenSeqs.has(seq)) {
-    trace('projection-deduplicated', { seq: seq, lastSeq: lastSeq });
-    return;
-  }
-  if (lastSeq >= 0 && seq !== lastSeq + 1) {
-    trace('projection-client-gap', { lastSeq: lastSeq, nextSeq: seq });
-    recoverSnapshot('client-sequence-gap');
-    return;
-  }
-  applyLiveProjection(decoded);
+  if (eventName === 'resync-required') { requireResync('server-' + String(decoded?.reason || 'resync')); return; }
+  if (eventName !== 'projection' || !decoded || typeof decoded !== 'object') { renderRaw(eventName, id); return; }
+  const judged = core.applyStreamDelta(syncModel, decoded);
+  if (!judged.ok) { requireResync('delta-' + judged.code); return; }
+  conversation = syncModel.conversation;
+  lastSeq = syncModel.historyAsOfSeq;
+  seenSeqs.add(decoded.event.seq);
+  $('asof').textContent = String(lastSeq);
+  addEventRow(decoded.event);
+  renderChat(syncModel.presentationMode === 'following');
+  trace('projection-accepted', { streamSequence: syncModel.streamSequence, historyAsOfSeq: syncModel.historyAsOfSeq });
 }
 
-function onStreamState(state, detail) {
+function onStreamState(callbackEpoch, state, detail) {
+  if (callbackEpoch !== syncModel.connectionEpoch) {
+    trace('stale-stream-state-dropped', { callbackEpoch: callbackEpoch || null, currentEpoch: syncModel.connectionEpoch, state: state || null });
+    return;
+  }
   trace('stream-state', { state: state, detail: detail || null, lastSeq: lastSeq });
   if (identityFailure) {
     try { window.GlassesBridge.closeStream(); } catch (_) {}
@@ -650,12 +625,35 @@ function onStreamState(state, detail) {
     armHelloTimeout();
     return;
   }
+  requireResync(state === 'closed' ? 'stream-closed' : ('stream-error' + (detail ? '-' + detail : '')));
+}
 
-  streamOpen = false;
-  streamConnecting = false;
-  streamVerified = false;
-  cancelHelloTimer();
-  scheduleReconnect(state === 'closed' ? 'closed·reconnect' : ('offline' + (detail ? '·' + detail : '')));
+function requireResync(reason) {
+  if (identityFailure) return;
+  core.markResyncRequired(syncModel, reason);
+  stopTransport(reason);
+  setConn('reconnecting', 'resyncing-readonly');
+  trace('resync-required', { reason: reason, epoch: syncModel.connectionEpoch, streamSequence: syncModel.streamSequence, historyAsOfSeq: syncModel.historyAsOfSeq });
+  scheduleReconnect(reason);
+}
+
+function loadOlderHistory() {
+  if (!hasInstalled || syncModel.nextBeforeSeq === null || syncModel.nextBeforeSeq <= 0 || recovering || historyLoading) return;
+  historyLoading = true;
+  const beforeSeq = syncModel.nextBeforeSeq;
+  const limit = 50;
+  const path = '/glasses/v1/history?epoch=' + encodeURIComponent(syncModel.connectionEpoch) + '&beforeSeq=' + beforeSeq + '&limit=' + limit;
+  try {
+    const response = nativeFetch(path);
+    if (response.status !== 200 || !response.body || typeof response.body !== 'object') { requireResync('history-fetch-failed'); return; }
+    const judged = core.prependHistoryPage(syncModel, response.body, { beforeSeq: beforeSeq, limit: limit });
+    if (!judged.ok) { requireResync('history-' + judged.code); return; }
+    conversation = syncModel.conversation;
+    renderChat(false);
+    trace('history-page-accepted', { beforeSeq: beforeSeq, nextBeforeSeq: syncModel.nextBeforeSeq, eventCount: response.body.events.length });
+  } finally {
+    historyLoading = false;
+  }
 }
 
 function applyLiveProjection(event) {
