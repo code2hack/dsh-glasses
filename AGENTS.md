@@ -43,6 +43,7 @@ These are responsibilities, not product assignments. At runtime the owner suppli
 - which worker mechanism the manager uses;
 - worker naming and active-capacity policy;
 - each expert's provider, transport, project/conversation or session identity, model, reasoning effort, and any endpoint/thread binding;
+- device bindings, including where and how to reach Rokid over ADB;
 - any shared-resource constraints.
 
 The owner may bind one runtime agent to more than one logical role. The duties and routing rules remain distinct.
@@ -86,6 +87,8 @@ It owns:
 - observing durable Ticket completion;
 - retiring completed runtime bindings;
 - dispatching newly ready successors.
+
+After confirming admitted workers are active and progressing, the Ticket Manager ends its turn and waits for worker reports. Supervision is event-driven; active workers are not polled.
 
 The Ticket Manager MUST NOT:
 
@@ -272,7 +275,15 @@ For an unfinished Ticket, resume the same runtime worker when possible. Do not c
 
 Persistent expert bindings are recovered through their configured transports. Never guess a replacement identity. If one cannot be recovered, it is unavailable until the owner supplies a replacement.
 
-## 11. Disposable DSH test isolation
+## 11. Rokid ADB runtime binding
+
+Where and how to reach Rokid over ADB is runtime configuration, not repository policy.
+
+When required Rokid ADB is absent or unreachable, the Ticket Worker MUST wake/report to the Ticket Manager with the attempted binding and observed ADB evidence, then pause the device-dependent step. The worker does not guess alternate hosts, addresses, serials, transports, or devices.
+
+The Ticket Manager obtains the current Rokid binding from the owner, supplies it to the same worker, and resumes that worker. The binding stays runtime-only.
+
+## 12. Disposable DSH test isolation
 
 Every Ticket Worker testing DSH itself or dsh-glasses-plugin MUST isolate the experiment from the shared user profile.
 
@@ -289,7 +300,7 @@ Ticket Workers MUST NOT read, write, copy from, restore, rename, delete, or othe
 
 A test that cannot prove its DSH_HOME is explicitly disposable must fail before starting DSH.
 
-## 12. Git, hosts, and hard guardrails
+## 13. Git, hosts, and hard guardrails
 
 - GitHub origin is shared truth across hosts.
 - Transfer source through Git; do not hand-copy source trees between hosts.
@@ -297,7 +308,7 @@ A test that cannot prove its DSH_HOME is explicitly disposable must fail before 
 - Never rewrite another Ticket's branch.
 - Never force-push main.
 - spark is the DSH/plugin/server host.
-- u4090 is first-priority Android/Rokid build, USB-ADB, screenshot, logcat, UIAutomator, and input-tracing host.
+- Android/Rokid build and ADB host/device routes come from the current runtime binding.
 - Use debug builds unless a Ticket explicitly requires release qualification.
 - Never commit credentials, tokens, runtime conversation/session/thread identifiers, or disposable runtime secrets.
 - Never expose an unauthenticated unrestricted DSH interface publicly.
@@ -305,7 +316,7 @@ A test that cannot prove its DSH_HOME is explicitly disposable must fail before 
 - Never claim runtime/hardware behavior not observed on the stated build/device/environment.
 - Follow SPEC.md DSH integration boundaries; extend supported services/events rather than patching the core agent loop for convenience.
 
-## 13. Removed architecture
+## 14. Removed architecture
 
 Repository policy does not assign logical roles to DSH, Codex, ChatGPT, native subagents, or any other implementation. It does not hard-code worker names, expert conversations, models, reasoning effort, transport endpoints, thread IDs, or active capacity.
 

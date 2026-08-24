@@ -32,6 +32,7 @@ Before normal Ticket work, obtain the current runtime configuration:
     Shared resources
     - host/device constraints
     - scarce hardware allocation
+    - current Rokid ADB host, route, and device selector
 
 These values remain runtime state. Do not commit them into AGENTS.md, this file, Tickets, source, or committed configuration. Use owner-supplied values exactly; never infer a replacement from a similar name.
 
@@ -75,7 +76,7 @@ The manager does not routinely implement Ticket code. Workers do not dispatch su
 
 ## 3. Manager reconcile loop
 
-Repeatedly:
+Reconcile at bootstrap and whenever a worker report, completion, owner instruction, or runtime event changes project state:
 
     refresh origin/main and GitHub
     -> inspect active Ticket bindings
@@ -84,9 +85,12 @@ Repeatedly:
     -> recompute ready frontier
     -> apply capacity/resource constraints
     -> admit ready Tickets
-    -> repeat
+    -> verify admitted workers are active/progressing
+    -> end the manager turn and wait for worker reports
 
 Durable dependency declarations decide logical readiness. Scarce hardware may delay execution without inventing a Blocked by edge.
+
+Do not poll active workers. Once every admitted worker is confirmed working and no immediate manager action remains, yield control; worker reports wake the manager for the next reconciliation.
 
 If readiness depends on product meaning, ask the first-line expert rather than inventing policy.
 
@@ -249,7 +253,22 @@ Never create a replacement merely because a worker stopped. If runtime resume is
 
 Recover experts through their configured runtime transports. Never guess a replacement identity. A binding that cannot be recovered is unavailable until the owner supplies another.
 
-## 13. Parallel work and shared resources
+## 13. Rokid ADB binding and escalation
+
+The Rokid ADB location is owner-supplied runtime state.
+
+When a Ticket requires Rokid and its configured ADB target is absent or unreachable:
+
+    worker records attempted host/route/device and observed ADB result
+    -> worker reports to and wakes Ticket Manager
+    -> worker pauses the device-dependent step
+    -> manager asks owner for the current Rokid ADB binding
+    -> manager supplies it to the same worker
+    -> same worker resumes
+
+Workers do not probe or guess alternate hosts, addresses, serials, transports, or devices. Independent non-device work may continue when it cannot invalidate the paused step.
+
+## 14. Parallel work and shared resources
 
 The manager controls active Ticket count and hardware allocation from current runtime configuration.
 
@@ -257,7 +276,7 @@ Logical readiness and physical resource availability are separate. A Ticket may 
 
 Serialize requests to a shared expert conversation/thread. Parallel Ticket workers must not race turns against it.
 
-## 14. Disposable DSH test workflow
+## 15. Disposable DSH test workflow
 
 Every DSH or dsh-glasses-plugin test starts with an explicit disposable profile:
 
@@ -275,7 +294,7 @@ All experimental presets, plugins, settings, credentials, sessions, and logs sta
 
 If a runtime check truly requires the owner's shared DSH profile, it is not a worker test. Stop and obtain explicit owner authorization for that separately scoped operation.
 
-## 15. Durable versus runtime configuration
+## 16. Durable versus runtime configuration
 
 Durable policy:
 
@@ -291,6 +310,6 @@ Runtime configuration:
 - manager identity;
 - worker implementation, naming, recovery, and capacity;
 - expert provider, project/conversation/session/thread, model, effort, transport, and endpoint;
-- active host/device allocation.
+- active host/device allocation, including the current Rokid ADB binding.
 
 Changing runtime bindings requires an owner instruction, not a repository-policy edit.
