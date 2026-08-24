@@ -10,9 +10,10 @@
 // Node builtins only.
 
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, isAbsolute, parse, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { appendEvents, readLines } from "./zstd-jsonl.mjs";
@@ -20,6 +21,42 @@ import { appendEvents, readLines } from "./zstd-jsonl.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PLUGIN_ROOT = resolve(HERE, ".."); // plugins/dsh-glasses-plugin
 const BASE_HOME = process.env.DSH_M1_BASE_HOME || "/tmp/dsh-tb0-home";
+
+function resolvesInside(candidate, shared) {
+  let current = candidate;
+  for (let hops = 0; hops < 64; hops += 1) {
+    if (current === shared || current.startsWith(shared + sep)) return true;
+    const root = parse(current).root;
+    const parts = current.slice(root.length).split(sep).filter(Boolean);
+    let cursor = root;
+    let followed = false;
+    for (let i = 0; i < parts.length; i += 1) {
+      const next = join(cursor, parts[i]);
+      let stat;
+      try { stat = lstatSync(next); } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+      if (stat.isSymbolicLink()) {
+        current = resolve(dirname(next), readlinkSync(next), ...parts.slice(i + 1));
+        followed = true;
+        break;
+      }
+      cursor = next;
+    }
+    if (!followed) return false;
+  }
+  throw new Error("unsafe-dsh-home: too many symbolic-link hops");
+}
+
+export function assertDisposableDshHome(homeDir) {
+  if (typeof homeDir !== "string" || homeDir.trim() === "") throw new Error("unsafe-dsh-home: DSH_HOME must be explicitly set");
+  if (!isAbsolute(homeDir)) throw new Error("unsafe-dsh-home: DSH_HOME must be an absolute disposable path");
+  const candidate = resolve(homeDir);
+  const shared = resolve(homedir(), ".dsh");
+  if (resolvesInside(candidate, shared)) throw new Error("unsafe-dsh-home: shared ~/.dsh is forbidden");
+  return candidate;
+}
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -225,6 +262,7 @@ async function overlayPlugin(homeDir) {
 
 /** Build an isolated disposable home for one test run and load the worktree plugin. */
 export async function ensureHome(homeDir, port) {
+  homeDir = assertDisposableDshHome(homeDir);
   if (!existsSync(homeDir)) {
     if (existsSync(BASE_HOME)) {
       verbose("cloning base disposable home", BASE_HOME, "->", homeDir);
