@@ -178,3 +178,14 @@ export function buildHistoryPage(issuedBase, { beforeSeq, limit, events, hasMore
   throwOnFailure(validateHistoryPage(value, { issuedBase, beforeSeq, limit }));
   return value;
 }
+
+export async function readBoundHistoryPage(adapter, issuedBase, { beforeSeq, limit }) {
+  const projected = await adapter.readProjectionBefore(issuedBase.sessionId, { beforeSeq, limit });
+  return buildHistoryPage(issuedBase, {
+    beforeSeq,
+    limit,
+    events: projected.events,
+    hasMore: projected.hasMore,
+    nextBeforeSeq: projected.hasMore && projected.events.length > 0 ? projected.events[0].seq : null,
+  });
+}

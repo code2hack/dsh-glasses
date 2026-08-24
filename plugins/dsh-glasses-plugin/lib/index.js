@@ -25,7 +25,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 import { createGlassesDshAdapter } from "./dsh-adapter.js";
 import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from "./snapshot.js";
-import { createIssuedBaseRegistry } from "./live-sync.js";
+import { createIssuedBaseRegistry, readBoundHistoryPage } from "./live-sync.js";
 import { startRaceFreeLiveStream } from "./live-stream.js";
 
 export const name = "dsh-glasses-plugin";
@@ -183,6 +183,27 @@ export async function apply(ctx, config) {
       }
     }, heartbeatMs);
     await startRaceFreeLiveStream({ adapter, issuedBase: claimed, sink, signal: abort.signal });
+  };
+
+  const handleHistory = async (req, res) => {
+    if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    if (req.method && req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method-not-allowed" });
+    const requestUrl = new URL(req.url ?? "/glasses/v1/history", "http://127.0.0.1");
+    const epoch = requestUrl.searchParams.get("epoch") ?? "";
+    const beforeText = requestUrl.searchParams.get("beforeSeq");
+    const limitText = requestUrl.searchParams.get("limit");
+    const beforeSeq = beforeText !== null && /^\d+$/.test(beforeText) ? Number(beforeText) : NaN;
+    const limit = limitText !== null && /^\d+$/.test(limitText) ? Number(limitText) : NaN;
+    if (!epoch || !Number.isSafeInteger(beforeSeq) || !Number.isSafeInteger(limit) || limit < 1 || limit > adapter.maxEvents) {
+      return sendJson(res, 400, { ok: false, error: "invalid-history-request" });
+    }
+    const issued = issuedBases.get(epoch);
+    if (!issued) return sendJson(res, 409, { ok: false, error: "stale-connectionEpoch" });
+    try {
+      return sendJson(res, 200, await readBoundHistoryPage(adapter, issued, { beforeSeq, limit }));
+    } catch (error) {
+      return sendJson(res, 500, { ok: false, error: error?.code ?? String(error?.message ?? error) });
+    }
   };
 
   // ---- TB0 host-write slice (amended contract) ---------------------------
@@ -532,6 +553,7 @@ export async function apply(ctx, config) {
 
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/bootstrap", handler: handleBootstrap }), "glasses.bootstrap");
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/stream", handler: handleStream }), "glasses.stream");
+  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/history", handler: handleHistory }), "glasses.history");
   // M1 write quarantine: /glasses/v1/draft/mutations and /glasses/v1/actions
   // are NOT registered in ordinary M1 startup, so those paths fall through to
   // the /glasses/v1 prefix handler and return 404. The TB0 implementations

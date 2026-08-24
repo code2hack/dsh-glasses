@@ -172,6 +172,26 @@ try {
     if (r.status !== 401) throw new Error(`bootstrap unauth ${r.status} (wanted 401)`);
   });
 
+  await scenario("adapter-runtime: issued-epoch history paging is bounded, ascending, and narrow", async () => {
+    const bootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const epoch = bootstrap.json.connectionEpoch;
+    const asOf = bootstrap.json.attachments[0].history.asOfSeq;
+    const page = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=${asOf + 1}&limit=1&sessionId=unrelated`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (page.status !== 200) throw new Error(`history page ${page.status}: ${page.text}`);
+    if (page.json.sessionId !== realA) throw new Error("history endpoint accepted caller session identity");
+    if (page.json.connectionEpoch !== epoch || page.json.baseHistoryAsOfSeq !== asOf) throw new Error("history response lost issued-base fences");
+    if (!Array.isArray(page.json.events) || page.json.events.length > 1) throw new Error("history response exceeded limit");
+    if (page.json.events.some((event) => event.seq >= asOf + 1)) throw new Error("history response violated exclusive cursor");
+    const empty = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=0&limit=1`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (empty.status !== 200 || empty.json.events?.length !== 0 || empty.json.hasMore !== false || empty.json.nextBeforeSeq !== null) throw new Error(`empty history page malformed: ${empty.text}`);
+    const stale = await httpReq({ port: PORT, path: "/glasses/v1/history?epoch=never-issued&beforeSeq=1&limit=1", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (stale.status !== 409) throw new Error(`stale history epoch ${stale.status}`);
+    const malformed = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=nope&limit=1`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (malformed.status !== 400) throw new Error(`malformed history request ${malformed.status}`);
+    const unauth = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=1&limit=1` });
+    if (unauth.status !== 401) throw new Error(`unauthorized history request ${unauth.status}`);
+  });
+
   await scenario("adapter-runtime: stream seam (adapter.observeSession) opens authenticated against the real runtime", async () => {
     const bootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
     const epoch = bootstrap.json?.connectionEpoch;
