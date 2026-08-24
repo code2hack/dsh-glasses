@@ -25,6 +25,7 @@ let reconnectTimer = null;
 let reconnectAttempt = 0;
 let helloTimer = null;
 let recovering = false;
+let historyLoading = false;
 let generation = '';
 let lastSeq = -1;
 let identityFailure = null;
@@ -45,6 +46,7 @@ let actionTone = '';
 // The installed conversation is replaced wholesale (atomically) by
 // installSnapshot() adopting the staged detached state.
 let conversation = core.createConversationState();
+let syncModel = core.createSyncState();
 let pendingMutation = null;
 let pendingSend = null;
 let mutationInFlight = false;
@@ -174,6 +176,7 @@ function clearSessionProjection() {
   cursorWord = 0;
   seenSeqs.clear();
   core.resetConversation(conversation);
+  syncModel = core.createSyncState();
   $('session-id').textContent = '';
   $('proto').textContent = '';
   $('gen').textContent = '';
@@ -280,22 +283,16 @@ function init() {
     run();
   });
 
-  // M1 is strictly read-only: the legacy SSE recovery path (onSseLine ->
-  // recoverSnapshot -> applySnapshot) and stream state handling must have no
-  // externally reachable effect. Publish bounded no-ops instead of wiring the
-  // TB0 handlers.
-  if (M1_READ_ONLY) {
-    window.glassesOnLine = (eventName, data, id) => {
-      trace('m1-sse-ignored', { event: eventName || null, id: id || null });
-    };
-    window.glassesOnStream = (state, detail) => {
-      trace('m1-sse-ignored-stream', { state: String(state || ''), detail: detail || null });
-    };
-  } else {
-    window.glassesOnLine = onSseLine;
-    window.glassesOnStream = onStreamState;
-  }
+  window.glassesOnLine = onSseLine;
+  window.glassesOnStream = onStreamState;
   window.glassesOnSemanticControl = handleSemanticControl;
+  $('chat').addEventListener('scroll', () => {
+    if (!hasInstalled) return;
+    if (isNearBottom($('chat'))) core.enterFollowing(syncModel);
+    else core.enterHistoryReading(syncModel, captureViewportAnchor($('chat')));
+    renderNewOutputState();
+    if ($('chat').scrollTop < 48) loadOlderHistory();
+  });
   window.onNativeTrace = (line) => {
     $('tracebox').textContent = (line + '\n' + $('tracebox').textContent).slice(0, 7000);
   };
@@ -324,6 +321,17 @@ function init() {
     pendingSend: pendingSend?.body?.operationId || null,
     action: actionMessage,
     conversation: core.conversationItems(conversation).map((item) => ({ ...item })),
+    presentationMode: syncModel.presentationMode,
+    unread: syncModel.unread,
+    anchor: syncModel.anchor ? { ...syncModel.anchor } : null,
+    syncState: syncModel.syncState,
+    connectionEpoch: syncModel.connectionEpoch,
+    streamSequence: syncModel.streamSequence,
+    historyAsOfSeq: syncModel.historyAsOfSeq,
+    oldestLoadedSeq: syncModel.oldestLoadedSeq,
+    nextBeforeSeq: syncModel.nextBeforeSeq,
+    unreadFromStreamSequence: syncModel.unreadFromStreamSequence,
+    writeEligible: syncModel.writeEligible,
   });
 
   renderStatus();
@@ -353,8 +361,13 @@ function run() {
   // screen untouched; with no prior install the session stays hidden.
   const accepted = stageAndInstall();
   if (!accepted) return;
-
-  // M1 strictly read-only: no SSE auto-open, no pending-op resume.
+  streamConnecting = true;
+  setConn('reconnecting', 'opening-live');
+  try {
+    window.GlassesBridge.openStream(syncModel.connectionEpoch, syncModel.streamSequence);
+  } catch (error) {
+    requireResync('open-stream-failed');
+  }
 }
 
 // fetchSnapshot() is TRANSPORT-ONLY: it verifies an HTTP-200 object body and
@@ -414,8 +427,14 @@ function stageAndInstall() {
 function installSnapshot(staged) {
   if (identityFailure) return;
   const chat = $('chat');
-  const preserveBottom = isNearBottom(chat);
-  const previousTop = chat.scrollTop;
+  const preserveBottom = !hasInstalled || isNearBottom(chat);
+  if (hasInstalled && !preserveBottom) core.enterHistoryReading(syncModel, captureViewportAnchor(chat));
+  else core.enterFollowing(syncModel);
+  const installedSync = core.installCompleteSnapshot(syncModel, staged);
+  if (!installedSync.ok) {
+    trace('sync-snapshot-rejected', { code: installedSync.code });
+    return;
+  }
 
   generation = String(staged.serverGeneration || '');
   lastSeq = Number(staged.attachment.history.asOfSeq);
@@ -431,8 +450,7 @@ function installSnapshot(staged) {
     if (Number.isFinite(seq)) seenSeqs.add(seq);
   }
 
-  // Atomic adoption: the staged detached conversation becomes the live one.
-  conversation = staged.conversation === undefined ? conversation : staged.conversation;
+  conversation = syncModel.conversation;
   hasInstalled = true;
 
   $('events').innerHTML = '';
@@ -446,7 +464,7 @@ function installSnapshot(staged) {
   showProvision(false);
   showIdentityError(false, '', '');
   showSession(true);
-  renderChat(preserveBottom, previousTop);
+  renderChat(preserveBottom);
   renderStatus();
   renderComposer();
   trace('snapshot-installed', {
@@ -543,38 +561,27 @@ function recoverSnapshot(reason) {
   }
 }
 
-function onSseLine(eventName, data, id) {
+function onSseLine(callbackEpoch, eventName, data, id) {
   if (identityFailure) {
     trace('sse-ignored-identity-failure', { event: eventName || null, id: id || null });
     return;
   }
+  if (callbackEpoch !== syncModel.connectionEpoch) {
+    trace('stale-stream-line-dropped', { callbackEpoch: callbackEpoch || null, currentEpoch: syncModel.connectionEpoch, event: eventName || null });
+    return;
+  }
 
-  let decoded = data;
-  try { decoded = JSON.parse(data); } catch (_) {}
+  let decoded;
+  try { decoded = JSON.parse(data); }
+  catch (_) { requireResync('malformed-stream-json'); return; }
 
   if (eventName === 'hello') {
-    const expected = configuredSession();
-    const actual = decoded && typeof decoded === 'object'
-      ? String(decoded.sessionId || '').trim()
-      : '';
-    trace('sse-hello', {
-      expectedSession: expected,
-      actualSession: actual,
-      generation: decoded && decoded.serverGeneration,
-    });
-    if (!expected || actual !== expected) {
-      enterSessionMismatch(expected, actual, 'sse-hello');
-      return;
-    }
-
+    const judged = core.acceptStreamHello(syncModel, decoded);
+    if (!judged.ok) { requireResync('hello-' + judged.code); return; }
     streamVerified = true;
     cancelHelloTimer();
-    if (decoded.serverGeneration && generation && decoded.serverGeneration !== generation) {
-      recoverSnapshot('generation-change');
-      return;
-    }
     setConn('open', 'live');
-    recoverSnapshot('stream-open');
+    trace('sse-hello-accepted', { epoch: syncModel.connectionEpoch, streamSequence: syncModel.streamSequence });
     return;
   }
 
@@ -583,40 +590,24 @@ function onSseLine(eventName, data, id) {
     return;
   }
 
-  if (eventName === 'gap') {
-    trace('sse-gap', decoded);
-    recoverSnapshot('server-gap');
-    return;
-  }
-  if (eventName !== 'projection' || !decoded || typeof decoded !== 'object') {
-    renderRaw(eventName, id);
-    return;
-  }
-
-  if (decoded.generation && generation && decoded.generation !== generation) {
-    trace('projection-generation-mismatch', { expected: generation, actual: decoded.generation, seq: decoded.seq });
-    recoverSnapshot('projection-generation-change');
-    return;
-  }
-
-  const seq = Number(decoded.seq);
-  if (!Number.isFinite(seq)) {
-    trace('projection-invalid-seq', { id: id || null, type: decoded.type || null });
-    return;
-  }
-  if (seq <= lastSeq || seenSeqs.has(seq)) {
-    trace('projection-deduplicated', { seq: seq, lastSeq: lastSeq });
-    return;
-  }
-  if (lastSeq >= 0 && seq !== lastSeq + 1) {
-    trace('projection-client-gap', { lastSeq: lastSeq, nextSeq: seq });
-    recoverSnapshot('client-sequence-gap');
-    return;
-  }
-  applyLiveProjection(decoded);
+  if (eventName === 'resync-required') { requireResync('server-' + String(decoded?.reason || 'resync')); return; }
+  if (eventName !== 'projection' || !decoded || typeof decoded !== 'object') { renderRaw(eventName, id); return; }
+  const judged = core.applyStreamDelta(syncModel, decoded);
+  if (!judged.ok) { requireResync('delta-' + judged.code); return; }
+  conversation = syncModel.conversation;
+  lastSeq = syncModel.historyAsOfSeq;
+  seenSeqs.add(decoded.event.seq);
+  $('asof').textContent = String(lastSeq);
+  addEventRow(decoded.event);
+  renderChat(syncModel.presentationMode === 'following');
+  trace('projection-accepted', { streamSequence: syncModel.streamSequence, historyAsOfSeq: syncModel.historyAsOfSeq });
 }
 
-function onStreamState(state, detail) {
+function onStreamState(callbackEpoch, state, detail) {
+  if (callbackEpoch !== syncModel.connectionEpoch) {
+    trace('stale-stream-state-dropped', { callbackEpoch: callbackEpoch || null, currentEpoch: syncModel.connectionEpoch, state: state || null });
+    return;
+  }
   trace('stream-state', { state: state, detail: detail || null, lastSeq: lastSeq });
   if (identityFailure) {
     try { window.GlassesBridge.closeStream(); } catch (_) {}
@@ -634,12 +625,51 @@ function onStreamState(state, detail) {
     armHelloTimeout();
     return;
   }
+  requireResync(state === 'closed' ? 'stream-closed' : ('stream-error' + (detail ? '-' + detail : '')));
+}
 
-  streamOpen = false;
-  streamConnecting = false;
-  streamVerified = false;
-  cancelHelloTimer();
-  scheduleReconnect(state === 'closed' ? 'closed·reconnect' : ('offline' + (detail ? '·' + detail : '')));
+function requireResync(reason) {
+  if (identityFailure) return;
+  if (syncModel.syncState === 'resyncing' && reconnectTimer !== null) {
+    trace('resync-coalesced', { reason: reason, epoch: syncModel.connectionEpoch });
+    return;
+  }
+  core.markResyncRequired(syncModel, reason);
+  stopTransport(reason);
+  setConn('reconnecting', 'resyncing-readonly');
+  trace('resync-required', { reason: reason, epoch: syncModel.connectionEpoch, streamSequence: syncModel.streamSequence, historyAsOfSeq: syncModel.historyAsOfSeq });
+  scheduleReconnect(reason);
+}
+
+function loadOlderHistory() {
+  if (!hasInstalled || syncModel.nextBeforeSeq === null || syncModel.nextBeforeSeq <= 0 || recovering || historyLoading) return;
+  historyLoading = true;
+  const beforeSeq = syncModel.nextBeforeSeq;
+  const limit = 50;
+  const issued = {
+    connectionEpoch: syncModel.connectionEpoch,
+    serverGeneration: syncModel.serverGeneration,
+    attachmentGeneration: syncModel.attachmentGeneration,
+  };
+  const path = '/glasses/v1/history?epoch=' + encodeURIComponent(syncModel.connectionEpoch) + '&beforeSeq=' + beforeSeq + '&limit=' + limit;
+  try {
+    const response = nativeFetch(path);
+    if (syncModel.syncState === 'resyncing' ||
+        syncModel.connectionEpoch !== issued.connectionEpoch ||
+        syncModel.serverGeneration !== issued.serverGeneration ||
+        syncModel.attachmentGeneration !== issued.attachmentGeneration) {
+      trace('stale-history-response-dropped', { issuedEpoch: issued.connectionEpoch, currentEpoch: syncModel.connectionEpoch });
+      return;
+    }
+    if (response.status !== 200 || !response.body || typeof response.body !== 'object') { requireResync('history-fetch-failed'); return; }
+    const judged = core.prependHistoryPage(syncModel, response.body, { beforeSeq: beforeSeq, limit: limit });
+    if (!judged.ok) { requireResync('history-' + judged.code); return; }
+    conversation = syncModel.conversation;
+    renderChat(false);
+    trace('history-page-accepted', { beforeSeq: beforeSeq, nextBeforeSeq: syncModel.nextBeforeSeq, eventCount: response.body.events.length });
+  } finally {
+    historyLoading = false;
+  }
 }
 
 function applyLiveProjection(event) {
@@ -683,36 +713,139 @@ function isNearBottom(node) {
 
 function renderChat(forceBottom, preservedTop) {
   const chat = $('chat');
-  const shouldStick = Boolean(forceBottom) || isNearBottom(chat);
+  const shouldStick = Boolean(forceBottom) || syncModel.presentationMode === 'following';
   const oldTop = Number.isFinite(preservedTop) ? preservedTop : chat.scrollTop;
+  const anchor = shouldStick ? null : (syncModel.anchor || captureViewportAnchor(chat));
   const items = core.conversationItems(conversation);
   chat.innerHTML = '';
 
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-chat';
-    empty.textContent = 'No projected text messages yet.';
+    empty.textContent = 'No projected messages yet.';
     chat.appendChild(empty);
   } else {
     for (const item of items) {
-      const article = document.createElement('article');
-      article.className = 'message ' + item.role + (item.partial ? ' partial' : '');
-      article.dataset.seq = String(item.seq);
-      const role = document.createElement('span');
-      role.className = 'role';
-      role.textContent = item.role === 'user'
-        ? 'you'
-        : (item.partial ? 'assistant · streaming' : 'assistant');
-      const body = document.createElement('span');
-      body.className = 'body';
-      body.textContent = item.text;
-      article.append(role, body);
-      chat.appendChild(article);
+      chat.appendChild(renderBlockItem(item));
     }
   }
 
   if (shouldStick) chat.scrollTop = chat.scrollHeight;
-  else chat.scrollTop = oldTop;
+  else if (!restoreViewportAnchor(chat, anchor)) chat.scrollTop = oldTop;
+  renderNewOutputState();
+}
+
+function captureViewportAnchor(chat) {
+  if (!chat || typeof chat.getBoundingClientRect !== 'function') return null;
+  const viewportTop = chat.getBoundingClientRect().top;
+  const blocks = [...chat.querySelectorAll('[data-block-id]')];
+  const node = blocks.find((candidate) => typeof candidate.getBoundingClientRect === 'function' && candidate.getBoundingClientRect().bottom > viewportTop) || blocks[0];
+  if (!node) return null;
+  const rect = node.getBoundingClientRect();
+  return { blockId: node.dataset.blockId || '', sourceSeq: Number(node.dataset.seq), offsetPx: rect.top - viewportTop };
+}
+
+function restoreViewportAnchor(chat, anchor) {
+  if (!anchor || !anchor.blockId || typeof chat.getBoundingClientRect !== 'function') return false;
+  const node = [...chat.querySelectorAll('[data-block-id]')].find((candidate) => candidate.dataset.blockId === anchor.blockId);
+  if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+  const currentOffset = node.getBoundingClientRect().top - chat.getBoundingClientRect().top;
+  chat.scrollTop += currentOffset - anchor.offsetPx;
+  return true;
+}
+
+function renderNewOutputState() {
+  const node = $('new-output');
+  if (!node) return;
+  node.classList.toggle('hidden', !syncModel.unread);
+  node.textContent = 'New output';
+}
+
+// Renders ONE canonical projection block as a stable message article. The
+// `blockId` is the stable anchor for M1 reanchoring (AC3); `seq` is the durable
+// source watermark and `kind` the typed projection kind. Every body is bounded:
+// images show identity + intrinsic metadata (never base64/path/URL), tool/
+// status/request/error kinds are compact canonical forms.
+function renderBlockItem(item) {
+  const article = document.createElement('article');
+  const kind = typeof item.kind === 'string' ? item.kind : 'text';
+  const roleClass = typeof item.role === 'string' && item.role ? item.role : kind;
+  article.className = 'message ' + roleClass + (item.partial ? ' partial' : '');
+  article.dataset.seq = String(item.seq != null ? item.seq : '');
+  article.dataset.blockId = String(item.blockId || '');
+  article.dataset.kind = kind;
+
+  const role = document.createElement('span');
+  role.className = 'role';
+  role.textContent = roleLabel(item, kind);
+  const body = document.createElement('span');
+  body.className = 'body';
+  appendBoundedBody(body, item, kind);
+  article.append(role, body);
+  return article;
+}
+
+function roleLabel(item, kind) {
+  if (kind === 'text' || kind === 'image') {
+    if (item.role === 'tool') return 'tool result';
+    return item.role === 'user' ? 'you' : (item.partial ? 'assistant · streaming' : 'assistant');
+  }
+  if (kind === 'partial') return 'assistant · streaming';
+  if (kind === 'tool/call') return 'tool';
+  if (kind === 'tool/result') return 'tool result';
+  if (kind === 'status') return 'status';
+  if (kind === 'request') return 'request';
+  if (kind === 'error') return 'error';
+  return kind;
+}
+
+function imageMarker(value) {
+  const dims = Number.isInteger(value && value.width) && Number.isInteger(value && value.height)
+    ? ' ' + String(value.width) + 'x' + String(value.height)
+    : '';
+  return '[image ' + (typeof value === 'object' && typeof value.mediaType === 'string' ? value.mediaType : 'raster') + dims + ']';
+}
+
+function appendBoundedBody(bodyNode, item, kind) {
+  const text = (v) => (typeof v === 'string' ? v : '');
+  if (kind === 'text' || kind === 'partial') {
+    bodyNode.textContent = text(item.text);
+  } else if (kind === 'image') {
+    bodyNode.textContent = imageMarker(item);
+  } else if (kind === 'tool/call') {
+    bodyNode.textContent = 'call ' + text(item.name) + '(' + (text(item.arguments) || '').slice(0, 60) + ')';
+  } else if (kind === 'tool/result') {
+    const parts = [];
+    if (item.error === true) parts.push('error');
+    // Ordered content[] (text/image entries) is rendered IN EXACT order so a
+    // nested text->image->text result is never flattened. Legacy shell-only
+    // fixtures (no content[]) fall back to the shell text.
+    const content = Array.isArray(item.content) ? item.content : null;
+    if (content) {
+      for (const part of content) {
+        if (!part || typeof part !== 'object') continue;
+        if (part.kind === 'text') {
+          const t = text(part.text);
+          if (t) parts.push(t);
+        } else if (part.kind === 'image') {
+          parts.push(imageMarker(part));
+        }
+      }
+    } else if (text(item.text)) {
+      parts.push(text(item.text));
+    }
+    bodyNode.textContent = parts.join(' ');
+  } else if (kind === 'status') {
+    bodyNode.textContent = 'turn ' + String(item.turn != null ? item.turn : '?') + ' ' + text(item.state);
+  } else if (kind === 'request') {
+    if (typeof item.reason === 'string' && item.reason) bodyNode.textContent = 'reason: ' + item.reason;
+    else if (text(item.provider) || text(item.model)) bodyNode.textContent = text(item.provider) + ' ' + text(item.model);
+    else bodyNode.textContent = 'request';
+  } else if (kind === 'error') {
+    bodyNode.textContent = text(item.message) || 'error';
+  } else {
+    bodyNode.textContent = '';
+  }
 }
 
 function renderComposer() {

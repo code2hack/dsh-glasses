@@ -25,7 +25,7 @@ import java.util.concurrent.Future
  *   endpoint()                         configured base, never a credential
  *   sessionId()                        expected configured DSH session
  *   fetch(path, bodyJson)              authenticated glasses/v1 path only
- *   openStream()                       one authenticated SSE connection
+ *   openStream(epoch, baseSequence)    one authenticated SSE connection
  *   closeStream()                      cancel the current SSE connection
  *   clipboardText()                    current plain/coerced clipboard text
  *   debugSemanticControl(name)         DEBUG-only semantic reducer injection
@@ -168,10 +168,10 @@ class GlassesBridge(private val context: Context) {
 
     @JavascriptInterface
     @Synchronized
-    fun openStream() {
-        if (closed) return
+    fun openStream(connectionEpoch: String, baseStreamSequence: Long) {
+        if (closed || connectionEpoch.isBlank() || baseStreamSequence < -1) return
         stopStreamLocked()
-        streamTask = network.submit { runStream() }
+        streamTask = network.submit { runStream(connectionEpoch, baseStreamSequence) }
     }
 
     /** Cancel the stream without closing the reusable bridge/executor. */
@@ -204,18 +204,20 @@ class GlassesBridge(private val context: Context) {
         task?.cancel(true)
     }
 
-    private fun runStream() {
+    private fun runStream(connectionEpoch: String, baseStreamSequence: Long) {
         val endpoint = base()
         val credential = token()
         if (endpoint.isEmpty() || credential.isEmpty()) {
-            jsStream("error", "not-configured")
+            jsStream(connectionEpoch, "error", "not-configured")
             return
         }
 
         var conn: HttpURLConnection? = null
         var opened = false
         try {
-            val connection = (URL(endpoint + "/glasses/v1/stream").openConnection() as HttpURLConnection).apply {
+            val epoch = java.net.URLEncoder.encode(connectionEpoch, StandardCharsets.UTF_8.name())
+            val streamUrl = "$endpoint/glasses/v1/stream?epoch=$epoch&baseStreamSequence=$baseStreamSequence"
+            val connection = (URL(streamUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8_000
                 readTimeout = 0
@@ -229,30 +231,30 @@ class GlassesBridge(private val context: Context) {
             streamConnection = connection
             val status = connection.responseCode
             if (status != 200) {
-                jsStream("error", "HTTP $status")
+                jsStream(connectionEpoch, "error", "HTTP $status")
                 return
             }
 
             opened = true
-            jsStream("open", null)
-            parseSse(BufferedReader(InputStreamReader(connection.inputStream, StandardCharsets.UTF_8)))
+            jsStream(connectionEpoch, "open", null)
+            parseSse(connectionEpoch, BufferedReader(InputStreamReader(connection.inputStream, StandardCharsets.UTF_8)))
         } catch (e: Exception) {
             val stillCurrent = streamConnection === conn
             if (!closed && stillCurrent && !Thread.currentThread().isInterrupted) {
                 Log.w(TAG, "stream failed", e)
-                jsStream("error", e.message ?: "stream-error")
+                jsStream(connectionEpoch, "error", e.message ?: "stream-error")
             }
         } finally {
             val stillCurrent = streamConnection === conn
             if (stillCurrent) streamConnection = null
             conn?.disconnect()
             if (opened && !closed && stillCurrent && !Thread.currentThread().isInterrupted) {
-                jsStream("closed", null)
+                jsStream(connectionEpoch, "closed", null)
             }
         }
     }
 
-    private fun parseSse(reader: BufferedReader) {
+    private fun parseSse(connectionEpoch: String, reader: BufferedReader) {
         reader.use {
             var eventName = "message"
             var eventId = ""
@@ -262,7 +264,7 @@ class GlassesBridge(private val context: Context) {
                 if (data.isNotEmpty()) {
                     jsEval(
                         "window.glassesOnLine&&window.glassesOnLine(" +
-                            "${jsQ(eventName)},${jsQ(data.toString())},${jsQ(eventId)})",
+                            "${jsQ(connectionEpoch)},${jsQ(eventName)},${jsQ(data.toString())},${jsQ(eventId)})",
                     )
                 }
                 eventName = "message"
@@ -293,8 +295,8 @@ class GlassesBridge(private val context: Context) {
     private fun jsonResult(status: Int, body: String): String =
         JSONObject().put("status", status).put("body", body).toString()
 
-    private fun jsStream(state: String, detail: String?) =
-        jsEval("window.glassesOnStream&&window.glassesOnStream(${jsQ(state)},${detail?.let(::jsQ) ?: "null"})")
+    private fun jsStream(connectionEpoch: String, state: String, detail: String?) =
+        jsEval("window.glassesOnStream&&window.glassesOnStream(${jsQ(connectionEpoch)},${jsQ(state)},${detail?.let(::jsQ) ?: "null"})")
 
     private fun jsEval(code: String) {
         if (closed) return

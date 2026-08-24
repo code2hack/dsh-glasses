@@ -3,7 +3,7 @@
 // Loads as an out-of-tree DSH (cordis) plugin on the pinned rc.2 runtime.
 // Exposes the authenticated /glasses/v1/* namespace:
 //   GET  /glasses/v1/bootstrap         canonical M1 snapshot (single attachment)
-//   GET  /glasses/v1/stream            pre-existing TB0 SSE (legacy, unadvertised)
+//   GET  /glasses/v1/stream            epoch-bound race-free M1 SSE
 //   other /glasses/v1/*                -> 404 fallback (write routes quarantined)
 //
 // M1 intentionally does NOT register /glasses/v1/draft/mutations or
@@ -23,9 +23,10 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
-import { projectEvent } from "./projection.js";
 import { createGlassesDshAdapter } from "./dsh-adapter.js";
 import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from "./snapshot.js";
+import { createIssuedBaseRegistry, readBoundHistoryPage } from "./live-sync.js";
+import { startRaceFreeLiveStream } from "./live-stream.js";
 
 export const name = "dsh-glasses-plugin";
 
@@ -48,8 +49,6 @@ export const Config = z.object({
 // required for ordinary M1 startup. A follow-up milestone that reactivates the
 // write paths restores them.
 export const inject = ["webServer", "sessionQuery", "sessions", "agents"];
-
-const PROTOCOL_MAJOR = 1;
 
 function safeEqual(a, b) {
   const ba = Buffer.from(String(a));
@@ -90,6 +89,7 @@ export async function apply(ctx, config) {
   let connectionEpochCounter = 0;
   const nextConnectionEpoch = () =>
     `epoch-${(++connectionEpochCounter).toString(36)}-${randomUUID().slice(0, 8)}`;
+  const issuedBases = createIssuedBaseRegistry();
   const log = (...args) => console.log("[dsh-glasses-plugin]", ...args);
 
   // SPEC §5 isolation: the M1 read path touches DSH internals only through the
@@ -119,6 +119,7 @@ export async function apply(ctx, config) {
         connectionEpoch: nextConnectionEpoch(),
         maxEvents: effBootstrapMaxEvents,
       });
+      issuedBases.issue(snapshot);
       return sendJson(res, 200, snapshot);
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });
@@ -127,49 +128,82 @@ export async function apply(ctx, config) {
 
   const handleStream = async (req, res) => {
     if (!requireAuth(req)) {
-      res.writeHead(401, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
-      return;
+      return sendJson(res, 401, { ok: false, error: "unauthorized" });
     }
+    const requestUrl = new URL(req.url ?? "/glasses/v1/stream", "http://127.0.0.1");
+    const epoch = requestUrl.searchParams.get("epoch") ?? "";
+    const baseText = requestUrl.searchParams.get("baseStreamSequence");
+    const requestedBase = baseText !== null && /^-?\d+$/.test(baseText) ? Number(baseText) : NaN;
+    if (!epoch || !Number.isSafeInteger(requestedBase) || requestedBase < -1) {
+      return sendJson(res, 400, { ok: false, error: "invalid-stream-base" });
+    }
+    const issued = issuedBases.get(epoch);
+    if (!issued) return sendJson(res, 409, { ok: false, error: "stale-connectionEpoch" });
+    if (issued.baseStreamSequence !== requestedBase) {
+      return sendJson(res, 409, { ok: false, error: "baseStreamSequence-mismatch" });
+    }
+    let claimed;
+    try {
+      claimed = issuedBases.claim(epoch);
+    } catch (error) {
+      return sendJson(res, 409, { ok: false, error: error?.code ?? "stream-claim-failed" });
+    }
+
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    res.write("event: hello\n");
-    res.write(`data: ${JSON.stringify({ protocolMajor: PROTOCOL_MAJOR, serverGeneration, sessionId })}\n\n`);
-
-    let lastSeq = -1;
-    let closed = false;
-
     const t0 = Date.now();
-    const heartbeat = setInterval(() => {
-      if (closed) return;
-      res.write(`: hb ${Date.now() - t0}\n\n`);
-    }, heartbeatMs);
-
-    const onEvent = (evt) => {
-      if (closed) return;
-      const s = typeof evt?.seq === "number" ? evt.seq : -1;
-      if (lastSeq !== -1 && s !== lastSeq + 1 && s > lastSeq + 1) {
-        res.write(`id: ${s}\nevent: gap\ndata: ${JSON.stringify({ reason: "sequence-gap", lastSeq, nextSeq: s })}\n\n`);
-      }
-      lastSeq = Math.max(lastSeq, s);
-      res.write(`id: ${s}\nevent: projection\n`);
-      res.write(`data: ${JSON.stringify({ ...projectEvent(evt), generation: serverGeneration })}\n\n`);
-    };
-
-    // The stream read seam now goes through the adapter (SPEC §5 isolation):
-    // observeSession strictly filters the configured session and returns a
-    // disposer. No new SSE semantics are added by #27.
-    const offEvents = adapter.observeSession(sessionId, onEvent);
-
-    req.on("close", () => {
-      closed = true;
+    let heartbeat;
+    let ended = false;
+    const abort = new AbortController();
+    const closeResponse = () => {
+      if (ended) return;
+      ended = true;
       clearInterval(heartbeat);
-      offEvents?.();
-    });
+      abort.abort();
+      res.end();
+    };
+    req.on("close", () => abort.abort());
+    const sink = {
+      emit(event, data, id) {
+        if (ended) return false;
+        if (id !== undefined && !res.write(`id: ${id}\n`)) return false;
+        if (!res.write(`event: ${event}\n`)) return false;
+        return res.write(`data: ${JSON.stringify(data)}\n\n`);
+      },
+      close: closeResponse,
+    };
+    heartbeat = setInterval(() => {
+      if (!res.write(`: hb ${Date.now() - t0}\n\n`)) {
+        sink.emit("resync-required", { reason: "transport-backpressure" });
+        closeResponse();
+      }
+    }, heartbeatMs);
+    await startRaceFreeLiveStream({ adapter, issuedBase: claimed, sink, signal: abort.signal });
+  };
+
+  const handleHistory = async (req, res) => {
+    if (!requireAuth(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    if (req.method && req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method-not-allowed" });
+    const requestUrl = new URL(req.url ?? "/glasses/v1/history", "http://127.0.0.1");
+    const epoch = requestUrl.searchParams.get("epoch") ?? "";
+    const beforeText = requestUrl.searchParams.get("beforeSeq");
+    const limitText = requestUrl.searchParams.get("limit");
+    const beforeSeq = beforeText !== null && /^\d+$/.test(beforeText) ? Number(beforeText) : NaN;
+    const limit = limitText !== null && /^\d+$/.test(limitText) ? Number(limitText) : NaN;
+    if (!epoch || !Number.isSafeInteger(beforeSeq) || !Number.isSafeInteger(limit) || limit < 1 || limit > adapter.maxEvents) {
+      return sendJson(res, 400, { ok: false, error: "invalid-history-request" });
+    }
+    const issued = issuedBases.get(epoch);
+    if (!issued) return sendJson(res, 409, { ok: false, error: "stale-connectionEpoch" });
+    try {
+      return sendJson(res, 200, await readBoundHistoryPage(adapter, issued, { beforeSeq, limit }));
+    } catch (error) {
+      return sendJson(res, 500, { ok: false, error: error?.code ?? String(error?.message ?? error) });
+    }
   };
 
   // ---- TB0 host-write slice (amended contract) ---------------------------
@@ -519,6 +553,7 @@ export async function apply(ctx, config) {
 
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/bootstrap", handler: handleBootstrap }), "glasses.bootstrap");
   ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/stream", handler: handleStream }), "glasses.stream");
+  ctx.effect(() => ctx.webServer.register({ kind: "exact", path: "/glasses/v1/history", handler: handleHistory }), "glasses.history");
   // M1 write quarantine: /glasses/v1/draft/mutations and /glasses/v1/actions
   // are NOT registered in ordinary M1 startup, so those paths fall through to
   // the /glasses/v1 prefix handler and return 404. The TB0 implementations

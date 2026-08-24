@@ -4,7 +4,7 @@
 //
 // Env:
 //   DSH_BIN   (default: dsh on PATH)
-//   DSH_HOME  (default: /tmp/dsh-tb0-home)
+//   DSH_HOME  (required explicit disposable absolute path outside ~/.dsh)
 //   SESSION_ID (default: session-tb0-disposable)
 //   PORT      (default: 3190)
 //   TOKEN     (if absent, a fresh random dev token is minted and exported)
@@ -15,14 +15,16 @@
 // cleared; cold session can Send; every crash boundary => 0 or 1 durable
 // user/message (correlated by source.rpcId === operationId).
 
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { rm, readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { assertDisposableDshHome, assertPortSpawnable, ensureHome } from "./disposable-runtime.mjs";
 
 const execFileP = promisify(execFile);
-const DIR = process.env.DSH_HOME ?? "/tmp/dsh-tb0-home";
+const DIR = assertDisposableDshHome(process.env.DSH_HOME);
 let SID = process.env.SESSION_ID ?? "session-tb0-disposable";
 const WORK = process.env.WORKSPACE_DIR ?? "/tmp/dsh-tb0-workspace";
 const PORT = Number(process.env.PORT ?? 3190);
@@ -84,22 +86,11 @@ async function promptHost(content, rpcId = randomUUID()) {
 }
 
 let proc = null;
-function killPortOwner() {
-  try {
-    const out = execFileSync("ss", ["-tlnp"], { encoding: "utf8" });
-    for (const line of out.split("\n")) {
-      if (!line.includes(`:${PORT} `)) continue;
-      const m = line.match(/pid=(\d+)/);
-      if (m) {
-        try { process.kill(Number(m[1]), "SIGKILL"); } catch {}
-      }
-    }
-  } catch {}
-}
 
-async function startInstance(sid = SID, extraEnv = {}) {
-  if (proc) { proc.kill("SIGKILL"); await sleep(1500); }
-  killPortOwner(); // the disposable port is exclusively ours; never let a stale holder rebind
+async function startInstance(sid = SID, extraEnv = {}, allowMissingSession = false) {
+  if (proc?.exitCode === null) { proc.kill("SIGKILL"); await sleep(1500); }
+  proc = null;
+  await assertPortSpawnable(PORT);
   await sleep(500);
   SID = sid;
   proc = spawn("dsh", ["--profile", "web", "--port", String(PORT)], {
@@ -117,9 +108,10 @@ async function startInstance(sid = SID, extraEnv = {}) {
     if (proc.exitCode !== null) break;
     try {
       const r = await bootstrap("");
-      const got = r.json?.attachment?.sessionId;
+      const got = r.json?.attachments?.[0]?.sessionId ?? r.json?.attachment?.sessionId;
       if (process.env.VERBOSE && i % 5 === 0) console.log("[verbose] boot-poll", i, "status", r.status, "got", got, "want", SID);
       if (r.status === 200 && got === SID) return;
+      if (allowMissingSession && r.status !== 401 && r.json) return;
       if (r.status === 200 && got && got !== SID) throw new Error("stale instance bound to port " + got);
     } catch (e) {
       if (String(e).includes("stale instance")) throw e;
@@ -179,8 +171,21 @@ let seq = 0;
 const opId = (tag) => `${tag}-${seq++}`;
 
 try {
-  killPortOwner();
-  await startInstance();           // seed instance used to create fresh sessions
+  // Prepare a REAL plugin-loaded disposable home (the same ensureHome path the
+  // other runtime suites use). host-write-recovery_booted directly against a
+  // bare DSH_HOME previously, which on a fresh machine produced a profile with
+  // NO dsh-glasses-plugin installed — /glasses/v1/* never registered and every
+  // poll was 404. ensureHome installs the worktree plugin into profile web.
+  // A leftover junk home (aborted earlier run) is cleared first; a genuinely
+  // pre-prepared home is reused by ensureHome itself.
+  const pluginMarker = `${DIR}/profiles/web/node_modules/dsh-glasses-plugin/package.json`;
+  if (existsSync(DIR) && !existsSync(pluginMarker)) {
+    await rm(DIR, { recursive: true, force: true });
+  }
+  await ensureHome(DIR, PORT);
+
+  await assertPortSpawnable(PORT);
+  await startInstance(SID, {}, true); // seed instance may start before the fixed session exists
   ok("instance boot");
   await prepareSessionPool();       // pre-create all scenario sessions (settled before use)
 
@@ -345,7 +350,7 @@ try {
     // If the send still holds, draft must be untouched (revision 1, "orig",
     // locked). If the send already settled, the draft is legitimately cleared
     // (revision 2, "") — never a corrupted intermediate. Both are consistent.
-    const st = JSON.parse(await (await import("node:fs/promises")).readFile("/tmp/dsh-tb0-home/storages/glasses_plugin.json", "utf8"));
+    const st = JSON.parse(await (await import("node:fs/promises")).readFile(`${DIR}/storages/glasses_plugin.json`, "utf8"));
     const rec = st.tables.state[SID];
     const okState = (rec.draft.revision === 1 && rec.draft.text === "orig" && rec.draft.lockedByOperationId) ||
                     (rec.draft.revision === 2 && rec.draft.text === "");
@@ -412,10 +417,12 @@ try {
   console.log("\n=== SUMMARY ===");
   for (const [n, r] of results) console.log(`${r} ${n}`);
   const failed = results.filter(([, r]) => r === "FAIL");
+  if (proc?.exitCode === null) { proc.kill("SIGKILL"); await sleep(1000); }
   if (failed.length) { console.log(`FAILED: ${failed.length}`); process.exit(1); }
   console.log("ALL PASS");
   process.exit(0);
 } catch (e) {
+  if (proc?.exitCode === null) { proc.kill("SIGKILL"); await sleep(1000); }
   console.error("FATAL", e);
   process.exit(2);
 }

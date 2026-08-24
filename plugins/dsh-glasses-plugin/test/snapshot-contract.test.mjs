@@ -21,10 +21,10 @@ function canonicalSnapshot(over = {}) {
     projected: {
       asOfSeq: 4,
       events: [
-        { seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "hello" } },
-        { seq: 2, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } },
-        { seq: 3, type: "assistant/chunk", blockId: "partial:1:1", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } },
-        { seq: 4, type: "assistant/message", blockId: "message:a-a1", turn: 1, step: 1, message: { role: "assistant", id: "a1", text: "final", provider: "p", model: "m" } },
+        { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "hello" }] },
+        { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }] },
+        { seq: 3, type: "assistant/chunk", blocks: [{ blockId: "partial:1:1", kind: "partial", turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "par" } }] },
+        { seq: 4, type: "assistant/message", turn: 1, step: 1, blocks: [{ blockId: "message:a-a1:content:0", kind: "text", contentIndex: 0, role: "assistant", text: "final" }] },
       ],
     },
     agentState: "idle",
@@ -78,8 +78,8 @@ const record = (name, verdict, detail) => {
         attachmentGeneration: 1,
         asOfSeq: 2,
         events: [
-          { seq: 1, type: "user/message", blockId: "message:u-s1", message: { role: "user", id: "", text: "x" } },
-          { seq: 2, type: "assistant/chunk", blockId: "partial:s2", chunk: { type: "text-delta", index: 0, text: "p" } },
+          { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-s1:content:0", kind: "text", contentIndex: 0, role: "user", text: "x" }] },
+          { seq: 2, type: "assistant/chunk", blocks: [{ blockId: "partial:s2", kind: "partial", turn: null, step: null, chunk: { type: "text-delta", index: 0, text: "p" } }] },
         ],
       },
     }],
@@ -140,7 +140,7 @@ const NEGATIVES = [
   ["invalid attachment state", (s) => { s.attachments[0].state = "ready"; }, "invalid-attachment-state"],
   ["malformed attachment", (s) => { s.attachments[0] = null; }, "malformed-attachment"],
   ["historyRead != true", (s) => { s.attachments[0].capabilities.historyRead = false; }, "historyRead-not-true"],
-  ["liveUpdates true", (s) => { s.attachments[0].capabilities.liveUpdates = true; }, "mutation-capability-enabled"],
+  ["liveUpdates false", (s) => { s.attachments[0].capabilities.liveUpdates = false; }, "liveUpdates-not-true"],
   ["draftMutations true", (s) => { s.attachments[0].capabilities.draftMutations = true; }, "mutation-capability-enabled"],
   ["send true", (s) => { s.attachments[0].capabilities.send = true; }, "mutation-capability-enabled"],
   ["steer true", (s) => { s.attachments[0].capabilities.steer = true; }, "mutation-capability-enabled"],
@@ -157,27 +157,46 @@ const NEGATIVES = [
   ["history.events not array", (s) => { s.attachments[0].history.events = {}; }, "history-events-not-array"],
   ["history.events undefined (never throws)", (s) => { s.attachments[0].history.events = undefined; }, "history-events-not-array"],
   ["history.events null (never throws)", (s) => { s.attachments[0].history.events = null; }, "history-events-not-array"],
-  ["message blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[0].blockId = "message:a-u1"; }, "type-blockId-mismatch"],
-  ["chunk blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[1].blockId = "message:a-1"; }, "type-blockId-mismatch"],
-  ["chunk blockId does not match its turn/step", (s) => { s.attachments[0].history.events[1].blockId = "partial:9:9"; }, "type-blockId-mismatch"],
-  ["assistant message blockId does not match its id", (s) => { s.attachments[0].history.events[3].blockId = "message:a-other"; }, "type-blockId-mismatch"],
-  ["projected event without type", (s) => { s.attachments[0].history.events[0].type = undefined; }, "malformed-projected-event"],
+  ["message blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[0].blocks[0].blockId = "message:a-u1:content:0"; }, "blockId-root-mismatch"],
+  ["chunk blockId wrong identity (prefix)", (s) => { s.attachments[0].history.events[1].blocks[0].blockId = "message:a-1"; }, "type-blockId-mismatch"],
+  ["chunk blockId does not match its turn/step", (s) => { s.attachments[0].history.events[1].blocks[0].blockId = "partial:9:9"; }, "type-blockId-mismatch"],
+  ["assistant message blockId does not match its id", (s) => { s.attachments[0].history.events[3].blocks[0].blockId = "message:a-other"; }, "blockId-root-mismatch"],
+  ["projected event without type", (s) => { s.attachments[0].history.events[0].type = undefined; }, "malformed-type"],
   ["duplicate message blockId", (s) => {
     s.streamSequence = 2;
     s.attachments[0].history.asOfSeq = 2;
     s.attachments[0].history.events = [
-      { seq: 1, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "a" } },
-      { seq: 2, type: "user/message", blockId: "message:u-u1", message: { role: "user", id: "u1", text: "b" } },
+      { seq: 1, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "a" }] },
+      { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "b" }] },
     ];
   }, "duplicate-blockId"],
-  ["message blockId wrong prefix", (s) => { s.attachments[0].history.events[0].blockId = "message:a-u1"; }, "type-blockId-mismatch"],
-  ["chunk blockId wrong prefix", (s) => { s.attachments[0].history.events[1].blockId = "message:a-1"; }, "type-blockId-mismatch"],
-  ["user/message wrong role", (s) => { s.attachments[0].history.events[0].message = { role: "assistant", id: "u1", text: "x" }; }, "type-role-mismatch"],
-  ["message missing text (structural)", (s) => { s.attachments[0].history.events[0].message = { role: "user", id: "u1" }; }, "malformed-projected-event"],
-  ["malformed projected chunk (no chunk.type)", (s) => { s.attachments[0].history.events[1].chunk = {}; }, "malformed-projected-event"],
-  ["descending event sequence", (s) => { s.attachments[0].history.events = [{ seq: 4, type: "step/end" }, { seq: 3, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
-  ["duplicate sequence", (s) => { s.attachments[0].history.events = [{ seq: 2, type: "step/end" }, { seq: 2, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "non-monotonic-seq"],
-  ["event seq > asOfSeq", (s) => { s.attachments[0].history.events = [{ seq: 5, type: "step/end" }, { seq: 4, type: "step/end" }]; }, "seq-beyond-asOfSeq"],
+  ["message tool-result residue without a shell (fail closed)", (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: "assistant/message", blocks: [{ blockId: "tool:r2:result:content:0", kind: "text", role: "tool", text: "orphan", contentIndex: 0 }] },
+      { seq: 2, type: "step/end", blocks: [] },
+    ];
+  }, "tool-result-shell-mismatch"],
+  ["message tool-result child mis-rooted under its shell", (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: "assistant/message", blocks: [
+        { blockId: "tool:r3:result", kind: "tool/result", callId: "r3", error: false },
+        { blockId: "tool:WRONG:result:content:0", kind: "text", role: "tool", text: "bad", contentIndex: 0 },
+      ] },
+      { seq: 2, type: "step/end", blocks: [] },
+    ];
+  }, "blockId-root-mismatch"],
+  ["message blockId wrong prefix", (s) => { s.attachments[0].history.events[0].blocks[0].blockId = "message:a-u1:content:0"; }, "blockId-root-mismatch"],
+  ["chunk blockId wrong prefix", (s) => { s.attachments[0].history.events[1].blocks[0].blockId = "message:a-1"; }, "type-blockId-mismatch"],
+  ["user/message wrong role", (s) => { s.attachments[0].history.events[0].blocks[0].role = "assistant"; }, "type-role-mismatch"],
+  ["message missing text (structural)", (s) => { delete s.attachments[0].history.events[0].blocks[0].text; }, "malformed-projected-event"],
+  ["malformed projected chunk (no chunk.type)", (s) => { s.attachments[0].history.events[1].blocks[0].chunk = {}; }, "malformed-projected-event"],
+  ["descending event sequence", (s) => { s.attachments[0].history.events = [{ seq: 4, type: "step/end", blocks: [] }, { seq: 3, type: "step/end", blocks: [] }, { seq: 4, type: "step/end", blocks: [] }]; }, "non-monotonic-seq"],
+  ["duplicate sequence", (s) => { s.attachments[0].history.events = [{ seq: 2, type: "step/end", blocks: [] }, { seq: 2, type: "step/end", blocks: [] }, { seq: 4, type: "step/end", blocks: [] }]; }, "non-monotonic-seq"],
+  ["event seq > asOfSeq (last event not watermark)", (s) => { s.attachments[0].history.events = [{ seq: 3, type: "step/end", blocks: [] }, { seq: 4, type: "step/end", blocks: [] }, { seq: 5, type: "step/end", blocks: [] }]; }, "asOfSeq-mismatch"],
   ["streamSequence != history.asOfSeq", (s) => { s.streamSequence = 99; }, "streamSequence-mismatch"],
   ["history beyond configured maximum", (s) => { /* maxEvents passed as option */ }, "history-beyond-max"],
   ["envelope ok field present", (s) => { s.ok = true; }, "envelope-ok-not-allowed"],

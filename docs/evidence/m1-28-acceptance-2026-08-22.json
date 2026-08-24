@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "ticket": {
+    "repository": "code2hack/dsh-glasses",
+    "number": 28,
+    "milestone": "M1",
+    "gate": "autonomous",
+    "blockedBy": {
+      "ticket": 27,
+      "stateAtAcceptance": "CLOSED"
+    }
+  },
+  "revision": {
+    "admittedBase": "6ac06af4a06f1547d26bfe822d6a5b81aef8c64b",
+    "productionHead": "9de5480f851aba5cec9f7893ff2a8c499119f9ca",
+    "acceptanceRunHead": "9de5480f851aba5cec9f7893ff2a8c499119f9ca",
+    "branch": "workflow/ticket-28",
+    "authoritySyncMerge": "9f5dec3",
+    "authorityMainIncluded": "fcf040b482e6f52292aa2d4aa4a58fd550779a8b",
+    "baseIsAncestor": true,
+    "productionFrozenBeforeAcceptance": true,
+    "postProductionChanges": "evidence-documents-only"
+  },
+  "provenance": {
+    "planSource": "FIRST_LINE",
+    "plan": "docs/dev/plan-m1-28-chatgpt-2026-08-22.md",
+    "acceptanceRunAt": "2026-08-24T13:18:52+08:00",
+    "syntheticData": true,
+    "nativeBoundary": "synthetic Android bridge around shipped app.js",
+    "physicalDeviceUsed": false,
+    "manualInputUsed": false,
+    "sharedDshProfileUsed": false,
+    "dshIsolation": "fresh explicit disposable DSH_HOME per runtime suite"
+  },
+  "dsh": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.1.1-rc.2",
+    "npmDistIntegrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==",
+    "compatibilityChecks": 10,
+    "compatibilityResult": "PASS"
+  },
+  "acceptanceCriteria": {
+    "AC1": {
+      "result": "PASS",
+      "summary": "Fresh snapshot epochs, exact hello bases, monotonic local stream sequence, and stale-epoch rejection were proved in contract, stream, fault, live-runtime, and narrow-edge suites."
+    },
+    "AC2": {
+      "result": "PASS",
+      "summary": "Canonical assistant, tool, status, request, error, image, partial, final, and user blocks share one projection law; live finalized output installs once without duplicating durable history."
+    },
+    "AC3": {
+      "result": "PASS",
+      "summary": "Following pins new output with unread false; history-reading preserves its stable anchor and exposes semantic unread on real live output."
+    },
+    "AC4": {
+      "result": "PASS",
+      "summary": "A real 52-event session with a 50-event bootstrap bound paged the older events through the authenticated proxy and prepended them once without reordering, watermark advance, anchor loss, or unread change."
+    },
+    "AC5": {
+      "result": "PASS",
+      "summary": "Gaps, duplicate/backwards sequence, wrong base/epoch/generation/attachment generation, malformed data, overflow, close, network failure, and stale history all stop live transport, disable writes, retain the last valid screen, and require atomic fresh-snapshot recovery."
+    },
+    "AC6": {
+      "result": "PASS",
+      "summary": "Real disconnect/reconnect and real rc.2 process restart restored committed history exactly once in fresh client state, with no committed semantic replay on the resumed streams."
+    }
+  },
+  "scenarioResults": [
+    { "name": "dsh compatibility and registry integrity", "command": "DSH_BIN=<pinned> node plugins/dsh-glasses-plugin/test/dsh-compat.test.mjs", "result": "PASS", "checks": 10 },
+    { "name": "snapshot builder", "command": "node plugins/dsh-glasses-plugin/test/snapshot.test.mjs", "result": "PASS" },
+    { "name": "snapshot wire contract", "command": "node plugins/dsh-glasses-plugin/test/snapshot-contract.test.mjs", "result": "PASS", "checks": 64 },
+    { "name": "canonical projection vocabulary and replay", "command": "node plugins/dsh-glasses-plugin/test/projection.test.mjs", "result": "PASS" },
+    { "name": "adapter unit boundary", "command": "node plugins/dsh-glasses-plugin/test/dsh-adapter.test.mjs", "result": "PASS", "checks": 27 },
+    { "name": "issued-base wire law", "command": "node plugins/dsh-glasses-plugin/test/live-sync-contract.test.mjs", "result": "PASS" },
+    { "name": "race-free stream", "command": "node plugins/dsh-glasses-plugin/test/stream.test.mjs", "result": "PASS" },
+    { "name": "authenticated bounded history", "command": "node plugins/dsh-glasses-plugin/test/history-paging.test.mjs", "result": "PASS" },
+    { "name": "disposable harness safety", "command": "node plugins/dsh-glasses-plugin/test/harness-safety.test.mjs", "result": "PASS" },
+    { "name": "Android client complete suite", "command": "npm --prefix apps/glasses-android test", "result": "PASS", "components": { "c0Core": "PASS", "snapshotChecks": 65, "domChecks": 37, "faultScenarios": 16 } },
+    { "name": "real rc.2 adapter", "command": "DSH_HOME=<fresh-disposable> DSH_BIN=<pinned> node plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs", "result": "PASS", "checks": 8 },
+    { "name": "real rc.2 live disconnect restart", "command": "DSH_HOME=<fresh-disposable> DSH_BIN=<pinned> node plugins/dsh-glasses-plugin/test/m1-live-runtime.test.mjs", "result": "PASS" },
+    { "name": "real full-chain narrow edge", "command": "DSH_HOME=<fresh-disposable> DSH_BIN=<pinned> node test/m1-narrow-edge.test.mjs", "result": "PASS" },
+    { "name": "narrow proxy isolation", "command": "node dev/glasses-proxy-smoke.mjs", "result": "PASS", "checks": 7 },
+    { "name": "debug APK", "command": "/home/code2hack/Android/gradle-9.1.0/bin/gradle :app:assembleDebug --no-daemon --max-workers=1", "result": "PASS" }
+  ],
+  "exactOnce": {
+    "liveRuntimeFinalSentinelOne": { "installedSourceSeqCount": 1, "stableBlockIdCount": 1 },
+    "liveRuntimeFinalSentinelTwo": { "installedSourceSeqCount": 1, "stableBlockIdCount": 1 },
+    "narrowOlderUserSentinel": { "renderCount": 1 },
+    "narrowLiveReadingSentinel": { "renderCount": 1 },
+    "narrowLiveFollowingSentinel": { "renderCount": 1 }
+  },
+  "negativeAssertions": {
+    "rawDshPayloadCrossedGlassesEdge": false,
+    "unattachedSessionObserved": false,
+    "mutationCapabilityEnabled": false,
+    "draftRouteRegistered": false,
+    "actionRouteRegistered": false,
+    "semanticMutationPostCount": 0,
+    "semanticActionPostCount": 0,
+    "pendingLegacyOperationReplayed": false,
+    "semanticOperationIdCreatedForReconnect": false,
+    "sseLastEventIdReplayUsed": false,
+    "oldConnectionEpochAcceptedAfterResync": false,
+    "oldServerGenerationDeltaAccepted": false,
+    "deltaAcceptedWithWrongBase": false,
+    "deltaAcceptedAcrossSequenceGap": false,
+    "malformedDeltaPartiallyInstalled": false,
+    "overflowSilentlyDroppedEvents": false,
+    "incrementalMergeOntoKnownStaleBase": false,
+    "historyPageReorderedInstalledBlocks": false,
+    "historyPageDuplicatedSourceSeq": false,
+    "historyPageDuplicatedStableFinalBlockId": false,
+    "historyPageChangedUnreadState": false,
+    "readingHistoryViewportMovedOnLiveAppend": false,
+    "followingFailedToPinNewOutput": false,
+    "finalAssistantRenderedTogetherWithSupersededPartial": false,
+    "providerUrlExposedInProjection": false,
+    "filesystemPathExposedInImageProjection": false,
+    "rawImageBase64ExposedWithoutProtocol": false,
+    "bearerTokenPresentInClientDebugState": false,
+    "releaseBuildProducedOrClaimed": false,
+    "physicalHardwareBehaviorClaimed": false,
+    "manualAcceptanceRequired": false
+  },
+  "apk": {
+    "variant": "debug",
+    "relativePath": "apps/glasses-android/app/build/outputs/apk/debug/app-debug.apk",
+    "committed": false,
+    "sizeBytes": 849124,
+    "sha256": "d70af7373b7e14503ae36763c2cd61bee8457fa497e56b766aab0e32ac37cc99",
+    "signatureVerified": true,
+    "signatureSchemeV2": true,
+    "signerCount": 1,
+    "signerCertificate": "Android Debug",
+    "signerCertificateSha256": "e372f80243affb0fd2462d4c90f8aede64a9ffb683cebad6c517d73eacc6a963",
+    "packagedAssetsByteIdentical": true,
+    "assetSha256": {
+      "app.js": "9d87d5bda7d235786b3f84eacb5cf609af5893c3d10c55a5de830860ab44c9f5",
+      "c0-core.js": "c85c7fc6e5ff2ca03caa1f3630b590c8b8dd6838921e23c15c6f535405437919",
+      "snapshot-core.js": "f1366ebb365ca1c756a219d1dd5ee7e61d9074b434979a91ad85a5554eab5ebf",
+      "index.html": "f5685a423643823b59fa0634e76deca500d45a66a80a0eb9857cb971189fe236",
+      "app.css": "85cc1c4218aaf53fab1348f16a44e7e66f1289b1f400e354807c97603fd5a528"
+    }
+  },
+  "limitations": {
+    "releaseQualified": false,
+    "physicalHardwareQualified": false,
+    "manualVisualJudgment": false,
+    "scope": "Autonomous M1 debug-build acceptance only"
+  }
+}

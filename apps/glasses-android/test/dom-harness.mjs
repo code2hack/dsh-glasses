@@ -19,7 +19,7 @@ export const INDEX_HTML = join(HERE, "..", "app", "src", "main", "assets", "inde
  * {status, body}; each /glasses/v1/bootstrap call consumes the next (the last
  * is clamped). Returns helpers to observe requests/traces/DOM/settled state.
  */
-export async function bootClientDom({ responses, session = "default-session", endpoint = "http://dsh-render:7777" }) {
+export async function bootClientDom({ responses = [], responseFor, onOpenStream, onCloseStream, session = "default-session", endpoint = "http://dsh-render:7777" }) {
   const requests = [];
   const traces = [];
   let servedIndex = 0;
@@ -41,11 +41,21 @@ export async function bootClientDom({ responses, session = "default-session", en
         configure: (base, token, sid) => { window.__configured = { base, sid }; return true; },
         fetch: (path, payload) => {
           requests.push({ path, hasBody: payload !== "" });
-          const r = served[Math.min(servedIndex++, served.length - 1)];
+          const index = servedIndex++;
+          const r = responseFor
+            ? responseFor({ path, payload, index, window })
+            : served[Math.min(index, served.length - 1)];
+          if (!r) throw new Error(`no synthetic native response for ${path}`);
           return JSON.stringify({ status: r.status, body: r.body });
         },
-        openStream: () => { requests.push({ path: "OPEN_STREAM", hasBody: false }); },
-        closeStream: () => {},
+        openStream: (epoch, baseStreamSequence) => {
+          requests.push({ path: "OPEN_STREAM", hasBody: false, epoch, baseStreamSequence });
+          onOpenStream?.({ epoch, baseStreamSequence, window });
+        },
+        closeStream: () => {
+          requests.push({ path: "CLOSE_STREAM", hasBody: false });
+          onCloseStream?.({ window });
+        },
         clipboardText: () => "clip",
       };
     },
@@ -67,6 +77,7 @@ export async function bootClientDom({ responses, session = "default-session", en
   return {
     dom, w,
     requests: () => requests.map((r) => r.path),
+    requestDetails: () => requests.map((r) => ({ ...r })),
     traces: () => traces.slice(),
     $,
     settled,

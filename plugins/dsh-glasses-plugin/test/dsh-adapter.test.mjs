@@ -74,7 +74,8 @@ try {
     assert.equal(page.asOfSeq, 2);
     assert.equal(page.events.length, 3);
     assert.equal(page.events[1].type, "assistant/message");
-    assert.equal(page.events[1].message.text, "hi");
+    assert.equal(page.events[1].blocks[0].blockId, "message:a-a1:content:0");
+    assert.equal(page.events[1].blocks[0].text, "hi");
     assert.deepEqual(page.events.map((e) => e.seq), [0, 1, 2]);
   });
 
@@ -96,6 +97,66 @@ try {
   await scenario("readProjectionPage: rejects cursor (M1 is cursorless)", async () => {
     const adapter = createGlassesDshAdapter(makeCtx({ readEvents: [] }));
     await assert.rejects(async () => adapter.readProjectionPage("session-1", "cursor-4"), (e) => e instanceof AdapterValidationError && e.code === "unsupported-cursor");
+  });
+
+  await scenario("readProjectionBefore: exclusive ascending page with accurate hasMore", async () => {
+    const raw = [evt(0), evt(1), evt(2), evt(3), evt(4)];
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: raw }), { maxEvents: 3 });
+    const page = await adapter.readProjectionBefore("session-1", { beforeSeq: 4, limit: 2 });
+    assert.equal(page.asOfSeq, 4, "page stays tied to the authoritative full-log watermark");
+    assert.deepEqual(page.events.map((e) => e.seq), [2, 3], "beforeSeq is exclusive and the nearest predecessors stay ascending");
+    assert.equal(page.hasMore, true);
+    const first = await adapter.readProjectionBefore("session-1", { beforeSeq: 2, limit: 3 });
+    assert.deepEqual(first.events.map((e) => e.seq), [0, 1]);
+    assert.equal(first.hasMore, false);
+  });
+
+  await scenario("readProjectionBefore: empty predecessor page is explicit", async () => {
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: [evt(0), evt(1)] }));
+    const page = await adapter.readProjectionBefore("session-1", { beforeSeq: 0, limit: 2 });
+    assert.deepEqual(page, { asOfSeq: 1, events: [], hasMore: false });
+  });
+
+  await scenario("readProjectionAfter: exclusive complete successor page", async () => {
+    const raw = [evt(0), evt(1), evt(2), evt(3)];
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: raw }), { maxEvents: 4 });
+    const page = await adapter.readProjectionAfter("session-1", { afterSeq: 1, limit: 2 });
+    assert.deepEqual(Object.keys(page).sort(), ["asOfSeq", "events"]);
+    assert.equal(page.asOfSeq, 3);
+    assert.deepEqual(page.events.map((e) => e.seq), [2, 3]);
+    const all = await adapter.readProjectionAfter("session-1", { afterSeq: -1, limit: 4 });
+    assert.deepEqual(all.events.map((e) => e.seq), [0, 1, 2, 3]);
+  });
+
+  await scenario("readProjectionAfter: overflow fails explicitly instead of truncating continuity", async () => {
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: [evt(0), evt(1), evt(2)] }), { maxEvents: 3 });
+    await assert.rejects(
+      async () => adapter.readProjectionAfter("session-1", { afterSeq: 0, limit: 1 }),
+      (e) => e instanceof AdapterValidationError && e.code === "projection-overflow",
+    );
+  });
+
+  await scenario("bounded reads: validate arguments against the configured hard bound", async () => {
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: [] }), { maxEvents: 3 });
+    for (const args of [undefined, null, {}, { beforeSeq: -1, limit: 1 }, { beforeSeq: 1, limit: 0 }, { beforeSeq: 1, limit: 4 }]) {
+      await assert.rejects(async () => adapter.readProjectionBefore("session-1", args), (e) => e instanceof AdapterValidationError && e.code === "invalid-page-request");
+    }
+    for (const args of [undefined, null, {}, { afterSeq: -2, limit: 1 }, { afterSeq: 1, limit: 0 }, { afterSeq: 1, limit: 4 }]) {
+      await assert.rejects(async () => adapter.readProjectionAfter("session-1", args), (e) => e instanceof AdapterValidationError && e.code === "invalid-page-request");
+    }
+  });
+
+  await scenario("bounded reads: validate full authoritative projection before slicing", async () => {
+    const raw = [evt(0, "future/required"), evt(1), evt(2)];
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: raw }), { maxEvents: 2 });
+    await assert.rejects(async () => adapter.readProjectionBefore("session-1", { beforeSeq: 3, limit: 1 }), (e) => e?.code === "unsupported-required-event");
+    await assert.rejects(async () => adapter.readProjectionAfter("session-1", { afterSeq: 1, limit: 1 }), (e) => e?.code === "unsupported-required-event");
+  });
+
+  await scenario("bounded reads: malformed earlier sequence cannot be hidden by the requested window", async () => {
+    const adapter = createGlassesDshAdapter(makeCtx({ readEvents: [evt(1), evt(0), evt(2)] }), { maxEvents: 2 });
+    await assert.rejects(async () => adapter.readProjectionBefore("session-1", { beforeSeq: 3, limit: 1 }), (e) => e instanceof AdapterValidationError && e.code === "non-monotonic-page");
+    await assert.rejects(async () => adapter.readProjectionAfter("session-1", { afterSeq: 1, limit: 1 }), (e) => e instanceof AdapterValidationError && e.code === "non-monotonic-page");
   });
 
   await scenario("readProjectionPage: rejects non-array events", async () => {
@@ -143,6 +204,16 @@ try {
   await scenario("observeSession: rejects non-function listener", async () => {
     const adapter = createGlassesDshAdapter(makeCtx());
     assert.throws(() => adapter.observeSession("s", "not-a-fn"), AdapterValidationError);
+  });
+
+  await scenario("observeSession: malformed live event reaches the explicit error seam", async () => {
+    const ctx = makeCtx();
+    const adapter = createGlassesDshAdapter(ctx);
+    let error = null;
+    const off = adapter.observeSession("s-target", () => assert.fail("malformed event must not be delivered"), (value) => { error = value; });
+    ctx._emit({ id: "s-target" }, { seq: "bad", type: "user/message" });
+    assert.equal(typeof error?.code, "string");
+    off();
   });
 
   await scenario("getAgentState: maps known states explicitly", async () => {

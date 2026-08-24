@@ -9,14 +9,14 @@
 // through the real runtime + real adapter — no vLLM, no device.
 //
 // Run:
-//   DSH_BIN=/home/code2hack/.npm-global/bin/dsh node plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs
+//   DSH_HOME=/tmp/dsh-glasses-adapter-unique DSH_BIN=/home/code2hack/.npm-global/bin/dsh node plugins/dsh-glasses-plugin/test/dsh-adapter-runtime.test.mjs
 
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import http from "node:http";
 import {
   ensureHome,
+  assertDisposableDshHome,
   spawnInstance,
   startInstance,
   waitForServer,
@@ -31,10 +31,10 @@ import { validateSnapshotWire } from "../lib/snapshot.js";
 // Open the SSE stream with auth, read until the hello frame, then disconnect.
 // This exercises the production stream seam which now subscribes through
 // adapter.observeSession (SPEC §5 isolation) against the real runtime.
-function openStreamUntilHello(port, token) {
+function openStreamUntilHello(port, token, epoch, baseStreamSequence) {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { host: "127.0.0.1", port, path: "/glasses/v1/stream", headers: { authorization: `Bearer ${token}` } },
+      { host: "127.0.0.1", port, path: `/glasses/v1/stream?epoch=${encodeURIComponent(epoch)}&baseStreamSequence=${baseStreamSequence}`, headers: { authorization: `Bearer ${token}` } },
       (res) => {
         let buf = "";
         const timer = setTimeout(() => { req.destroy(); reject(new Error("stream hello timeout")); }, 8000);
@@ -56,7 +56,7 @@ function openStreamUntilHello(port, token) {
 
 const PORT = Number(process.env.M1_TEST_PORT || 3191);
 const TOKEN = `dev-m1-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-const HOME = join(tmpdir(), `dsh-glasses-m1-adapter-${process.pid}`);
+const HOME = assertDisposableDshHome(process.env.DSH_HOME);
 
 const results = [];
 const ok = (name) => results.push(["PASS", name]);
@@ -119,9 +119,9 @@ try {
       if (ev.seq > attachments[0].history.asOfSeq) throw new Error(`event seq ${ev.seq} > asOfSeq`);
       prev = ev.seq;
     }
-    const texts = events.map((e) => e.message?.text ?? "").join("|");
-    if (!texts.includes("M1-SYNTHETIC-USER-A")) throw new Error("synthetic user sentinel missing from real-runtime projection");
-    if (!texts.includes("M1-SYNTHETIC-ASSISTANT-A")) throw new Error("synthetic assistant sentinel missing from real-runtime projection");
+    const texts = events.flatMap((e) => (Array.isArray(e.blocks) ? e.blocks.filter((b) => b.kind === "text").map((b) => b.text) : []));
+    if (!texts.some((t) => typeof t === "string" && t.includes("M1-SYNTHETIC-USER-A"))) throw new Error("synthetic user sentinel missing from real-runtime projection");
+    if (!texts.some((t) => typeof t === "string" && t.includes("M1-SYNTHETIC-ASSISTANT-A"))) throw new Error("synthetic assistant sentinel missing from real-runtime projection");
     // agent projection agrees with attachment; state in SPEC vocabulary
     const state = attachments[0].state;
     if (!["idle", "running", "waiting-user", "unavailable", "unknown"].includes(state)) throw new Error(`bad agent state ${state}`);
@@ -131,7 +131,8 @@ try {
     // drafts empty + all write capabilities false (AC5)
     if (!Array.isArray(body.drafts) || body.drafts.length !== 0) throw new Error("drafts must be []");
     const caps = attachments[0].capabilities || {};
-    for (const key of ["liveUpdates", "draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
+    if (caps.liveUpdates !== true) throw new Error("capability liveUpdates must be true in M1");
+    for (const key of ["draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
       if (caps[key] !== false) throw new Error(`capability ${key} must be false in M1`);
     }
     if (caps.historyRead !== true) throw new Error("historyRead must be true");
@@ -171,11 +172,45 @@ try {
     if (r.status !== 401) throw new Error(`bootstrap unauth ${r.status} (wanted 401)`);
   });
 
+  await scenario("adapter-runtime: issued-epoch history paging is bounded, ascending, and narrow", async () => {
+    const bootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const epoch = bootstrap.json.connectionEpoch;
+    const asOf = bootstrap.json.attachments[0].history.asOfSeq;
+    const page = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=${asOf + 1}&limit=1&sessionId=unrelated`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (page.status !== 200) throw new Error(`history page ${page.status}: ${page.text}`);
+    if (page.json.sessionId !== realA) throw new Error("history endpoint accepted caller session identity");
+    if (page.json.connectionEpoch !== epoch || page.json.baseHistoryAsOfSeq !== asOf) throw new Error("history response lost issued-base fences");
+    if (!Array.isArray(page.json.events) || page.json.events.length > 1) throw new Error("history response exceeded limit");
+    if (page.json.events.some((event) => event.seq >= asOf + 1)) throw new Error("history response violated exclusive cursor");
+    const empty = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=0&limit=1`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (empty.status !== 200 || empty.json.events?.length !== 0 || empty.json.hasMore !== false || empty.json.nextBeforeSeq !== null) throw new Error(`empty history page malformed: ${empty.text}`);
+    const stale = await httpReq({ port: PORT, path: "/glasses/v1/history?epoch=never-issued&beforeSeq=1&limit=1", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (stale.status !== 409) throw new Error(`stale history epoch ${stale.status}`);
+    const malformed = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=nope&limit=1`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (malformed.status !== 400) throw new Error(`malformed history request ${malformed.status}`);
+    const unauth = await httpReq({ port: PORT, path: `/glasses/v1/history?epoch=${encodeURIComponent(epoch)}&beforeSeq=1&limit=1` });
+    if (unauth.status !== 401) throw new Error(`unauthorized history request ${unauth.status}`);
+  });
+
   await scenario("adapter-runtime: stream seam (adapter.observeSession) opens authenticated against the real runtime", async () => {
-    const hello = await openStreamUntilHello(PORT, TOKEN);
-    if (!hello.includes("event: hello") || !hello.includes('"protocolMajor":1')) {
+    const bootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const epoch = bootstrap.json?.connectionEpoch;
+    const base = bootstrap.json?.streamSequence;
+    const hello = await openStreamUntilHello(PORT, TOKEN, epoch, base);
+    if (!hello.includes("event: hello") || !hello.includes('"protocolMajor":1') || !hello.includes(`"connectionEpoch":"${epoch}"`)) {
       throw new Error(`stream hello missing protocolMajor: ${JSON.stringify(hello).slice(0, 200)}`);
     }
+    const repeat = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(epoch)}&baseStreamSequence=${base}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (repeat.status !== 409 || repeat.json?.error !== "stream-already-claimed") throw new Error(`repeat stream claim not rejected: ${repeat.status} ${repeat.text}`);
+    const wrongBaseBootstrap = await httpReq({ port: PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+    const wrongBase = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(wrongBaseBootstrap.json.connectionEpoch)}&baseStreamSequence=${wrongBaseBootstrap.json.streamSequence + 1}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (wrongBase.status !== 409 || wrongBase.json?.error !== "baseStreamSequence-mismatch") throw new Error(`wrong stream base not rejected: ${wrongBase.status} ${wrongBase.text}`);
+    const afterWrongBase = await openStreamUntilHello(PORT, TOKEN, wrongBaseBootstrap.json.connectionEpoch, wrongBaseBootstrap.json.streamSequence);
+    if (!afterWrongBase.includes(`"connectionEpoch":"${wrongBaseBootstrap.json.connectionEpoch}"`)) throw new Error("wrong-base attempt consumed the valid epoch claim");
+    const afterClaim = await httpReq({ port: PORT, path: `/glasses/v1/stream?epoch=${encodeURIComponent(wrongBaseBootstrap.json.connectionEpoch)}&baseStreamSequence=${wrongBaseBootstrap.json.streamSequence}`, headers: { authorization: `Bearer ${TOKEN}` } });
+    if (afterClaim.status !== 409 || afterClaim.json?.error !== "stream-already-claimed") throw new Error(`second exact stream claim not rejected: ${afterClaim.status} ${afterClaim.text}`);
+    const stale = await httpReq({ port: PORT, path: "/glasses/v1/stream?epoch=never-issued&baseStreamSequence=0", headers: { authorization: `Bearer ${TOKEN}` } });
+    if (stale.status !== 409 || stale.json?.error !== "stale-connectionEpoch") throw new Error(`stale stream epoch not rejected: ${stale.status} ${stale.text}`);
   });
 } catch (error) {
   fail("dsh-adapter-runtime.fatal", error?.stack || error);

@@ -34,6 +34,38 @@
     return Object.prototype.hasOwnProperty.call(obj, key);
   }
 
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // Shared tool-result shell law (mirror). Returns [code, message] or null.
+  // Used for a dedicated tool/result event AND for any event whose blocks
+  // contain a converged tool-result shell or tool-role child (message-content
+  // origin). A shell is REQUIRED whenever tool-result residue is present —
+  // converged cards only ever project shell + children together.
+  function toolResultLaw(ev) {
+    var shellCount = 0;
+    var shellCallId = '';
+    for (var sj = 0; sj < ev.blocks.length; sj++) {
+      if (ev.blocks[sj] && ev.blocks[sj].kind === 'tool/result') {
+        shellCount += 1;
+        shellCallId = ev.blocks[sj].callId;
+        if (typeof shellCallId !== 'string' || shellCallId === '') return ['malformed-projected-event', 'tool result shell lacks callId'];
+        if (ev.blocks[sj].blockId !== 'tool:' + shellCallId + ':result') return ['blockId-root-mismatch', 'tool result shell blockId mismatch'];
+      }
+    }
+    if (shellCount < 1) return ['tool-result-shell-mismatch', 'tool/result event lacks a result shell'];
+    var toolPattern = new RegExp('^tool:' + escapeRegExp(shellCallId) + ':result:content:\\d+$');
+    for (var tj = 0; tj < ev.blocks.length; tj++) {
+      var tblock = ev.blocks[tj];
+      if (tblock && (tblock.kind === 'text' || tblock.kind === 'image')) {
+        if (typeof tblock.blockId !== 'string' || !toolPattern.test(tblock.blockId)) return ['blockId-root-mismatch', 'tool result child not rooted under its shell'];
+        if (tblock.role !== 'tool') return ['type-role-mismatch', 'tool result child must carry role tool'];
+      }
+    }
+    return null;
+  }
+
   // -------------------------------------------------------------------------
   // Frozen wire law (mirror of validateSnapshotWire).
   // Rejects with the SAME codes; malformed/untrusted input can never be
@@ -83,7 +115,7 @@
       var key = MUTATION_CAPABILITIES[ci];
       if (caps[key] !== false) return fail('mutation-capability-enabled', 'capability ' + key + ' must be false in M1');
     }
-    if (caps.liveUpdates !== false) return fail('mutation-capability-enabled', 'capability liveUpdates must be false in M1');
+    if (caps.liveUpdates !== true) return fail('liveUpdates-not-true', 'capability liveUpdates must be true');
 
     var agent = att.agent;
     if (!agent || typeof agent !== 'object') return fail('missing-agent-projection', 'attachment must include the agent projection');
@@ -105,40 +137,107 @@
       return fail('asOfSeq-mismatch', 'last event seq must equal asOfSeq');
     }
 
-    function expectedMessageIdentity(prefix, ev) {
-      var id = ev && ev.message ? ev.message.id : undefined;
-      return (typeof id === 'string' && id !== '') ? prefix + id : prefix + 's' + ev.seq;
-    }
-
+    // Canonical M1 (#28) events law (client mirror of the server law): every
+    // history event is { seq, type, blocks[] } with typed, stable-blockId
+    // projection blocks. Non-renderable DSH source events carry blocks: [].
+    var REPEATABLE_KINDS = { partial: true, status: true, 'tool/call': true, 'tool/result': true };
+    var BLOCK_KINDS = { text: true, image: true, 'partial': true, 'tool/call': true, 'tool/result': true, status: true, error: true, request: true };
     var previous = -1;
-    var seenMessageBlockIds = {};
+    var seenBlockIds = {};
+    // Converged tool-result children (tool:<callId>:result:content:<i>) are
+    // legitimately repeated by the message-content origin AND the dedicated
+    // tool/result event of the SAME logical invocation (AC2: one card). They
+    // are exempt from the duplicate-blockId rule, like the lifecycle kinds in
+    // REPEATABLE_KINDS.
+    var REUSABLE_TOOL_CHILD = /^tool:[^:]+:result:content:\d+$/;
     for (var ei = 0; ei < history.events.length; ei++) {
       var ev = history.events[ei];
       if (!ev || typeof ev !== 'object') return fail('malformed-projected-event', 'history event must be an object');
       if (!Number.isInteger(ev.seq) || ev.seq < 0) return fail('malformed-seq', 'event seq invalid');
-      if (typeof ev.type !== 'string' || ev.type === '') return fail('malformed-projected-event', 'history event must carry a non-empty type');
+      if (typeof ev.type !== 'string' || ev.type === '') return fail('malformed-type', 'history event must carry a non-empty type');
       if (ev.seq <= previous) return fail('non-monotonic-seq', 'event seq not strictly increasing');
       if (ev.seq > history.asOfSeq) return fail('seq-beyond-asOfSeq', 'event seq exceeds asOfSeq');
       previous = ev.seq;
 
+      if (!Array.isArray(ev.blocks)) return fail('malformed-blocks', 'event lacks a blocks array');
       if (ev.type === 'user/message' || ev.type === 'assistant/message') {
-        var prefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
-        var expected = expectedMessageIdentity(prefix, ev);
-        if (ev.blockId !== expected) return fail('type-blockId-mismatch', 'message blockId does not match its identity');
-        if (hasOwn(seenMessageBlockIds, ev.blockId)) return fail('duplicate-blockId', 'duplicate message blockId');
-        seenMessageBlockIds[ev.blockId] = true;
-        var msg = ev.message;
-        if (!msg || typeof msg !== 'object') return fail('malformed-projected-event', 'event lacks message');
-        var wantedRole = prefix === 'message:u-' ? 'user' : 'assistant';
-        if (msg.role !== wantedRole) return fail('type-role-mismatch', 'message role mismatch');
-        if (typeof msg.text !== 'string') return fail('malformed-projected-event', 'message lacks text');
+        // Empty-content user/assistant messages are VALID non-renderable
+        // events (a max-token cutoff hosts usage only): blocks: [] is accepted
+        // and the durable seq advances. When blocks exist they must obey the
+        // root/role law EXCEPT converged tool cards: a message's nested
+        // tool-call/tool-result content projects with the SINGULAR tool
+        // identity (tool:<callId>:call / tool:<callId>:result) so the
+        // dedicated durable tool events fold into that same card (AC2: one
+        // logical invocation renders once).
+        var msgPrefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
+        var wantedRole = ev.type === 'user/message' ? 'user' : 'assistant';
+        var contentIndex = /:content:\d+$/;
+        var msgHasToolResidue = false;
+        for (var mcj = 0; mcj < ev.blocks.length; mcj++) {
+          var mblock = ev.blocks[mcj];
+          var isToolScoped = mblock && (
+            mblock.kind === 'tool/call' ||
+            mblock.kind === 'tool/result' ||
+            ((mblock.kind === 'text' || mblock.kind === 'image') && mblock.role === 'tool' && typeof mblock.blockId === 'string' && mblock.blockId.indexOf('tool:') === 0)
+          );
+          // interruption error children and converged tool cards escape the
+          // role-prefix law; the tool cards are validated by the tool law below.
+          if (mblock && mblock.kind === 'error') continue;
+          if (isToolScoped) {
+            if (mblock.kind === 'tool/result' || mblock.role === 'tool') msgHasToolResidue = true;
+            continue;
+          }
+          if (!mblock || typeof mblock.blockId !== 'string' || mblock.blockId.indexOf(msgPrefix) !== 0 || !contentIndex.test(mblock.blockId)) {
+            return fail('blockId-root-mismatch', 'message block not rooted under its role prefix');
+          }
+          if (mblock.kind === 'text' || mblock.kind === 'image') {
+            if (mblock.role !== wantedRole) return fail('type-role-mismatch', 'message block role mismatch');
+          }
+        }
+        if (msgHasToolResidue) {
+          var msgToolViolation = toolResultLaw(ev);
+          if (msgToolViolation) return fail(msgToolViolation[0], msgToolViolation[1]);
+        }
       } else if (ev.type === 'assistant/chunk') {
-        var expectedChunk = (Number.isInteger(ev.turn) && Number.isInteger(ev.step)) ? 'partial:' + ev.turn + ':' + ev.step : 'partial:s' + ev.seq;
-        if (ev.blockId !== expectedChunk) return fail('type-blockId-mismatch', 'chunk blockId does not match its identity');
-        if (!ev.chunk || typeof ev.chunk.type !== 'string') return fail('malformed-projected-event', 'chunk lacks chunk.type');
+        if (ev.blocks.length < 1) return fail('chunk-no-block', 'chunk event carries no valid partial block');
+        for (var bj = 0; bj < ev.blocks.length; bj++) {
+          var pblock = ev.blocks[bj];
+          if (!pblock || pblock.kind !== 'partial') return fail('chunk-wrong-kind', 'chunk event block is not partial');
+          var expected = (Number.isInteger(pblock.turn) && Number.isInteger(pblock.step)) ? 'partial:' + pblock.turn + ':' + pblock.step : 'partial:s' + ev.seq;
+          if (pblock.blockId !== expected) return fail('type-blockId-mismatch', 'chunk blockId does not match its turn/step');
+        }
+      } else if (ev.type === 'tool/result') {
+        // Nested rc.2 ToolResultBlock content is projected deterministically:
+        // a status/result shell plus tool:<callId>:result:content:<i> children.
+        // The shell is REQUIRED for a dedicated event (fail closed).
+        var dedicatedToolViolation = toolResultLaw(ev);
+        if (dedicatedToolViolation) return fail(dedicatedToolViolation[0], dedicatedToolViolation[1]);
       }
-      // Non-renderable projected types (step/end, permission/preset) carry no
-      // blockId requirement and are permitted.
+
+      for (var bi = 0; bi < ev.blocks.length; bi++) {
+        var block = ev.blocks[bi];
+        if (!block || typeof block !== 'object') return fail('malformed-block', 'event block must be an object');
+        if (typeof block.blockId !== 'string' || block.blockId === '') return fail('missing-blockId', 'event block lacks blockId');
+        if (!hasOwn(BLOCK_KINDS, block.kind)) return fail('unknown-block-kind', 'block has unknown kind');
+        // Canonical content children carry an explicit contentIndex validated
+        // against the :content:<i> suffix (ordering never reparses opaque ids).
+        var contentIdxMatch = /:content:(\d+)$/.exec(block.blockId);
+        if (contentIdxMatch) {
+          if (!Number.isInteger(block.contentIndex) || block.contentIndex !== Number(contentIdxMatch[1])) {
+            return fail('content-index-mismatch', 'block contentIndex must equal its :content: suffix');
+          }
+        }
+        // Structured per-kind shape law (mirror of the projection law).
+        if (block.kind === 'text' && typeof block.text !== 'string') return fail('malformed-projected-event', 'text block lacks text');
+        if (block.kind === 'image' && (typeof block.attachmentId !== 'string' || block.attachmentId === '')) return fail('malformed-projected-event', 'image block lacks attachmentId');
+        if (block.kind === 'partial' && (!block.chunk || typeof block.chunk !== 'object' || typeof block.chunk.type !== 'string')) return fail('malformed-projected-event', 'partial block lacks chunk.type');
+        if (block.kind === 'tool/call' && (typeof block.callId !== 'string' || block.callId === '')) return fail('malformed-projected-event', 'tool call block lacks callId');
+        if (block.kind === 'tool/result' && (typeof block.callId !== 'string' || block.callId === '')) return fail('malformed-projected-event', 'tool result block lacks callId');
+        if (block.kind === 'status' && (!Number.isInteger(block.turn) || (block.state !== 'running' && block.state !== 'idle'))) return fail('malformed-projected-event', 'status block malformed');
+        if (block.kind === 'error' && typeof block.message !== 'string') return fail('malformed-projected-event', 'error block lacks message');
+        if (!hasOwn(REPEATABLE_KINDS, block.kind) && !REUSABLE_TOOL_CHILD.test(block.blockId) && hasOwn(seenBlockIds, block.blockId)) return fail('duplicate-blockId', 'duplicate blockId');
+        seenBlockIds[block.blockId] = true;
+      }
     }
 
     return { ok: true };

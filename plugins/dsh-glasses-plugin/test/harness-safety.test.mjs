@@ -3,6 +3,9 @@
 // stranger processes. Node builtins only; no DSH boot required.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import net from "node:net";
 import {
   registerOwnedChild,
@@ -11,8 +14,29 @@ import {
   ownsProcessWithIdentity,
   stopOwnedProcess,
   assertPortSpawnable,
+  assertDisposableDshHome,
   processStartTicks,
 } from "./disposable-runtime.mjs";
+
+// 0) DSH experiments require one explicit absolute disposable path and reject
+//    the shared profile (or anything beneath it) before any runtime starts.
+{
+  assert.throws(() => assertDisposableDshHome(undefined), /unsafe-dsh-home/);
+  assert.throws(() => assertDisposableDshHome(""), /unsafe-dsh-home/);
+  assert.throws(() => assertDisposableDshHome("relative-home"), /unsafe-dsh-home/);
+  assert.throws(() => assertDisposableDshHome(`${process.env.HOME}/.dsh`), /unsafe-dsh-home/);
+  assert.throws(() => assertDisposableDshHome(`${process.env.HOME}/.dsh/child`), /unsafe-dsh-home/);
+  const root = mkdtempSync(join(tmpdir(), "dsh-home-guard-"));
+  try {
+    const link = join(root, "apparently-safe");
+    symlinkSync(`${process.env.HOME}/.dsh/guard-probe`, link);
+    assert.throws(() => assertDisposableDshHome(join(link, "child")), /unsafe-dsh-home/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  assert.equal(assertDisposableDshHome(`/tmp/dsh-glasses-safe-${process.pid}`), `/tmp/dsh-glasses-safe-${process.pid}`);
+  console.log("[harness-safety] explicit disposable DSH_HOME guard: PASS");
+}
 
 function spawnSleeper() {
   // A node process that stays alive until signaled.

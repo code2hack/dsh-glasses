@@ -11,11 +11,11 @@
 // deliberately NOT part of this adapter: they belong to the dormant TB0/M3
 // write path.
 //
-// M1 scope: one selected session, cursorless bounded canonical history, read
-// via the adapter only. Paging (cursors), live deltas, and multiple
-// attachments are future work.
+// M1 scope: one selected session, bounded canonical history, explicit durable-
+// sequence predecessor/successor reads, and canonical live observation through
+// this adapter only. Multiple attachments remain future work.
 
-import { projectEvent } from "./projection.js";
+import { projectAndValidatePage } from "./projection.js";
 
 export class AdapterValidationError extends Error {
   constructor(code, message) {
@@ -45,26 +45,26 @@ export const ATTACHMENT_STATE_VOCABULARY = new Set([
   "unknown",
 ]);
 
-function assertArrayEvents(snapshot) {
+function assertArrayEvents(snapshot, operation) {
   if (!snapshot || !Array.isArray(snapshot.events)) {
-    throw new AdapterValidationError("malformed-page", "readProjectionPage: snapshot.events is not an array");
+    throw new AdapterValidationError("malformed-page", `${operation}: snapshot.events is not an array`);
   }
 }
 
-function assertStrictlyIncreasingUniqueSeq(events, sessionId) {
+function assertStrictlyIncreasingUniqueSeq(events, sessionId, operation) {
   let previous = -1;
   for (const event of events) {
     const seq = event?.seq;
     if (!Number.isInteger(seq) || seq < 0) {
       throw new AdapterValidationError(
         "malformed-page",
-        `readProjectionPage(${sessionId}): non-finite/negative seq ${String(seq)}`,
+        `${operation}(${sessionId}): non-finite/negative seq ${String(seq)}`,
       );
     }
     if (seq <= previous) {
       throw new AdapterValidationError(
         "non-monotonic-page",
-        `readProjectionPage(${sessionId}): events are not strictly increasing by seq (${previous} then ${seq})`,
+        `${operation}(${sessionId}): events are not strictly increasing by seq (${previous} then ${seq})`,
       );
     }
     previous = seq;
@@ -114,6 +114,33 @@ export function createGlassesDshAdapter(ctx, options = {}) {
    * passing a cursor must be rejected rather than silently ignored. Non-
    * monotonic or duplicate sequences are rejected, never normalized away.
    */
+  async function readCanonicalProjection(sessionId, operation) {
+    if (typeof sessionId !== "string" || !sessionId) {
+      throw new AdapterValidationError("invalid-session", `${operation}: sessionId must be a non-empty string`);
+    }
+    const snapshot = await sessionQuery.readSession(sessionId);
+    assertArrayEvents(snapshot, operation);
+    const rawEvents = snapshot.events;
+    // Validate the complete authoritative log before any requested slice, so
+    // malformed sequence or projection semantics cannot hide outside a page.
+    assertStrictlyIncreasingUniqueSeq(rawEvents, sessionId, operation);
+    return projectAndValidatePage(rawEvents);
+  }
+
+  function boundedRequest(options, boundary, minimum, operation) {
+    const value = options?.[boundary];
+    const limit = options?.limit;
+    if (!options || typeof options !== "object" || Array.isArray(options) ||
+        !Number.isInteger(value) || value < minimum ||
+        !Number.isInteger(limit) || limit < 1 || limit > maxEvents) {
+      throw new AdapterValidationError(
+        "invalid-page-request",
+        `${operation}: ${boundary} must be an integer >= ${minimum} and limit must be 1..${maxEvents}`,
+      );
+    }
+    return { value, limit };
+  }
+
   async function readProjectionPage(sessionId, cursor = undefined) {
     if (cursor != null) {
       throw new AdapterValidationError(
@@ -121,21 +148,36 @@ export function createGlassesDshAdapter(ctx, options = {}) {
         "readProjectionPage: cursors are not part of the M1 slice; pass no cursor",
       );
     }
-    if (typeof sessionId !== "string" || !sessionId) {
-      throw new AdapterValidationError("invalid-session", "readProjectionPage: sessionId must be a non-empty string");
+
+    const all = await readCanonicalProjection(sessionId, "readProjectionPage");
+    const asOfSeq = all.length ? all[all.length - 1].seq : -1;
+    return { asOfSeq, events: all.slice(-maxEvents) };
+  }
+
+  async function readProjectionBefore(sessionId, options) {
+    const { value: beforeSeq, limit } = boundedRequest(options, "beforeSeq", 0, "readProjectionBefore");
+    const all = await readCanonicalProjection(sessionId, "readProjectionBefore");
+    const asOfSeq = all.length ? all[all.length - 1].seq : -1;
+    const predecessors = all.filter((event) => event.seq < beforeSeq);
+    return {
+      asOfSeq,
+      events: predecessors.slice(-limit),
+      hasMore: predecessors.length > limit,
+    };
+  }
+
+  async function readProjectionAfter(sessionId, options) {
+    const { value: afterSeq, limit } = boundedRequest(options, "afterSeq", -1, "readProjectionAfter");
+    const all = await readCanonicalProjection(sessionId, "readProjectionAfter");
+    const asOfSeq = all.length ? all[all.length - 1].seq : -1;
+    const successors = all.filter((event) => event.seq > afterSeq);
+    if (successors.length > limit) {
+      throw new AdapterValidationError(
+        "projection-overflow",
+        `readProjectionAfter: ${successors.length} events exceed limit ${limit}; complete resynchronization required`,
+      );
     }
-
-    const snapshot = await sessionQuery.readSession(sessionId);
-    assertArrayEvents(snapshot);
-    const rawEvents = snapshot.events;
-    // Validate the delivered window's internal consistency before bounding so
-    // a bad log cannot be masked by tail-only slicing.
-    assertStrictlyIncreasingUniqueSeq(rawEvents, sessionId);
-
-    const bounded = rawEvents.slice(-maxEvents);
-    const events = bounded.map(projectEvent);
-    const asOfSeq = events.length ? events[events.length - 1].seq : -1;
-    return { asOfSeq, events };
+    return { asOfSeq, events: successors };
   }
 
   /**
@@ -143,12 +185,18 @@ export function createGlassesDshAdapter(ctx, options = {}) {
    * disposer. Exists to move the pre-existing TB0 stream seam behind the
    * adapter; live-delta semantics are not developed by #27.
    */
-  function observeSession(sessionId, listener) {
+  function observeSession(sessionId, listener, onError) {
     if (typeof listener !== "function") {
       throw new AdapterValidationError("invalid-listener", "observeSession: listener must be a function");
     }
     const off = ctx.on("session/event", (session, event) => {
-      if (session?.id === sessionId) listener(event);
+      if (session?.id !== sessionId) return;
+      try {
+        listener(projectAndValidatePage([event])[0]);
+      } catch (error) {
+        if (typeof onError === "function") onError(error);
+        else throw error;
+      }
     });
     return typeof off === "function" ? off : () => {};
   }
@@ -177,6 +225,8 @@ export function createGlassesDshAdapter(ctx, options = {}) {
   return Object.freeze({
     listAttachableSessions,
     readProjectionPage,
+    readProjectionBefore,
+    readProjectionAfter,
     observeSession,
     getAgentState,
     maxEvents,

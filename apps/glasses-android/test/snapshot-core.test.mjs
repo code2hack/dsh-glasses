@@ -37,10 +37,10 @@ function canonicalRaw(over = {}) {
     projected: {
       asOfSeq: 4,
       events: [
-        { seq: 1, type: 'user/message', blockId: 'message:u-u1', message: { role: 'user', id: 'u1', text: 'hello' } },
-        { seq: 2, type: 'assistant/chunk', blockId: 'partial:1:1', turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
-        { seq: 3, type: 'assistant/chunk', blockId: 'partial:1:1', turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } },
-        { seq: 4, type: 'assistant/message', blockId: 'message:a-a1', turn: 1, step: 1, message: { role: 'assistant', id: 'a1', text: 'final' } },
+        { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'hello' }] },
+        { seq: 2, type: 'assistant/chunk', blocks: [{ blockId: 'partial:1:1', kind: 'partial', turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } }] },
+        { seq: 3, type: 'assistant/chunk', blocks: [{ blockId: 'partial:1:1', kind: 'partial', turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'par' } }] },
+        { seq: 4, type: 'assistant/message', turn: 1, step: 1, blocks: [{ blockId: 'message:a-a1:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'final' }] },
       ],
     },
     agentState: 'idle',
@@ -73,6 +73,7 @@ function snapshotPlain(staged) {
   const s = res.snapshot;
   assert.equal(s.attachment.sessionId, SESSION);
   assert.equal(s.attachment.capabilities.historyRead, true);
+  assert.equal(s.attachment.capabilities.liveUpdates, true);
   for (const k of ['draftMutations', 'send', 'steer', 'interrupt', 'resolveRequest']) assert.equal(s.attachment.capabilities[k], false);
   assert.deepEqual(JSON.parse(JSON.stringify(s.drafts)), []);
   const items = JSON.parse(JSON.stringify(s.items));
@@ -117,18 +118,18 @@ function snapshotPlain(staged) {
   const res = core.stageSnapshot(raw, { expectedSessionId: SESSION });
   assert.equal(res.ok, true);
   const stagedBefore = JSON.stringify(snapshotPlain(res.snapshot));
-  raw.attachments[0].history.events[0].message.text = 'MUTATED-AFTER-STAGE';
-  raw.attachments[0].history.events[2].chunk.text = 'MUTATED';
+  raw.attachments[0].history.events[0].blocks[0].text = 'MUTATED-AFTER-STAGE';
+  raw.attachments[0].history.events[2].blocks[0].chunk.text = 'MUTATED';
   raw.attachments[0].label = 'Mutated';
   raw.attachments[0].capabilities.send = true;
   raw.serverGeneration = 'mutated-gen';
   raw.drafts.push({ opId: 'x' });
   raw.streamSequence = 99;
   assert.equal(JSON.stringify(snapshotPlain(res.snapshot)), stagedBefore, 'raw mutation must not leak into staged wire/items');
-  assert.equal(res.snapshot.attachment.history.events[0].message.text, 'hello');
+  assert.equal(res.snapshot.attachment.history.events[0].blocks[0].text, 'hello');
   assert.equal(res.snapshot.serverGeneration, 'gen-client-01');
   assert.equal(res.snapshot.streamSequence, 4);
-  assert.equal(res.snapshot.conversation.messages.get('message:u-u1').text, 'hello');
+  assert.equal(res.snapshot.conversation.messages.get('message:u-u1:content:0').text, 'hello');
   record('positive: staged result fully detached from raw (post-success mutation)', true);
 }
 
@@ -154,8 +155,8 @@ const NEGATIVES = [
   ['invalid attachment state', (s) => { s.attachments[0].state = 'ready'; }, 'invalid-attachment-state'],
   ['malformed attachment', (s) => { s.attachments[0] = null; }, 'malformed-attachment'],
   ['historyRead != true', (s) => { s.attachments[0].capabilities.historyRead = false; }, 'historyRead-not-true'],
-  ['missing liveUpdates capability', (s) => { delete s.attachments[0].capabilities.liveUpdates; }, 'mutation-capability-enabled'],
-  ['liveUpdates true', (s) => { s.attachments[0].capabilities.liveUpdates = true; }, 'mutation-capability-enabled'],
+  ['missing liveUpdates capability', (s) => { delete s.attachments[0].capabilities.liveUpdates; }, 'liveUpdates-not-true'],
+  ['liveUpdates false', (s) => { s.attachments[0].capabilities.liveUpdates = false; }, 'liveUpdates-not-true'],
   ['draftMutations true', (s) => { s.attachments[0].capabilities.draftMutations = true; }, 'mutation-capability-enabled'],
   ['send true', (s) => { s.attachments[0].capabilities.send = true; }, 'mutation-capability-enabled'],
   ['steer true', (s) => { s.attachments[0].capabilities.steer = true; }, 'mutation-capability-enabled'],
@@ -175,29 +176,48 @@ const NEGATIVES = [
   ['1001 events beyond hard maximum', (s) => {
     s.streamSequence = 1000;
     s.attachments[0].history.asOfSeq = 1000;
-    s.attachments[0].history.events = Array.from({ length: 1001 }, (_, i) => ({ seq: i, type: 'step/end' }));
+    s.attachments[0].history.events = Array.from({ length: 1001 }, (_, i) => ({ seq: i, type: 'step/end', blocks: [] }));
   }, 'history-beyond-max'],
   ['malformed snapshot gets its generic code even when a generation fence is set', (s) => { s.protocolMajor = 2; }, 'unsupported-protocolMajor'],
   ['raw protocolMajor 2 cannot be widened by caller (opts.protocolMajor=2)', (s) => { s.protocolMajor = 2; }, 'unsupported-protocolMajor'],
-  ['descending event sequence', (s) => { s.attachments[0].history.events = [{ seq: 4, type: 'step/end' }, { seq: 3, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'non-monotonic-seq'],
-  ['duplicate sequence', (s) => { s.attachments[0].history.events = [{ seq: 2, type: 'step/end' }, { seq: 2, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'non-monotonic-seq'],
-  ['event seq > asOfSeq', (s) => { s.attachments[0].history.events = [{ seq: 5, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }, 'seq-beyond-asOfSeq'],
+  ['descending event sequence', (s) => { s.attachments[0].history.events = [{ seq: 4, type: 'step/end', blocks: [] }, { seq: 3, type: 'step/end', blocks: [] }, { seq: 4, type: 'step/end', blocks: [] }]; }, 'non-monotonic-seq'],
+  ['duplicate sequence', (s) => { s.attachments[0].history.events = [{ seq: 2, type: 'step/end', blocks: [] }, { seq: 2, type: 'step/end', blocks: [] }, { seq: 4, type: 'step/end', blocks: [] }]; }, 'non-monotonic-seq'],
+  ['event seq > asOfSeq (last event not watermark)', (s) => { s.attachments[0].history.events = [{ seq: 3, type: 'step/end', blocks: [] }, { seq: 4, type: 'step/end', blocks: [] }, { seq: 5, type: 'step/end', blocks: [] }]; }, 'asOfSeq-mismatch'],
   ['duplicate message blockId', (s) => {
     s.streamSequence = 2;
     s.attachments[0].history.asOfSeq = 2;
     s.attachments[0].history.events = [
-      { seq: 1, type: 'user/message', blockId: 'message:u-u1', message: { role: 'user', id: 'u1', text: 'a' } },
-      { seq: 2, type: 'user/message', blockId: 'message:u-u1', message: { role: 'user', id: 'u1', text: 'b' } },
+      { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'a' }] },
+      { seq: 2, type: 'user/message', blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'b' }] },
     ];
   }, 'duplicate-blockId'],
-  ['message blockId wrong identity (prefix)', (s) => { s.attachments[0].history.events[0].blockId = 'message:a-u1'; }, 'type-blockId-mismatch'],
-  ['chunk blockId wrong identity (prefix)', (s) => { s.attachments[0].history.events[1].blockId = 'message:a-1'; }, 'type-blockId-mismatch'],
-  ['chunk blockId not its turn/step', (s) => { s.attachments[0].history.events[1].blockId = 'partial:9:9'; }, 'type-blockId-mismatch'],
-  ['assistant message blockId not its id', (s) => { s.attachments[0].history.events[3].blockId = 'message:a-other'; }, 'type-blockId-mismatch'],
-  ['projected event without type', (s) => { s.attachments[0].history.events[0].type = undefined; }, 'malformed-projected-event'],
-  ['user/message wrong role', (s) => { s.attachments[0].history.events[0].message = { role: 'assistant', id: 'u1', text: 'x' }; }, 'type-role-mismatch'],
-  ['message missing text', (s) => { s.attachments[0].history.events[0].message = { role: 'user', id: 'u1' }; }, 'malformed-projected-event'],
-  ['malformed projected chunk (no chunk.type)', (s) => { s.attachments[0].history.events[1].chunk = {}; }, 'malformed-projected-event'],
+  ['message tool-result residue without a shell (fail closed)', (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: 'assistant/message', blocks: [{ blockId: 'tool:r2:result:content:0', kind: 'text', role: 'tool', text: 'orphan', contentIndex: 0 }] },
+      { seq: 2, type: 'step/end', blocks: [] },
+    ];
+  }, 'tool-result-shell-mismatch'],
+  ['message tool-result child mis-rooted under its shell', (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: 'assistant/message', blocks: [
+        { blockId: 'tool:r3:result', kind: 'tool/result', callId: 'r3', error: false },
+        { blockId: 'tool:WRONG:result:content:0', kind: 'text', role: 'tool', text: 'bad', contentIndex: 0 },
+      ] },
+      { seq: 2, type: 'step/end', blocks: [] },
+    ];
+  }, 'blockId-root-mismatch'],
+  ['message blockId wrong identity (prefix)', (s) => { s.attachments[0].history.events[0].blocks[0].blockId = 'message:a-u1:content:0'; }, 'blockId-root-mismatch'],
+  ['chunk blockId wrong identity (prefix)', (s) => { s.attachments[0].history.events[1].blocks[0].blockId = 'message:a-1'; }, 'type-blockId-mismatch'],
+  ['chunk blockId not its turn/step', (s) => { s.attachments[0].history.events[1].blocks[0].blockId = 'partial:9:9'; }, 'type-blockId-mismatch'],
+  ['assistant message blockId not its id', (s) => { s.attachments[0].history.events[3].blocks[0].blockId = 'message:a-other'; }, 'blockId-root-mismatch'],
+  ['projected event without type', (s) => { s.attachments[0].history.events[0].type = undefined; }, 'malformed-type'],
+  ['user/message wrong role', (s) => { s.attachments[0].history.events[0].blocks[0].role = 'assistant'; }, 'type-role-mismatch'],
+  ['message missing text', (s) => { delete s.attachments[0].history.events[0].blocks[0].text; }, 'malformed-projected-event'],
+  ['malformed projected chunk (no chunk.type)', (s) => { s.attachments[0].history.events[1].blocks[0].chunk = {}; }, 'malformed-projected-event'],
   ['streamSequence != history.asOfSeq', (s) => { s.streamSequence = 99; }, 'streamSequence-mismatch'],
   ['envelope ok field present', (s) => { s.ok = true; }, 'envelope-ok-not-allowed'],
 ];
@@ -205,6 +225,15 @@ const NEGATIVES = [
 // Capture a frozen valid staged snapshot; every negative must leave it intact.
 const baseline = core.stageSnapshot(structuredClone(canonicalRaw()), { expectedSessionId: SESSION });
 assert.equal(baseline.ok, true);
+{
+  const sync = context.C0Core.createSyncState();
+  const installed = context.C0Core.installCompleteSnapshot(sync, baseline.snapshot);
+  assert.equal(installed.ok, true);
+  assert.deepEqual([...sync.timeline.keys()], [1, 2, 3, 4]);
+  assert.equal(sync.streamSequence, 4);
+  assert.equal(sync.historyAsOfSeq, 4);
+  record('positive: staged snapshot installs atomically into sync reducer', true);
+}
 const baselinePlain = snapshotPlain(baseline.snapshot);
 const globalsBefore = Object.keys(context).slice().sort();
 
@@ -249,8 +278,8 @@ for (const [name, mutate, expectCode] of NEGATIVES) {
       s.streamSequence = 2;
       s.attachments[0].history.asOfSeq = 2;
       s.attachments[0].history.events = [
-        { seq: 1, type: 'user/message', blockId: 'message:u-s1', message: { role: 'user', id: '', text: 'x' } },
-        { seq: 2, type: 'assistant/chunk', blockId: 'partial:s2', chunk: { type: 'text-delta', index: 0, text: 'p' } },
+        { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-s1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'x' }] },
+        { seq: 2, type: 'assistant/chunk', blocks: [{ blockId: 'partial:s2', kind: 'partial', turn: null, step: null, chunk: { type: 'text-delta', index: 0, text: 'p' } }] },
       ];
     }],
     ['arbitrary non-empty label', (s) => { s.attachments[0].label = 'Renamed'; }],
@@ -264,7 +293,7 @@ for (const [name, mutate, expectCode] of NEGATIVES) {
     ['invalid state', (s) => { s.attachments[0].state = 'ready'; }],
     ['historyRead false', (s) => { s.attachments[0].capabilities.historyRead = false; }],
     ['missing liveUpdates', (s) => { delete s.attachments[0].capabilities.liveUpdates; }],
-    ['liveUpdates true', (s) => { s.attachments[0].capabilities.liveUpdates = true; }],
+    ['liveUpdates false', (s) => { s.attachments[0].capabilities.liveUpdates = false; }],
     ['send true', (s) => { s.attachments[0].capabilities.send = true; }],
     ['non-empty drafts', (s) => { s.drafts.push({ op: 1 }); }],
     ['agent state mismatch', (s) => { s.attachments[0].agent.state = 'running'; }],
@@ -272,26 +301,72 @@ for (const [name, mutate, expectCode] of NEGATIVES) {
     ['history events not array', (s) => { s.attachments[0].history.events = {}; }],
     ['history events undefined', (s) => { s.attachments[0].history.events = undefined; }],
     ['history events null', (s) => { s.attachments[0].history.events = null; }],
-    ['non-monotonic seq', (s) => { s.attachments[0].history.events = [{ seq: 4, type: 'step/end' }, { seq: 3, type: 'step/end' }, { seq: 4, type: 'step/end' }]; }],
+    ['non-monotonic seq', (s) => { s.attachments[0].history.events = [{ seq: 4, type: 'step/end', blocks: [] }, { seq: 3, type: 'step/end', blocks: [] }, { seq: 4, type: 'step/end', blocks: [] }]; }],
     ['duplicate message blockId', (s) => {
       s.streamSequence = 2;
       s.attachments[0].history.asOfSeq = 2;
       s.attachments[0].history.events = [
-        { seq: 1, type: 'user/message', blockId: 'message:u-u1', message: { role: 'user', id: 'u1', text: 'a' } },
-        { seq: 2, type: 'user/message', blockId: 'message:u-u1', message: { role: 'user', id: 'u1', text: 'b' } },
+        { seq: 1, type: 'user/message', blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'a' }] },
+        { seq: 2, type: 'user/message', blocks: [{ blockId: 'message:u-u1:content:0', kind: 'text', contentIndex: 0, role: 'user', text: 'b' }] },
       ];
     }],
-    ['message blockId identity mismatch', (s) => { s.attachments[0].history.events[0].blockId = 'message:a-u1'; }],
-    ['chunk turn/step identity mismatch', (s) => { s.attachments[0].history.events[1].blockId = 'partial:9:9'; }],
+    ['message blockId identity mismatch', (s) => { s.attachments[0].history.events[0].blocks[0].blockId = 'message:a-u1:content:0'; }],
+    ['chunk turn/step identity mismatch', (s) => { s.attachments[0].history.events[1].blocks[0].blockId = 'partial:9:9'; }],
+    ['accept converged tool-call card (message + dedicated)', (s) => {
+      s.streamSequence = 3;
+      s.attachments[0].history.asOfSeq = 3;
+      s.attachments[0].history.events = [
+        { seq: 1, type: 'assistant/message', blocks: [
+          { blockId: 'message:a-a1:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'calling' },
+          { blockId: 'tool:c1:call', kind: 'tool/call', callId: 'c1', name: 'read', arguments: '{}' },
+        ] },
+        { seq: 2, type: 'tool/call', blocks: [{ blockId: 'tool:c1:call', kind: 'tool/call', callId: 'c1', name: 'read', arguments: '{}' }] },
+        { seq: 3, type: 'step/end', blocks: [] },
+      ];
+    }],
+    ['accept converged tool-result (message-content + dedicated)', (s) => {
+      s.streamSequence = 3;
+      s.attachments[0].history.asOfSeq = 3;
+      s.attachments[0].history.events = [
+        { seq: 1, type: 'assistant/message', blocks: [
+          { blockId: 'tool:r1:result', kind: 'tool/result', callId: 'r1', error: false },
+          { blockId: 'tool:r1:result:content:0', kind: 'text', role: 'tool', text: 'ok', contentIndex: 0 },
+        ] },
+        { seq: 2, type: 'tool/result', blocks: [
+          { blockId: 'tool:r1:result', kind: 'tool/result', callId: 'r1', error: false },
+          { blockId: 'tool:r1:result:content:0', kind: 'text', role: 'tool', text: 'ok', contentIndex: 0 },
+        ] },
+        { seq: 3, type: 'step/end', blocks: [] },
+      ];
+    }],
+    ['reject message tool-result residue without shell', (s) => {
+      s.streamSequence = 2;
+      s.attachments[0].history.asOfSeq = 2;
+      s.attachments[0].history.events = [
+        { seq: 1, type: 'assistant/message', blocks: [{ blockId: 'tool:r2:result:content:0', kind: 'text', role: 'tool', text: 'orphan', contentIndex: 0 }] },
+        { seq: 2, type: 'step/end', blocks: [] },
+      ];
+    }],
+    ['reject mis-rooted tool result child', (s) => {
+      s.streamSequence = 2;
+      s.attachments[0].history.asOfSeq = 2;
+      s.attachments[0].history.events = [
+        { seq: 1, type: 'assistant/message', blocks: [
+          { blockId: 'tool:r3:result', kind: 'tool/result', callId: 'r3', error: false },
+          { blockId: 'tool:WRONG:result:content:0', kind: 'text', role: 'tool', text: 'bad', contentIndex: 0 },
+        ] },
+        { seq: 2, type: 'step/end', blocks: [] },
+      ];
+    }],
     ['event without type', (s) => { s.attachments[0].history.events[0].type = undefined; }],
-    ['wrong role', (s) => { s.attachments[0].history.events[0].message = { role: 'assistant', id: 'u1', text: 'x' }; }],
-    ['missing text', (s) => { s.attachments[0].history.events[0].message = { role: 'user', id: 'u1' }; }],
-    ['chunk missing type', (s) => { s.attachments[0].history.events[1].chunk = {}; }],
+    ['wrong role', (s) => { s.attachments[0].history.events[0].blocks[0].role = 'assistant'; }],
+    ['missing text', (s) => { delete s.attachments[0].history.events[0].blocks[0].text; }],
+    ['chunk missing type', (s) => { s.attachments[0].history.events[1].blocks[0].chunk = {}; }],
     ['streamSequence mismatch', (s) => { s.streamSequence = 99; }],
     ['1001 events beyond hard maximum', (s) => {
       s.streamSequence = 1000;
       s.attachments[0].history.asOfSeq = 1000;
-      s.attachments[0].history.events = Array.from({ length: 1001 }, (_, i) => ({ seq: i, type: 'step/end' }));
+      s.attachments[0].history.events = Array.from({ length: 1001 }, (_, i) => ({ seq: i, type: 'step/end', blocks: [] }));
     }],
     ['envelope ok present', (s) => { s.ok = true; }],
   ];
