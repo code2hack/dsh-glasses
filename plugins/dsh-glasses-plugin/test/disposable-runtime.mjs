@@ -210,7 +210,7 @@ export async function httpReq({ port, method = "GET", path, headers = {}, body, 
   });
 }
 
-function writeProfileFiles(homeDir, port) {
+function writeProfileFiles(homeDir, port, { fixturePluginRoot } = {}) {
   const profileDir = join(homeDir, "profiles", "web");
   const settings = [
     "webserver:",
@@ -220,13 +220,15 @@ function writeProfileFiles(homeDir, port) {
     "  default: minimal",
     "",
   ].join("\n");
+  const dependencies = {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "dsh-glasses-plugin": `file:${PLUGIN_ROOT}`,
+  };
+  if (fixturePluginRoot) dependencies["dsh-glasses-live-test-fixture"] = `file:${fixturePluginRoot}`;
   const packageJson = JSON.stringify({
     name: "dsh-profile-web",
     private: true,
-    dependencies: {
-      "@deepseek-ai/schemastery": "^3.18.1",
-      "dsh-glasses-plugin": `file:${PLUGIN_ROOT}`,
-    },
+    dependencies,
     dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } },
   }, null, 2) + "\n";
   return (async () => {
@@ -234,14 +236,20 @@ function writeProfileFiles(homeDir, port) {
     await writeFile(join(homeDir, "settings.yaml"), settings);
     await writeFile(join(profileDir, "package.json"), packageJson);
     await writeFile(join(profileDir, "cordis.yml"), "# dsh profile root.\n[]\n");
-    await writeFile(join(profileDir, "cordis.patch.yml"), "- insert:\n    - id: dsh-glasses-plugin\n      name: dsh-glasses-plugin\n");
+    const plugins = [
+      "- insert:",
+      "    - id: dsh-glasses-plugin",
+      "      name: dsh-glasses-plugin",
+    ];
+    if (fixturePluginRoot) plugins.push("    - id: dsh-glasses-live-test-fixture", "      name: dsh-glasses-live-test-fixture");
+    await writeFile(join(profileDir, "cordis.patch.yml"), plugins.join("\n") + "\n");
     await writeFile(join(profileDir, "pnpm-workspace.yaml"), "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");
   })();
 }
 
-async function createFromScratch(homeDir, port) {
+async function createFromScratch(homeDir, port, options) {
   verbose("creating disposable home from scratch", homeDir);
-  await writeProfileFiles(homeDir, port);
+  await writeProfileFiles(homeDir, port, options);
   const profileDir = join(homeDir, "profiles", "web");
   execFileSync("pnpm", ["install"], { cwd: profileDir, stdio: "inherit" });
 }
@@ -260,9 +268,9 @@ async function overlayPlugin(homeDir) {
 }
 
 /** Build an isolated disposable home for one test run and load the worktree plugin. */
-export async function ensureHome(homeDir, port) {
+export async function ensureHome(homeDir, port, options = {}) {
   homeDir = assertDisposableDshHome(homeDir);
-  if (!existsSync(homeDir)) await createFromScratch(homeDir, port);
+  if (!existsSync(homeDir)) await createFromScratch(homeDir, port, options);
   await overlayPlugin(homeDir);
   return homeDir;
 }
@@ -321,8 +329,8 @@ export async function spawnInstance({ homeDir, port, sessionId, token, extraEnv 
  * once /glasses/v1/bootstrap returns 200 for that session. Throws (with child
  * log) if it never comes up. Only OUR spawned child is ever terminated.
  */
-export async function startInstance({ homeDir, port, sessionId, token }) {
-  const { proc, logBuf } = await spawnInstance({ homeDir, port, sessionId, token });
+export async function startInstance({ homeDir, port, sessionId, token, extraEnv = {} }) {
+  const { proc, logBuf } = await spawnInstance({ homeDir, port, sessionId, token, extraEnv });
   for (let i = 0; i < 90; i++) {
     await sleep(500);
     if (proc.exitCode !== null) break;
