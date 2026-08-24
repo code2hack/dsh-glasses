@@ -111,9 +111,16 @@
 
   // FOLD nested rc.2 ToolResultBlock content into its status/result SHELL at
   // the WIRE level. The projection law already validated the shell + stable
-  // children; here the children are folded deterministically (contentIndex
-  // order) into a SINGLE bounded conversation item so a tool result renders
-  // once and never duplicates the same visible content as stray articles.
+  // children; here the children are folded deterministically into a SINGLE
+  // bounded conversation item so a tool result renders once and never
+  // duplicates the same visible content as stray articles.
+  //
+  // The folded item retains an ORDERED `content[]` of its nested visible
+  // children (text/image entries) sorted by the canonical contentIndex. The
+  // DOM renderer WALKS content[] in exact order, so a mixed text->image->text
+  // result is never flattened into "all text then all images". The result
+  // SHELL remains the stable viewport anchor. A legacy shell-only fixture
+  // (text riding the shell, no children) falls back to `entry.text`.
   function foldToolResult(state, event, seq, blocks) {
     let shell = null;
     for (const block of blocks) {
@@ -134,14 +141,14 @@
     const children = blocks.filter((b) => b && (b.kind === 'text' || b.kind === 'image') && b.role === 'tool');
     if (children.length) {
       const ordered = children.slice().sort((a, b) => contentOrder(a) - contentOrder(b));
-      const texts = [];
-      const images = [];
+      const content = [];
       for (const child of ordered) {
         if (child.kind === 'text') {
           const childText = text(child.text);
-          if (childText) texts.push(childText);
+          if (childText) content.push({ kind: 'text', text: childText });
         } else {
-          images.push({
+          content.push({
+            kind: 'image',
             attachmentId: text(child.attachmentId),
             mediaType: text(child.mediaType),
             width: Number.isInteger(child.width) ? child.width : null,
@@ -149,9 +156,7 @@
           });
         }
       }
-      const joined = texts.join('');
-      if (joined) entry.text = joined;
-      if (images.length) entry.images = images;
+      if (content.length) entry.content = content;
     } else if (typeof shell.text === 'string' && shell.text) {
       // Legacy/shell-only projection form: the result text rides the shell.
       entry.text = shell.text;
@@ -197,7 +202,16 @@
       const kind = text(block.kind);
       if (!kind) continue;
 
-      if (kind === 'text') {
+      // A tool-scoped text/image block (tool:<callId>:result:content:<i>) is a
+      // child of a converged tool-result card already folded into state.blocks.
+      // It must NOT also become an independent message article — that would
+      // render the same visible content twice (AC2 one-logical-invocation
+      // renders once). The card alone is the article.
+      const isToolResultChild = (kind === 'text' || kind === 'image') && blockId.startsWith('tool:');
+
+      if (isToolResultChild) {
+        continue;
+      } else if (kind === 'text') {
         state.messages.set(blockId, {
           key: blockId,
           blockId,

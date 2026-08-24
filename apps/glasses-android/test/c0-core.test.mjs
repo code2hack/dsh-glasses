@@ -146,6 +146,73 @@ assert.equal(assistantBlocks[0].partial, false);
   assert.equal(items[0].seq, 40, 'chronological order preserved for non-message blocks');
 }
 
+// ---- converged tool CALL: message content + dedicated event = ONE card ----
+// The assistant message's nested ToolCallBlock and the dedicated durable
+// tool/call event share the SINGULAR stable identity tool:<callId>:call. The
+// reducer must fold them into exactly one tool card — never two call items
+// and no duplicated visible content (AC2).
+{
+  const s = core.createConversationState();
+  core.applyConversationEvent(s, {
+    seq: 70,
+    type: 'assistant/message',
+    blocks: [
+      { blockId: 'message:a-a70:content:0', kind: 'text', contentIndex: 0, role: 'assistant', text: 'calling' },
+      { blockId: 'tool:c70:call', kind: 'tool/call', callId: 'c70', name: 'read', arguments: '{}' },
+    ],
+  });
+  core.applyConversationEvent(s, {
+    seq: 71,
+    type: 'tool/call',
+    blocks: [{ blockId: 'tool:c70:call', kind: 'tool/call', callId: 'c70', name: 'read', arguments: '{}' }],
+  });
+  const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
+  assert.deepEqual(items.map((i) => i.blockId), ['message:a-a70:content:0', 'tool:c70:call']);
+  const calls = items.filter((i) => i.kind === 'tool/call');
+  assert.equal(calls.length, 1, 'message ToolCallBlock + dedicated tool/call event fold to exactly ONE tool-call card');
+  assert.equal(calls[0].key, 'tool:c70:call');
+}
+
+// ---- converged tool RESULT: ordered nested content[], never separated -------
+// Nested text->image->text ToolResultBlock content folds into the tool card as
+// an ORDERED content[] (kinds preserved in exact order), and the children do
+// NOT become stray message articles. The legacy shell-only fixture (text rides
+// the shell, e.g. the tool/projection lifecycle test above) still falls back to
+// entry.text — both forms keep ONE card.
+{
+  const s = core.createConversationState();
+  core.applyConversationEvent(s, {
+    seq: 80,
+    type: 'assistant/message',
+    blocks: [
+      { blockId: 'tool:r80:result', kind: 'tool/result', callId: 'r80', error: false },
+      { blockId: 'tool:r80:result:content:0', kind: 'text', role: 'tool', text: 'A', contentIndex: 0 },
+      { blockId: 'tool:r80:result:content:1', kind: 'image', role: 'tool', attachmentId: 'att-1', mediaType: 'image/webp', width: 10, height: 10, contentIndex: 1 },
+      { blockId: 'tool:r80:result:content:2', kind: 'text', role: 'tool', text: 'B', contentIndex: 2 },
+    ],
+  });
+  core.applyConversationEvent(s, {
+    seq: 81,
+    type: 'tool/result',
+    blocks: [
+      { blockId: 'tool:r80:result', kind: 'tool/result', callId: 'r80', error: false },
+      { blockId: 'tool:r80:result:content:0', kind: 'text', role: 'tool', text: 'A', contentIndex: 0 },
+      { blockId: 'tool:r80:result:content:1', kind: 'image', role: 'tool', attachmentId: 'att-1', mediaType: 'image/webp', width: 10, height: 10, contentIndex: 1 },
+      { blockId: 'tool:r80:result:content:2', kind: 'text', role: 'tool', text: 'B', contentIndex: 2 },
+    ],
+  });
+  const items = JSON.parse(JSON.stringify(core.conversationItems(s)));
+  assert.equal(items.length, 1, 'converged tool result renders exactly ONE card');
+  assert.equal(items[0].kind, 'tool/result');
+  assert.equal(items[0].key, 'tool:r80:result');
+  assert.deepEqual(items[0].content, [
+    { kind: 'text', text: 'A' },
+    { kind: 'image', attachmentId: 'att-1', mediaType: 'image/webp', width: 10, height: 10 },
+    { kind: 'text', text: 'B' },
+  ], 'nested content[] preserves exact text->image->text order (never split into text[]+images[])');
+  assert.equal(typeof items[0].text, 'undefined', 'a content[] tool result must not also expose the legacy separated text');
+}
+
 // ---- non-renderable canonical events are no-ops for rendering ----
 {
   const s = core.createConversationState();

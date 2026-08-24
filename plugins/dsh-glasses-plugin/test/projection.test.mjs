@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import {
   projectEvent,
   projectAndValidatePage,
@@ -308,32 +311,114 @@ const emptyUser = projectEvent({
 });
 assert.deepEqual(emptyUser, { seq: 66, type: "user/message", blocks: [] });
 
+// -- Unknown-type vocabulary law (explicit pinned allowlist, AC5) -------------
 // A truly UNRECOGNIZED type skips safely when the rc.2 envelope marks it
 // ignorable:true.
 const unknownIgnorable = projectEvent({ seq: 63, type: "something/future", ignorable: true, data: { whatever: 1 } });
 assert.deepEqual(unknownIgnorable, { seq: 63, type: "something/future", blocks: [] });
 
-// An unrecognized NON-SURFACE record (no SurfaceOp, no ignorable marker) is a
-// DSH meta record that cannot change the visible conversation. Observed rc.2
-// reality: DSH persists permission/preset, sandbox/mode, approval/policy in
-// the same seq-space log WITHOUT an ignorable marker; rejecting them would
-// break every real session. They are skipped with blocks: [] (watermark
-// advances, nothing renders).
-for (const metaType of ["permission/preset", "sandbox/mode", "approval/policy", "some/future-meta"]) {
+// Real rc.2 META records (permission/preset, sandbox/mode, approval/policy)
+// are accepted by the EXPLICIT pinned non-renderable allowlist
+// (dsh-session known-event-types.js complement), never by a skip heuristic.
+// The durable seq advances; nothing renders.
+for (const metaType of ["permission/preset", "sandbox/mode", "approval/policy"]) {
   const projected = projectEvent({ seq: 70, type: metaType, data: { whatever: 1 } });
-  assert.deepEqual(projected, { seq: 70, type: metaType, blocks: [] }, `non-surface unknown ${metaType} must skip`);
+  assert.deepEqual(projected, { seq: 70, type: metaType, blocks: [] }, `pinned non-renderable ${metaType} must classify explicitly`);
 }
 
-// An unrecognized event that CARRIES a SurfaceOp is a FUTURE surface rewrite
-// of user-visible content whose shape we cannot render -> FAIL CLOSED (AC5):
-// the projection throws so writes are disabled and the caller takes its
-// complete-resynchronization path instead of silently gutting a session that
-// changed visible-transcript semantics.
+// An unknown REQUIRED event — absent from the explicit pinned vocabulary AND
+// lacking an ignorable marker — FAILS CLOSED (AC5) regardless of whether it
+// carries a SurfaceOp. Absence of a SurfaceOp is NOT an implicit ignorable
+// marker: rc.2 non-surface events never carry surfaceOp, and that fact does
+// not make them ignorable. The projection throws so writes are disabled and
+// the caller takes its complete-resynchronization path.
+for (const unknown of [
+  { seq: 72, type: "some/future-meta", data: { whatever: 1 } },
+  { seq: 73, type: "some/future-surface", surfaceOp: "append", data: { whatever: 1 } },
+]) {
+  assert.throws(
+    () => projectEvent(unknown),
+    (e) => e instanceof ProjectionValidationError && e.code === "unsupported-required-event",
+    `unknown required event ${unknown.type} must reject, never silently skip`,
+  );
+}
+
+// -- (7b) content-block vocabulary fails closed one layer down -----------------
+// rc.2 ContentBlockMap is merge-extensible. An append-origin surface message
+// carrying an UNKNOWN content kind must fail closed (AC5), not silently drop
+// visible model/user content; 'reasoning' is known non-renderable.
 assert.throws(
-  () => projectEvent({ seq: 64, type: "something/future-surface", surfaceOp: "append", data: { whatever: 1 } }),
-  (e) => e instanceof ProjectionValidationError && e.code === "unsupported-required-event",
-  "unknown surface-eligible event must reject, never silently skip",
+  () => projectEvent({ seq: 80, type: "user/message", surfaceOp: "append", data: { id: "uX", role: "user", content: [{ type: "text", text: "visible" }, { type: "brand/new-block", value: 1 }], source: { kind: "user" } } }),
+  (e) => e instanceof ProjectionValidationError && e.code === "unsupported-required-content-block",
+  "unknown message content kind must fail closed",
 );
+assert.throws(
+  () => projectEvent({ seq: 81, type: "tool/result", data: { message: { role: "user", content: [{ type: "tool-result", toolCallId: "t1", isError: false, content: [{ type: "brand/new-block", value: 1 }] }], source: { callId: "t1" } } } }),
+  (e) => e instanceof ProjectionValidationError && e.code === "unsupported-required-content-block",
+  "unknown nested tool-result content kind must fail closed",
+);
+const reasoningOnly = projectEvent({
+  seq: 82,
+  type: "assistant/message",
+  data: { turn: 5, step: 0, message: { id: "r-only", role: "assistant", content: [{ type: "reasoning", text: "chain" }], source: { kind: "model", provider: "p", model: "m" } } },
+});
+assert.deepEqual(reasoningOnly, { seq: 82, type: "assistant/message", turn: 5, step: 0, blocks: [] }, "reasoning-only message is valid non-renderable");
+
+// -- (7c) tool identity is SINGULAR per callId (AC2 no-duplication) -------------
+// An assistant message's nested tool-call content and the dedicated tool/call
+// durable event CONVERGE to the same stable identity tool:<callId>:call, so
+// one logical tool invocation folds into ONE card. The page law accepts the
+// repeated stable blockId (repeatable tool kind) — never a duplicate error.
+const convergedToolPage = projectAndValidatePage([
+  { seq: 90, type: "assistant/message", surfaceOp: "append", data: { turn: 6, step: 1, message: { id: "a-call", role: "assistant", content: [{ type: "text", text: "calling" }, { type: "tool-call", id: "c9", name: "read", arguments: "{}" }, { type: "text", text: "done" }], source: { kind: "model", provider: "p", model: "m" } } } },
+  { seq: 91, type: "tool/call", data: { turn: 6, step: 1, callId: "c9", name: "read", arguments: "{}" } },
+  { seq: 92, type: "step/end", data: { turn: 6, step: 1 } },
+]);
+const toolCallIds = convergedToolPage.flatMap((e) => e.blocks.filter((b) => b.kind === "tool/call").map((b) => b.blockId));
+assert.deepEqual(toolCallIds, ["tool:c9:call", "tool:c9:call"], "message tool-call + dedicated tool/call converge to one identity");
+assert.equal(new Set(toolCallIds).size, 1, "exactly one distinct tool-call card identity");
+// message text children keep their correct message-root identities after the
+// converged tool block (indices preserved, never renumbered).
+const msgEvent = convergedToolPage[0];
+assert.deepEqual(
+  msgEvent.blocks.filter((b) => b.kind === "text").map((b) => [b.blockId, b.contentIndex]),
+  [["message:a-a-call:content:0", 0], ["message:a-a-call:content:2", 2]],
+  "message text children keep exact source content indices",
+);
+
+// Same convergence for tool RESULTS: message-content tool-result and the
+// dedicated tool/result event share the SAME shell + ordered children.
+const convergedResultPage = projectAndValidatePage([
+  { seq: 100, type: "assistant/message", surfaceOp: "append", data: { turn: 7, step: 1, message: { id: "a-res", role: "assistant", content: [{ type: "tool-result", toolCallId: "r7", isError: false, content: [{ type: "text", text: "result text" }] }], source: { kind: "model", provider: "p", model: "m" } } } },
+  { seq: 101, type: "tool/result", data: { message: { role: "user", content: [{ type: "tool-result", toolCallId: "r7", isError: false, content: [{ type: "text", text: "result text" }] }], source: { callId: "r7" } } } },
+]);
+const resultShellIds = convergedResultPage.flatMap((e) => e.blocks.filter((b) => b.kind === "tool/result").map((b) => b.blockId));
+assert.deepEqual(resultShellIds, ["tool:r7:result", "tool:r7:result"], "message tool-result + dedicated tool/result converge to one shell");
+assert.equal(new Set(resultShellIds).size, 1, "exactly one distinct tool-result shell identity");
+
+// -- (7d) nested tool-result text/image ordering is preserved exactly -----------
+// A dedicated tool/result with nested text->image->text keeps child order via
+// the explicit contentIndex (0,1,2) and the page law accepts it.
+const orderedResult = projectEvent({
+  seq: 110,
+  type: "tool/result",
+  data: { message: { role: "user", content: [{ type: "tool-result", toolCallId: "ord", isError: false, content: [
+    { type: "text", text: "A" },
+    { type: "image", attachment: { attachmentId: "att-X", mediaType: "image/webp", width: 12, height: 34 } },
+    { type: "text", text: "B" },
+  ] }], source: { callId: "ord" } } },
+});
+assert.deepEqual(
+  orderedResult.blocks.map((b) => [b.blockId, b.kind, b.role === undefined ? null : b.role, b.contentIndex]),
+  [
+    ["tool:ord:result", "tool/result", null, undefined],
+    ["tool:ord:result:content:0", "text", "tool", 0],
+    ["tool:ord:result:content:1", "image", "tool", 1],
+    ["tool:ord:result:content:2", "text", "tool", 2],
+  ],
+  "nested text->image->text children keep exact order and indices",
+);
+validateCanonicalProjectionPage([orderedResult]);
 
 // ---- (8) replay is deterministic: identical ordered stable block IDs -------
 const rawPage = [
@@ -586,5 +671,60 @@ assert.equal(
   true,
   "valid nested tool-result pages are accepted",
 );
+
+// ---- DRIFT GUARD: pinned rc.2 vocabulary is fully classified -----------------
+// ChatGPT: the non-renderable handling must come from an EXPLICIT allowlist
+// — ideally exhaustively from the pinned rc.2 type declarations/runtime
+// corpus — NOT from a skip heuristic. This guard resolves the INSTALLED pinned
+// @deepseek-ai/dsh-session generated catalog (known-event-types.js) and proves
+// that EVERY type the persistence read path understands is either projected or
+// explicitly allowlisted: projectEvent must never throw unsupported-required-
+// event on a benign probe. A future DSH upgrade that adds a required event
+// type will FAIL here until the projection allowlist is updated deliberately.
+function resolvePinnedDshRoot() {
+  const bin = process.env.DSH_BIN || "dsh";
+  let resolved = null;
+  try {
+    resolved = realpathSync(execFileSync("which", [bin], { encoding: "utf8" }).trim());
+  } catch {
+    return null;
+  }
+  let current = dirname(resolved);
+  for (let i = 0; i < 16; i += 1) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(current, "package.json"), "utf8"));
+      if (pkg.name === "@deepseek-ai/dsh") return current;
+    } catch { /* keep walking */ }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+( () => {
+  const root = resolvePinnedDshRoot();
+  if (!root) {
+    console.log("[drift-guard] pinned @deepseek-ai/dsh root not resolvable via DSH_BIN; registry coverage check skipped");
+    return;
+  }
+  const registryPath = join(root, "node_modules", "@deepseek-ai", "dsh-session", "lib", "types", "known-event-types.js");
+  let src = null;
+  try {
+    src = readFileSync(registryPath, "utf8");
+  } catch {
+    console.log(`[drift-guard] pinned registry ${registryPath} not readable; check skipped`);
+    return;
+  }
+  const pinned = [...src.matchAll(/^\s*'([a-z][a-z0-9/-]*)',?\s*$/gm)].map((m) => m[1]);
+  assert.ok(pinned.length > 0, "pinned catalog must be non-empty");
+  for (const t of pinned) {
+    assert.doesNotThrow(
+      () => projectEvent({ seq: 1, type: t, data: {} }),
+      `pinned rc.2 event type ${t} must be classified by the explicit allowlist or a projection branch — never rejected as unknown-required`,
+    );
+  }
+  console.log(`[drift-guard] all ${pinned.length} pinned rc.2 event types classified without unsupported-required-event`);
+})();
 
 console.log("projection.test.mjs: PASS");

@@ -259,6 +259,59 @@ function invalidSnapshot() {
   rt.dom.window.close();
 }
 
+// ---- Regression (ChatGPT): assistant ToolCallBlock + matching tool/call ----
+// An assistant message whose nested content includes a ToolCallBlock AND a
+// matching dedicated tool/call event must render EXACTLY ONE tool-call card.
+// A tool/result card with ordered nested content (text->image->text) must
+// render its body in EXACT order and never as a separate text + separate image
+// article (AC2: one logical invocation renders once).
+{
+  const projected = {
+    asOfSeq: 5,
+    events: [
+      { seq: 1, type: 'assistant/message', turn: 3, step: 1, blocks: [
+        { blockId: 'message:a-aT:content:0', kind: 'text', role: 'assistant', text: 'looking up', contentIndex: 0 },
+        { blockId: 'tool:cT:call', kind: 'tool/call', callId: 'cT', name: 'read', arguments: '{}' },
+      ] },
+      { seq: 2, type: 'tool/call', blocks: [{ blockId: 'tool:cT:call', kind: 'tool/call', callId: 'cT', name: 'read', arguments: '{}' }] },
+      { seq: 3, type: 'tool/result', blocks: [
+        { blockId: 'tool:cT:result', kind: 'tool/result', callId: 'cT', error: false },
+        { blockId: 'tool:cT:result:content:0', kind: 'text', role: 'tool', text: 'A', contentIndex: 0 },
+        { blockId: 'tool:cT:result:content:1', kind: 'image', role: 'tool', attachmentId: 'att-render-1', mediaType: 'image/webp', width: 12, height: 34, contentIndex: 1 },
+        { blockId: 'tool:cT:result:content:2', kind: 'text', role: 'tool', text: 'B', contentIndex: 2 },
+      ] },
+      { seq: 4, type: 'tool/result', blocks: [
+        { blockId: 'tool:cT:result', kind: 'tool/result', callId: 'cT', error: false },
+        { blockId: 'tool:cT:result:content:0', kind: 'text', role: 'tool', text: 'A', contentIndex: 0 },
+        { blockId: 'tool:cT:result:content:1', kind: 'image', role: 'tool', attachmentId: 'att-render-1', mediaType: 'image/webp', width: 12, height: 34, contentIndex: 1 },
+        { blockId: 'tool:cT:result:content:2', kind: 'text', role: 'tool', text: 'B', contentIndex: 2 },
+      ] },
+      { seq: 5, type: 'turn/end', blocks: [] },
+    ],
+  };
+  const snap = buildCanonicalSnapshot({
+    sessionId: SESSION,
+    attachmentId: 'att-9f1e-render-toolc',
+    projected,
+    agentState: 'idle',
+    serverGeneration: 'gen-tool',
+    connectionEpoch: 'epoch-tool-1',
+    maxEvents: M1_BOOTSTRAP_MAX_EVENTS,
+  });
+  const rt = await boot({ session: SESSION, responses: [{ status: 200, body: snap }] });
+  await rt.settled('tool-converged-initial');
+  const rendered = chatTexts(rt);
+  record('tool: converged assistant ToolCallBlock + tool/call renders EXACTLY ONE tool-call card', rendered.filter((c) => c.body.startsWith('call ')).length === 1, JSON.stringify(rendered));
+  assert.equal(rendered.filter((c) => c.body.startsWith('call ')).length, 1, 'exactly one rendered tool-call card');
+  record('tool: converged tool/result renders EXACTLY ONE card', rendered.filter((c) => c.role === 'tool result').length === 1, JSON.stringify(rendered));
+  assert.equal(rendered.filter((c) => c.role === 'tool result').length, 1, 'exactly one rendered tool-result card');
+  const result = rendered.filter((c) => c.role === 'tool result')[0];
+  record('tool: nested content renders text->image->text in EXACT order', result.body === 'A [image image/webp 12x34] B', result.body);
+  assert.equal(result.body, 'A [image image/webp 12x34] B', 'tools result body must preserve exact text->image->text order');
+  assert.equal(rendered.filter((c) => c.body === 'A').length, 0, 'tool-result children never render as stray separate articles');
+  rt.dom.window.close();
+}
+
 console.log('=== m1-render SUMMARY ===');
 for (const r of RESULTS) console.log(`${r.verdict} ${r.name}`);
 for (const r of RESULTS) console.log(`RESULT\t${JSON.stringify(r)}`);

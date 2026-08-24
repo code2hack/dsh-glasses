@@ -759,8 +759,23 @@ function appendBoundedBody(bodyNode, item, kind) {
   } else if (kind === 'tool/result') {
     const parts = [];
     if (item.error === true) parts.push('error');
-    if (text(item.text)) parts.push(text(item.text));
-    for (const img of (Array.isArray(item.images) ? item.images : [])) parts.push(imageMarker(img));
+    // Ordered content[] (text/image entries) is rendered IN EXACT order so a
+    // nested text->image->text result is never flattened. Legacy shell-only
+    // fixtures (no content[]) fall back to the shell text.
+    const content = Array.isArray(item.content) ? item.content : null;
+    if (content) {
+      for (const part of content) {
+        if (!part || typeof part !== 'object') continue;
+        if (part.kind === 'text') {
+          const t = text(part.text);
+          if (t) parts.push(t);
+        } else if (part.kind === 'image') {
+          parts.push(imageMarker(part));
+        }
+      }
+    } else if (text(item.text)) {
+      parts.push(text(item.text));
+    }
     bodyNode.textContent = parts.join(' ');
   } else if (kind === 'status') {
     bodyNode.textContent = 'turn ' + String(item.turn != null ? item.turn : '?') + ' ' + text(item.state);

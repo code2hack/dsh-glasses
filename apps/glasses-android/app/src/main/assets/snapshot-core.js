@@ -38,6 +38,34 @@
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  // Shared tool-result shell law (mirror). Returns [code, message] or null.
+  // Used for a dedicated tool/result event AND for any event whose blocks
+  // contain a converged tool-result shell or tool-role child (message-content
+  // origin). A shell is REQUIRED whenever tool-result residue is present —
+  // converged cards only ever project shell + children together.
+  function toolResultLaw(ev) {
+    var shellCount = 0;
+    var shellCallId = '';
+    for (var sj = 0; sj < ev.blocks.length; sj++) {
+      if (ev.blocks[sj] && ev.blocks[sj].kind === 'tool/result') {
+        shellCount += 1;
+        shellCallId = ev.blocks[sj].callId;
+        if (typeof shellCallId !== 'string' || shellCallId === '') return ['malformed-projected-event', 'tool result shell lacks callId'];
+        if (ev.blocks[sj].blockId !== 'tool:' + shellCallId + ':result') return ['blockId-root-mismatch', 'tool result shell blockId mismatch'];
+      }
+    }
+    if (shellCount < 1) return ['tool-result-shell-mismatch', 'tool/result event lacks a result shell'];
+    var toolPattern = new RegExp('^tool:' + escapeRegExp(shellCallId) + ':result:content:\\d+$');
+    for (var tj = 0; tj < ev.blocks.length; tj++) {
+      var tblock = ev.blocks[tj];
+      if (tblock && (tblock.kind === 'text' || tblock.kind === 'image')) {
+        if (typeof tblock.blockId !== 'string' || !toolPattern.test(tblock.blockId)) return ['blockId-root-mismatch', 'tool result child not rooted under its shell'];
+        if (tblock.role !== 'tool') return ['type-role-mismatch', 'tool result child must carry role tool'];
+      }
+    }
+    return null;
+  }
+
   // -------------------------------------------------------------------------
   // Frozen wire law (mirror of validateSnapshotWire).
   // Rejects with the SAME codes; malformed/untrusted input can never be
@@ -112,10 +140,16 @@
     // Canonical M1 (#28) events law (client mirror of the server law): every
     // history event is { seq, type, blocks[] } with typed, stable-blockId
     // projection blocks. Non-renderable DSH source events carry blocks: [].
-    var REPEATABLE_KINDS = { partial: true, status: true };
+    var REPEATABLE_KINDS = { partial: true, status: true, 'tool/call': true, 'tool/result': true };
     var BLOCK_KINDS = { text: true, image: true, 'partial': true, 'tool/call': true, 'tool/result': true, status: true, error: true, request: true };
     var previous = -1;
     var seenBlockIds = {};
+    // Converged tool-result children (tool:<callId>:result:content:<i>) are
+    // legitimately repeated by the message-content origin AND the dedicated
+    // tool/result event of the SAME logical invocation (AC2: one card). They
+    // are exempt from the duplicate-blockId rule, like the lifecycle kinds in
+    // REPEATABLE_KINDS.
+    var REUSABLE_TOOL_CHILD = /^tool:[^:]+:result:content:\d+$/;
     for (var ei = 0; ei < history.events.length; ei++) {
       var ev = history.events[ei];
       if (!ev || typeof ev !== 'object') return fail('malformed-projected-event', 'history event must be an object');
@@ -130,19 +164,39 @@
         // Empty-content user/assistant messages are VALID non-renderable
         // events (a max-token cutoff hosts usage only): blocks: [] is accepted
         // and the durable seq advances. When blocks exist they must obey the
-        // root/role law.
+        // root/role law EXCEPT converged tool cards: a message's nested
+        // tool-call/tool-result content projects with the SINGULAR tool
+        // identity (tool:<callId>:call / tool:<callId>:result) so the
+        // dedicated durable tool events fold into that same card (AC2: one
+        // logical invocation renders once).
         var msgPrefix = ev.type === 'user/message' ? 'message:u-' : 'message:a-';
         var wantedRole = ev.type === 'user/message' ? 'user' : 'assistant';
         var contentIndex = /:content:\d+$/;
+        var msgHasToolResidue = false;
         for (var mcj = 0; mcj < ev.blocks.length; mcj++) {
           var mblock = ev.blocks[mcj];
-          if (mblock && mblock.kind === 'error') continue; // interruption error child escapes the role law
+          var isToolScoped = mblock && (
+            mblock.kind === 'tool/call' ||
+            mblock.kind === 'tool/result' ||
+            ((mblock.kind === 'text' || mblock.kind === 'image') && mblock.role === 'tool' && typeof mblock.blockId === 'string' && mblock.blockId.indexOf('tool:') === 0)
+          );
+          // interruption error children and converged tool cards escape the
+          // role-prefix law; the tool cards are validated by the tool law below.
+          if (mblock && mblock.kind === 'error') continue;
+          if (isToolScoped) {
+            if (mblock.kind === 'tool/result' || mblock.role === 'tool') msgHasToolResidue = true;
+            continue;
+          }
           if (!mblock || typeof mblock.blockId !== 'string' || mblock.blockId.indexOf(msgPrefix) !== 0 || !contentIndex.test(mblock.blockId)) {
             return fail('blockId-root-mismatch', 'message block not rooted under its role prefix');
           }
           if (mblock.kind === 'text' || mblock.kind === 'image') {
             if (mblock.role !== wantedRole) return fail('type-role-mismatch', 'message block role mismatch');
           }
+        }
+        if (msgHasToolResidue) {
+          var msgToolViolation = toolResultLaw(ev);
+          if (msgToolViolation) return fail(msgToolViolation[0], msgToolViolation[1]);
         }
       } else if (ev.type === 'assistant/chunk') {
         if (ev.blocks.length < 1) return fail('chunk-no-block', 'chunk event carries no valid partial block');
@@ -155,26 +209,9 @@
       } else if (ev.type === 'tool/result') {
         // Nested rc.2 ToolResultBlock content is projected deterministically:
         // a status/result shell plus tool:<callId>:result:content:<i> children.
-        // The shell is REQUIRED (fail closed); child roots must match it.
-        var shellCount = 0;
-        var shellCallId = '';
-        for (var sj = 0; sj < ev.blocks.length; sj++) {
-          if (ev.blocks[sj] && ev.blocks[sj].kind === 'tool/result') {
-            shellCount += 1;
-            shellCallId = ev.blocks[sj].callId;
-            if (typeof shellCallId !== 'string' || shellCallId === '' ) return fail('malformed-projected-event', 'tool result shell lacks callId');
-            if (ev.blocks[sj].blockId !== 'tool:' + shellCallId + ':result') return fail('blockId-root-mismatch', 'tool result shell blockId mismatch');
-          }
-        }
-        if (shellCount < 1) return fail('tool-result-shell-mismatch', 'tool/result event lacks a result shell');
-        var toolPattern = new RegExp('^tool:' + escapeRegExp(shellCallId) + ':result:content:\\d+$');
-        for (var tj = 0; tj < ev.blocks.length; tj++) {
-          var tblock = ev.blocks[tj];
-          if (tblock && (tblock.kind === 'text' || tblock.kind === 'image')) {
-            if (typeof tblock.blockId !== 'string' || !toolPattern.test(tblock.blockId)) return fail('blockId-root-mismatch', 'tool result child not rooted under its shell');
-            if (tblock.role !== 'tool') return fail('type-role-mismatch', 'tool result child must carry role tool');
-          }
-        }
+        // The shell is REQUIRED for a dedicated event (fail closed).
+        var dedicatedToolViolation = toolResultLaw(ev);
+        if (dedicatedToolViolation) return fail(dedicatedToolViolation[0], dedicatedToolViolation[1]);
       }
 
       for (var bi = 0; bi < ev.blocks.length; bi++) {
@@ -198,7 +235,7 @@
         if (block.kind === 'tool/result' && (typeof block.callId !== 'string' || block.callId === '')) return fail('malformed-projected-event', 'tool result block lacks callId');
         if (block.kind === 'status' && (!Number.isInteger(block.turn) || (block.state !== 'running' && block.state !== 'idle'))) return fail('malformed-projected-event', 'status block malformed');
         if (block.kind === 'error' && typeof block.message !== 'string') return fail('malformed-projected-event', 'error block lacks message');
-        if (!hasOwn(REPEATABLE_KINDS, block.kind) && hasOwn(seenBlockIds, block.blockId)) return fail('duplicate-blockId', 'duplicate blockId');
+        if (!hasOwn(REPEATABLE_KINDS, block.kind) && !REUSABLE_TOOL_CHILD.test(block.blockId) && hasOwn(seenBlockIds, block.blockId)) return fail('duplicate-blockId', 'duplicate blockId');
         seenBlockIds[block.blockId] = true;
       }
     }

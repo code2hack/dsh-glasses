@@ -18,8 +18,10 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { rm, readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ensureHome } from "./disposable-runtime.mjs";
 
 const execFileP = promisify(execFile);
 const DIR = process.env.DSH_HOME ?? "/tmp/dsh-tb0-home";
@@ -179,6 +181,19 @@ let seq = 0;
 const opId = (tag) => `${tag}-${seq++}`;
 
 try {
+  // Prepare a REAL plugin-loaded disposable home (the same ensureHome path the
+  // other runtime suites use). host-write-recovery_booted directly against a
+  // bare DSH_HOME previously, which on a fresh machine produced a profile with
+  // NO dsh-glasses-plugin installed — /glasses/v1/* never registered and every
+  // poll was 404. ensureHome installs the worktree plugin into profile web.
+  // A leftover junk home (aborted earlier run) is cleared first; a genuinely
+  // pre-prepared home is reused by ensureHome itself.
+  const pluginMarker = `${DIR}/profiles/web/node_modules/dsh-glasses-plugin/package.json`;
+  if (existsSync(DIR) && !existsSync(pluginMarker)) {
+    await rm(DIR, { recursive: true, force: true });
+  }
+  await ensureHome(DIR, PORT);
+
   killPortOwner();
   await startInstance();           // seed instance used to create fresh sessions
   ok("instance boot");

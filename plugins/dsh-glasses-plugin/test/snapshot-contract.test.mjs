@@ -170,6 +170,25 @@ const NEGATIVES = [
       { seq: 2, type: "user/message", blocks: [{ blockId: "message:u-u1:content:0", kind: "text", contentIndex: 0, role: "user", text: "b" }] },
     ];
   }, "duplicate-blockId"],
+  ["message tool-result residue without a shell (fail closed)", (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: "assistant/message", blocks: [{ blockId: "tool:r2:result:content:0", kind: "text", role: "tool", text: "orphan", contentIndex: 0 }] },
+      { seq: 2, type: "step/end", blocks: [] },
+    ];
+  }, "tool-result-shell-mismatch"],
+  ["message tool-result child mis-rooted under its shell", (s) => {
+    s.streamSequence = 2;
+    s.attachments[0].history.asOfSeq = 2;
+    s.attachments[0].history.events = [
+      { seq: 1, type: "assistant/message", blocks: [
+        { blockId: "tool:r3:result", kind: "tool/result", callId: "r3", error: false },
+        { blockId: "tool:WRONG:result:content:0", kind: "text", role: "tool", text: "bad", contentIndex: 0 },
+      ] },
+      { seq: 2, type: "step/end", blocks: [] },
+    ];
+  }, "blockId-root-mismatch"],
   ["message blockId wrong prefix", (s) => { s.attachments[0].history.events[0].blocks[0].blockId = "message:a-u1:content:0"; }, "blockId-root-mismatch"],
   ["chunk blockId wrong prefix", (s) => { s.attachments[0].history.events[1].blocks[0].blockId = "message:a-1"; }, "type-blockId-mismatch"],
   ["user/message wrong role", (s) => { s.attachments[0].history.events[0].blocks[0].role = "assistant"; }, "type-role-mismatch"],

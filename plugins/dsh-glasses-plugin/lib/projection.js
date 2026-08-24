@@ -31,16 +31,26 @@
 //     human transcript keeps the append-origin events the user already read.
 //     Only append-origin surface events derive human-transcript blocks
 //     (rc.2 dsh-session/surface.isAppendSurfaceEvent is the oracle).
-//   * UNKNOWN EVENTS FAIL CLOSED WHERE IT MATTERS (AC5): a recognized type is
-//     projected or non-rendered by explicit rule; an unrecognized type is
-//     skipped when it provably cannot change the visible conversation —
-//     rc.2 marks it ignorable:true, OR it carries no SurfaceOp (a non-surface
-//     meta record; observed rc.2 examples: permission/preset, sandbox/mode,
-//     approval/policy, which DSH persists in the same seq-space log without an
-//     ignorable marker). An unrecognized event that CARRIES a SurfaceOp is a
-//     future surface rewrite of user-visible content → throws
-//     'unsupported-required-event' so a session whose visible transcript
-//     semantics changed cannot be silently gutted.
+//   * UNKNOWN EVENTS FAIL CLOSED BY EXPLICIT VOCABULARY (AC5): a recognized
+//     type is projected or non-rendered by EXPLICIT rule — the recognized
+//     non-renderable allowlist is the exact complement of the projected types
+//     within the pinned rc.2 catalog (dsh-session known-event-types.js).
+//     Unrecognized + ignorable:true -> blocks: []; unrecognized required
+//     (absent from the pinned vocabulary, no ignorable marker) -> throws
+//     'unsupported-required-event' so a session whose reconstruction semantics
+//     changed cannot be silently gutted. Absence of a SurfaceOp is never an
+//     implicit ignorable marker (rc.2 non-surface events never carry surfaceOp,
+//     and that fact does not make them ignorable). The known-content block
+//     vocabulary is equally explicit: unknown CONTENT kinds inside an
+//     append-origin surface message fail closed as
+//     'unsupported-required-content-block' (rc.2 ContentBlockMap is
+//     merge-extensible; silently dropping visible model/user content is the
+//     same compatibility bug one layer down).
+//   * TOOL IDENTITY IS SINGULAR PER callId: an assistant message's nested
+//     tool-call/tool-result content and the dedicated tool/call or tool/result
+//     durable events ALL converge to the SAME stable block identity
+//     (tool:<callId>:call / tool:<callId>:result + :content:<i> children) so
+//     one logical tool invocation renders exactly once (AC2 no-duplication).
 //   * empty-content user/assistant messages are VALID (a max-token cutoff
 //     hosts usage only): the canonical event is accepted with blocks: [] and
 //     the durable seq advances; nothing renders.
@@ -102,26 +112,89 @@ function partialBlockId(event, data) {
 // -- Content-block projection ----------------------------------------------
 
 /**
- * Project ordered message content blocks into typed projection blocks in EXACT
- * source order. Content kinds that are valid DSH but not rendered by this M1
- * slice (reasoning, unknown) are skipped (the event/watermark still advances).
- *
- * Every projected content child carries its explicit canonical `contentIndex`
- * (= its position in the durable source content array). The page law validates
- * contentIndex against the `:content:<i>` blockId suffix; ordering is derived
- * from contentIndex (never by reparsing the opaque message id).
+ * Classify an rc.2 CONTENT block type (dsh-llm types.ts ContentBlockMap,
+ * merge-extensible). Known visible forms project; known non-renderable kinds
+ * (reasoning) are skipped; an UNKNOWN object type fails closed instead of
+ * silently dropping visible model/user content.
  */
-function projectContentBlocks(rootId, content) {
+function classifyOrThrowContentType(type, seq) {
+  if (type === "text" || type === "image" || type === "tool-call" || type === "tool-result") {
+    return type;
+  }
+  if (type === "reasoning") return "non-renderable";
+  throw new ProjectionValidationError(
+    "unsupported-required-content-block",
+    `message content at seq ${String(seq)} carries unknown required content type ${JSON.stringify(type)}`,
+  );
+}
+
+/**
+ * Project the ordered nested content of a tool RESULT into its deterministic
+ * child blocks under the shell: tool:<callId>:result:content:<i>. Images carry
+ * only the durable opaque attachmentId + safe metadata. Unknown nested content
+ * kinds fail closed. Ordering is preserved by the explicit contentIndex.
+ */
+function projectToolResultChildren(callId, content, errorValue, seq) {
+  const shell = {
+    blockId: `tool:${callId}:result`,
+    kind: "tool/result",
+    callId,
+    error: errorValue === true,
+  };
+  const children = [];
+  if (Array.isArray(content)) {
+    for (let i = 0; i < content.length; i++) {
+      const child = content[i];
+      if (!child || typeof child !== "object") continue;
+      const kind = classifyOrThrowContentType(child.type, seq);
+      if (kind === "text" && typeof child.text === "string") {
+        children.push({ blockId: `tool:${callId}:result:content:${i}`, kind: "text", role: "tool", text: child.text, contentIndex: i });
+      } else if (kind === "image") {
+        const ref = child.attachment;
+        const attachmentId = typeof ref?.attachmentId === "string" ? ref.attachmentId : "";
+        if (attachmentId) {
+          children.push({
+            blockId: `tool:${callId}:result:content:${i}`,
+            kind: "image",
+            role: "tool",
+            attachmentId,
+            mediaType: typeof ref.mediaType === "string" ? ref.mediaType : "",
+            width: Number.isInteger(ref.width) ? ref.width : null,
+            height: Number.isInteger(ref.height) ? ref.height : null,
+            contentIndex: i,
+          });
+        }
+      }
+      // reasoning / known non-renderable nested content: index is preserved in
+      // the blockId of any later derived child (never renumbered).
+    }
+  }
+  return [shell, ...children];
+}
+
+/**
+ * Project ordered message content blocks into typed projection blocks in EXACT
+ * source order. text/image children are message-rooted
+ * (message:<role>:<id>:content:<i>) and carry their explicit canonical
+ * `contentIndex` (validated against the suffix; ordering never reparses the
+ * opaque message id). A message's nested tool-call/tool-result content is NOT
+ * message-rooted: it CONVERGES to the singular per-callId tool identity
+ * (tool:<callId>:call / tool:<callId>:result) so the dedicated durable
+ * tool/call and tool/result events fold into the SAME card (AC2: one logical
+ * tool invocation renders once). 'reasoning' content is intentionally
+ * non-renderable; any other unknown content kind FAILS CLOSED.
+ */
+function projectContentBlocks(rootId, content, seq) {
   const blocks = [];
   if (!Array.isArray(content)) return blocks;
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
     if (!block || typeof block !== "object") continue;
-    if (block.type === "text" && typeof block.text === "string") {
+    const kind = classifyOrThrowContentType(block.type, seq);
+    if (kind === "text" && typeof block.text === "string") {
       blocks.push({ blockId: contentBlockId(rootId, i), kind: "text", text: block.text, contentIndex: i });
-    } else if (block.type === "image") {
+    } else if (kind === "image") {
       const ref = block.attachment;
-      // Safe canonical image identity: opaque attachmentId (never path/URL).
       const attachmentId = typeof ref?.attachmentId === "string" ? ref.attachmentId : "";
       if (attachmentId) {
         blocks.push({
@@ -134,42 +207,27 @@ function projectContentBlocks(rootId, content) {
           contentIndex: i,
         });
       }
-    } else if (block.type === "tool-call") {
-      const id = stringOrEmpty(block.id);
-      if (id) {
-        blocks.push({
-          blockId: contentBlockId(rootId, i),
-          kind: "tool/call",
-          callId: id,
-          name: stringOrEmpty(block.name),
-          arguments: stringOrEmpty(block.arguments),
-          contentIndex: i,
-        });
-      }
-    } else if (block.type === "tool-result") {
-      const callId = stringOrEmpty(block.toolCallId);
+    } else if (kind === "tool-call") {
+      const callId = stringOrEmpty(block.id);
       if (callId) {
         blocks.push({
-          blockId: contentBlockId(rootId, i),
-          kind: "tool/result",
+          blockId: `tool:${callId}:call`,
+          kind: "tool/call",
           callId,
-          text: textFromBlocks(block.content),
-          error: block.isError === true,
-          contentIndex: i,
+          name: stringOrEmpty(block.name),
+          arguments: stringOrEmpty(block.arguments),
         });
       }
+    } else if (kind === "tool-result") {
+      const callId = stringOrEmpty(block.toolCallId);
+      if (callId) {
+        blocks.push(...projectToolResultChildren(callId, block.content, block.isError, seq));
+      }
     }
-    // Other content kinds (reasoning/unknown) are valid DSH but not projected.
+    // reasoning: intentionally non-renderable; the index of later derived
+    // children is preserved (contentIndex = source index, never renumbered).
   }
   return blocks;
-}
-
-function textFromBlocks(blocks) {
-  if (!Array.isArray(blocks)) return "";
-  return blocks
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
-    .join("");
 }
 
 // -- Canonical projected event ---------------------------------------------
@@ -195,13 +253,13 @@ export function projectEvent(evt) {
 
   if (type === "user/message") {
     const root = messageRoot("user", evt);
-    projected.blocks = projectContentBlocks(root, data?.content);
+    projected.blocks = projectContentBlocks(root, data?.content, seq);
     return withRole(projected, "user");
   }
 
   if (type === "assistant/message") {
     const root = messageRoot("assistant", evt);
-    projected.blocks = projectContentBlocks(root, data?.message?.content);
+    projected.blocks = projectContentBlocks(root, data?.message?.content, seq);
     if (Number.isInteger(data?.turn)) projected.turn = data.turn;
     if (Number.isInteger(data?.step)) projected.step = data.step;
     if (data?.interrupted === true) {
@@ -252,50 +310,11 @@ export function projectEvent(evt) {
     const callId = stringOrEmpty(data?.message?.source?.callId ?? data?.callId);
     if (!callId) return projected;
     // rc.2 ToolResultMessage.content = [ToolResultBlock]; nested visible
-    // content lives under ToolResultBlock.content (a ContentBlock[] that may
-    // include images — never silently dropped).
+    // content (text/image, unknown-required FAIL CLAUSED) lives under
+    // ToolResultBlock.content — never silently dropped.
     const resultBlock = Array.isArray(data?.message?.content) ? data?.message?.content?.[0] : undefined;
     const failed = resultBlock?.isError === true || Boolean(data?.error) === true;
-    const shell = {
-      blockId: `tool:${callId}:result`,
-      kind: "tool/result",
-      callId,
-      error: failed,
-    };
-    const children = [];
-    const nested = Array.isArray(resultBlock?.content) ? resultBlock.content : [];
-    for (let i = 0; i < nested.length; i++) {
-      const child = nested[i];
-      if (!child || typeof child !== "object") continue;
-      if (child.type === "text" && typeof child.text === "string") {
-        children.push({
-          blockId: `tool:${callId}:result:content:${i}`,
-          kind: "text",
-          role: "tool",
-          text: child.text,
-          contentIndex: i,
-        });
-      } else if (child.type === "image") {
-        const ref = child.attachment;
-        const attachmentId = typeof ref?.attachmentId === "string" ? ref.attachmentId : "";
-        if (attachmentId) {
-          children.push({
-            blockId: `tool:${callId}:result:content:${i}`,
-            kind: "image",
-            role: "tool",
-            attachmentId,
-            mediaType: typeof ref.mediaType === "string" ? ref.mediaType : "",
-            width: Number.isInteger(ref.width) ? ref.width : null,
-            height: Number.isInteger(ref.height) ? ref.height : null,
-            contentIndex: i,
-          });
-        }
-      }
-      // Nested reasoning/tool-call/tool-result content is not a visible render
-      // block for this M1 slice; the child index is preserved in blockId only
-      // when a block is derived (deterministic, never renumbered).
-    }
-    projected.blocks = [shell, ...children];
+    projected.blocks = projectToolResultChildren(callId, resultBlock?.content, failed, seq);
     return projected;
   }
 
@@ -341,35 +360,43 @@ export function projectEvent(evt) {
     return projected;
   }
 
-  // step/start, step/end, todo/write, session/end-seed and similar recognized
-  // non-renderable DSH records: valid events with blocks: [] — the watermark
-  // advances, nothing renders.
+  // The EXPLICIT pinned rc.2 recognition vocabulary. The session durable-log
+  // event contract (dsh-session lib/types/types.ts SessionEvent.ignorable:
+  // "Absent means required") FORBIDS silently skipping an unrecognized event:
+  // failure to apply it may change how the rest of the log is interpreted.
+  // The recognized non-renderable set below is the exact complement of the
+  // nine projected source types within the pinned rc.2 catalog
+  // (dsh-session lib/types/known-event-types.js, GENERATED by
+  // gen-persistence-catalog.ts). Every real rc.2 log type is therefore
+  // accepted by EXPLICIT classification, never by a skip heuristic. If the
+  // runtime drifts, a genuinely NEW required event after a DSH upgrade is NOT
+  // in this set and is NOT marked ignorable, so the projection throws
+  // unsupported-required-event and AC5 takes the fail-closed resync path until
+  // this compatibility vocabulary is updated deliberately.
   if (KNOWN_NONRENDERABLE_TYPES.has(type)) return projected;
 
-  // An unrecognized FUTURE type is safe to skip ONLY when it provably cannot
-  // change the visible conversation.
-  //   1. rc.2 marks it ignorable:true -> always skip.
-  //   2. It carries NO SurfaceOp -> it is a non-surface meta record (observed
-  //      rc.2 records include permission/preset, sandbox/mode, approval/policy,
-  //      plus any future informational record DSH persists in the same log).
-  //      It cannot be a replacement copy of anything the user saw and cannot
-  //      gut the transcript, so skipping is safe.
-  if (evt?.ignorable === true || evt?.surfaceOp == null) return projected;
+  // rc.2 marks a genuinely future / plugin-merged informational record
+  // ignorable:true -> always safe to skip.
+  if (evt?.ignorable === true) return projected;
 
-  //   3. An unknown event carrying a SurfaceOp is a FUTURE surface rewrite of
-  //      user-visible content whose shape we cannot render -> FAIL CLOSED
-  //      (AC5): reject so writes are disabled and the caller takes its
-  //      complete-resynchronization path instead of silently dropping a record
-  //      that changed what the user saw.
+  // Anything absent from the explicit pinned vocabulary without an ignorable
+  // marker is an UNKNOWN REQUIRED event -> FAIL CLOSED (AC5). This applies to
+  // non-surface types too: absence of a SurfaceOp is NOT an admissible skip
+  // signal, because DSH's own contract says non-surface events never carry
+  // surfaceOp and ignorability is never implied by its absence.
   throw new ProjectionValidationError(
     "unsupported-required-event",
-    `event ${String(seq)} has unknown required surface type ${JSON.stringify(type)} (surfaceOp ${JSON.stringify(evt.surfaceOp)})`,
+    `event ${String(seq)} type ${JSON.stringify(type)} is not recognized by the pinned rc.2 vocabulary and lacks an ignorable marker`,
   );
 }
 
 function withRole(projected, role) {
   for (const block of projected.blocks) {
-    if (block.kind === "text" || block.kind === "image") {
+    // Only MESSAGE-ROOTED content children carry the user/assistant role. A
+    // converged tool-scoped card (tool:<callId>:call / tool:<callId>:result +
+    // its tool-role children) keeps its own role ('tool' on result children);
+    // stamping it here would corrupt the tool law.
+    if ((block.kind === "text" || block.kind === "image") && !(typeof block.blockId === "string" && block.blockId.startsWith("tool:"))) {
       block.role = role;
     }
   }
@@ -384,10 +411,55 @@ const BLOCK_KINDS = new Set(["text", "image", "partial", "tool/call", "tool/resu
 // Kinds that may legitimately share a blockId across DIFFERENT source seqs
 // (two source events update the same stable logical block — never a
 // duplication). All other kinds must be unique within a page.
-const REPEATABLE_KINDS = new Set(["partial", "status"]);
-// DSH source types that are valid but carry no derived render blocks.
+const REPEATABLE_KINDS = new Set(["partial", "status", "tool/call", "tool/result"]);
+// EXPLICIT pinned rc.2 vocabulary (dsh-session lib/types/known-event-types.js,
+// GENERATED by gen-persistence-catalog.ts). The nine projected source types
+// (user/message, assistant/message, assistant/chunk, tool/call, tool/result,
+// turn/start, turn/end, request/context, request/header) are NOT listed here:
+// they derive render blocks. Everything else DSH can durably persist under
+// pin @deepseek-ai/dsh@0.1.1-rc.2 is listed below as a KNOWN non-renderable
+// record -> blocks: [], watermark advances. A type outside BOTH sets, without
+// ignorable:true, is an unknown REQUIRED event and fails closed.
 const KNOWN_NONRENDERABLE_TYPES = new Set([
-  "step/start", "step/end", "todo/write", "session/end-seed", "session/end",
+  "agent-preset/selected",
+  "agent/inbox/spliced",
+  "approval/asked",
+  "approval/decided",
+  "approval/policy",
+  "command/done",
+  "command/run",
+  "compaction/end",
+  "compaction/prune",
+  "compaction/start",
+  "compaction/summary",
+  "feedback/record",
+  "goal/change",
+  "hook/invoked",
+  "hook/result",
+  "llm/retry",
+  "llm/retry-started",
+  "permission/preset",
+  "plan/mode",
+  "sandbox/mode",
+  "schedule/change",
+  "session/end-seed",
+  "session/title",
+  "session/title-llm-request",
+  "step/end",
+  "step/start",
+  "subagent/descriptor",
+  "team/member",
+  "team/message/delivered",
+  "team/message/queued",
+  "team/task",
+  "todo/write",
+  "tool-workflow/agent-end",
+  "tool-workflow/agent-start",
+  "tool-workflow/run-end",
+  "tool-workflow/run-start",
+  "tool/code-dispatch",
+  "tool/code-dispatch-start",
+  "web/deepseek-search-llm-request",
 ]);
 // Tool-result events project a status/result SHELL plus (when the nested
 // rc.2 ToolResultBlock.content carries visible content) deterministic
@@ -438,13 +510,46 @@ function validateBlockShape(block, seq) {
  *     prefix, content children keep their role, and ids are unique within the
  *     page
  *   * chunk partial blocks carry the EXACT identity for their turn/step
- *   * repeatable kinds (partial/status) may update the same blockId across
- *     events; all other kinds must be unique within the page
+ *   * repeatable kinds (partial/status/tool:call/tool:result) may update the
+ *     same blockId across events (a partial stream, a status lifecycle, or the
+ *     singular converged tool card for one callId); all other kinds must be
+ *     unique within the page
  */
+/**
+ * Fail-closed structural check for a projected tool/RESULT event OR any event
+ * whose blocks include a converged tool-result shell or a tool-role child
+ * (message-content origin or dedicated tool/result event). Validate that a
+ * result shell exists and that every text/image child is rooted under the
+ * shell's own callId. A shell is REQUIRED whenever tool-result residue is
+ * present (converged cards only ever project shell + children together), and
+ * always for a dedicated tool/result event.
+ */
+function validateToolResultBlocks(event, seq) {
+  const shellBlocks = event.blocks.filter((b) => b && b.kind === "tool/result");
+  expect(shellBlocks.length >= 1, "tool-result-shell-mismatch", `tool/result event ${seq} lacks a result shell`);
+  for (const shell of shellBlocks) {
+    expect(typeof shell.callId === "string" && shell.callId !== "", "malformed-projected-event", `tool/result shell at seq ${seq} lacks callId`);
+    expect(shell.blockId === `tool:${shell.callId}:result`, "blockId-root-mismatch", `tool result shell ${String(shell.blockId)} != tool:${shell.callId}:result`);
+    const toolPattern = new RegExp(`^tool:${escapeRegExp(shell.callId)}:result:content:\\d+$`);
+    for (const block of event.blocks) {
+      if (block.kind === "text" || block.kind === "image") {
+        expect(typeof block.blockId === "string" && toolPattern.test(block.blockId), "blockId-root-mismatch", `tool result child ${String(block.blockId)} not rooted under tool:${shell.callId}:result:content:<i>`);
+        expect(block.role === "tool", "type-role-mismatch", `tool result child ${String(block.blockId)} must carry role 'tool'`);
+      }
+    }
+  }
+}
+
 export function validateCanonicalProjectionPage(projectedEvents) {
   expect(Array.isArray(projectedEvents), "malformed-page", "events must be an array");
   let previous = -1;
   const seenBlockIds = new Set();
+  // Converged tool-result children (tool:<callId>:result:content:<i>) are
+  // legitimately repeated by the message-content origin AND the dedicated
+  // tool/result event of the SAME logical invocation (AC2: one card). They are
+  // exempt from the duplicate-blockId uniqueness rule, like the lifecycle kinds
+  // in REPEATABLE_KINDS.
+  const REUSABLE_TOOL_CHILD = /^tool:[^:]+:result:content:\d+$/;
   for (const event of projectedEvents) {
     const seq = event?.seq;
     expect(Number.isInteger(seq) && seq >= 0, "malformed-seq", `invalid seq ${String(seq)}`);
@@ -458,13 +563,28 @@ export function validateCanonicalProjectionPage(projectedEvents) {
     if (MESSAGE_TYPES.has(type)) {
       // Empty-content user/assistant messages are VALID non-renderable events
       // (a max-token cutoff hosts usage only): blocks: [] is accepted and the
-      // durable seq advances. When blocks exist they must obey the root/role law.
+      // durable seq advances. When blocks exist they must obey the root/role
+      // law EXCEPT converged tool cards: a message's nested tool-call/tool-
+      // result content projects with the SINGULAR tool identity, and the
+      // dedicated durable tool events fold into that same card (AC2: one
+      // logical invocation renders once). Those tool blocks are validated by
+      // the tool identity law, not the message-root law.
       const expectedPrefix = type === "user/message" ? "message:u-" : "message:a-";
       const wantedRole = type === "user/message" ? "user" : "assistant";
+      let messageHasToolResidue = false;
       for (const block of event.blocks) {
-        // Interruption error children escape the role-prefix law; every other
-        // child must be rooted under the event's OWN role prefix.
-        if (block.kind === "error") continue;
+        const isToolScoped =
+          block?.kind === "tool/call" ||
+          block?.kind === "tool/result" ||
+          ((block?.kind === "text" || block?.kind === "image") && block?.role === "tool" && typeof block.blockId === "string" && block.blockId.startsWith("tool:"));
+        // Interruption error children and converged tool cards escape the
+        // role-prefix law; every other child must be rooted under the event's
+        // OWN role prefix.
+        if (block?.kind === "error") continue;
+        if (isToolScoped) {
+          if (block?.kind === "tool/result" || block?.role === "tool") messageHasToolResidue = true;
+          continue;
+        }
         expect(
           typeof block.blockId === "string" && block.blockId.startsWith(expectedPrefix) && /:content:\d+$/.test(block.blockId),
           "blockId-root-mismatch",
@@ -474,6 +594,7 @@ export function validateCanonicalProjectionPage(projectedEvents) {
           expect(block.role === wantedRole, "type-role-mismatch", `block ${String(block.blockId)} has role ${String(block.role)}, wanted ${wantedRole}`);
         }
       }
+      if (messageHasToolResidue) validateToolResultBlocks(event, seq);
     } else if (PARTIAL_TYPES.has(type)) {
       expect(event.blocks.length >= 1, "chunk-no-block", `chunk event ${seq} has no partial block`);
       for (const block of event.blocks) {
@@ -484,22 +605,7 @@ export function validateCanonicalProjectionPage(projectedEvents) {
         expect(block.blockId === expected, "type-blockId-mismatch", `chunk blockId ${String(block.blockId)} != expected ${expected}`);
       }
     } else if (type === TOOL_RESULT_TYPE) {
-      // Nested rc.2 ToolResultBlock content is projected deterministically: a
-      // status/result shell plus tool:<callId>:result:content:<i> children.
-      // The shell is REQUIRED (fail closed); child roots must match it.
-      const shellBlocks = event.blocks.filter((b) => b && b.kind === "tool/result");
-      expect(shellBlocks.length >= 1, "tool-result-shell-mismatch", `tool/result event ${seq} lacks a result shell`);
-      for (const shell of shellBlocks) {
-        expect(typeof shell.callId === "string" && shell.callId !== "", "malformed-projected-event", `tool/result shell at seq ${seq} lacks callId`);
-        expect(shell.blockId === `tool:${shell.callId}:result`, "blockId-root-mismatch", `tool result shell ${String(shell.blockId)} != tool:${shell.callId}:result`);
-        const toolPattern = new RegExp(`^tool:${escapeRegExp(shell.callId)}:result:content:\\d+$`);
-        for (const block of event.blocks) {
-          if (block.kind === "text" || block.kind === "image") {
-            expect(typeof block.blockId === "string" && toolPattern.test(block.blockId), "blockId-root-mismatch", `tool result child ${String(block.blockId)} not rooted under tool:${shell.callId}:result:content:<i>`);
-            expect(block.role === "tool", "type-role-mismatch", `tool result child ${String(block.blockId)} must carry role 'tool'`);
-          }
-        }
-      }
+      validateToolResultBlocks(event, seq);
     }
 
     for (const block of event.blocks) {
@@ -516,7 +622,7 @@ export function validateCanonicalProjectionPage(projectedEvents) {
         );
       }
       validateBlockShape(block, seq);
-      if (!REPEATABLE_KINDS.has(block.kind) && seenBlockIds.has(block.blockId)) {
+      if (!REPEATABLE_KINDS.has(block.kind) && !REUSABLE_TOOL_CHILD.test(block.blockId) && seenBlockIds.has(block.blockId)) {
         expect(false, "duplicate-blockId", `duplicate blockId ${block.blockId}`);
       }
       seenBlockIds.add(block.blockId);
