@@ -1,83 +1,123 @@
-// T27-09: disposable real-rc.2 NARROW-EDGE end-to-end (M1 #27).
-//
-// Full chain against a REAL pinned rc.2 disposable DSH, completely behind the
-// G0-only dev proxy:
-//
-//   real disposable DSH (rc.2 + worktree plugin)
-//     -> real dev/glasses-dev-proxy.mjs (exposes ONLY /glasses/v1/*)
-//     -> authenticated bootstrap
-//     -> snapshot-core client staging
-//     -> actual shipped client DOM render (jsdom 29.1.1)
-//
-// Two real disposable sessions A and B carry distinct synthetic sentinels. M1
-// attaches exactly one (A, opaque identity); B's id/label/content and every
-// stock DSH surface (/api/status, /api/session.list, /api/session.prompt)
-// never cross the glasses edge. Write routes and unknown /glasses/v1/* paths
-// are 404; unauthenticated bootstrap is 401. The real bootstrap body is
-// validated by the frozen wire law, staged by snapshot-core, and rendered
-// EXACTLY ONCE by the shipped client assets in a fresh disposable DOM.
-//
-// Run:
-//   DSH_BIN=/path/to/dsh node test/m1-narrow-edge.test.mjs
-// (M1_TEST_PORT and M1_PROXY_PORT overridable; KEEP_HOME=1 keeps the home.)
+// T28-12: full real rc.2 -> plugin -> narrow proxy -> production app.js DOM.
+// Requires an explicit unique disposable DSH_HOME outside ~/.dsh.
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import http from "node:http";
 import { mkdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import vm from "node:vm";
 import {
+  assertDisposableDshHome,
+  assertPortSpawnable,
   ensureHome,
-  spawnInstance,
-  startInstance,
-  waitForServer,
-  stopInstance,
-  createSession,
-  seedSyntheticHistory,
   httpReq,
   registerOwnedChild,
-  unregisterOwnedChild,
+  sleep,
+  spawnInstance,
+  stopInstance,
   stopOwnedProcess,
-  assertPortSpawnable,
+  unregisterOwnedChild,
+  waitForServer,
 } from "../plugins/dsh-glasses-plugin/test/disposable-runtime.mjs";
-import { syntheticUserEvent, syntheticAssistantEvent } from "../plugins/dsh-glasses-plugin/test/zstd-jsonl.mjs";
-import { validateSnapshotWire, M1_BOOTSTRAP_MAX_EVENTS } from "../plugins/dsh-glasses-plugin/lib/snapshot.js";
-import { bootClientDom, chatTexts, sleep } from "../apps/glasses-android/test/dom-harness.mjs";
+import { validateSnapshotWire } from "../plugins/dsh-glasses-plugin/lib/snapshot.js";
+import { bootClientDom, chatTexts } from "../apps/glasses-android/test/dom-harness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROXY_MAIN = resolve(HERE, "..", "dev", "glasses-dev-proxy.mjs");
-const SNAPSHOT_CORE_ASSET = resolve(HERE, "..", "apps", "glasses-android", "app", "src", "main", "assets", "snapshot-core.js");
-const C0_CORE_ASSET = resolve(HERE, "..", "apps", "glasses-android", "app", "src", "main", "assets", "c0-core.js");
+const FIXTURE = resolve(HERE, "..", "plugins", "dsh-glasses-plugin", "test", "fixtures", "live-append-plugin");
+const HOME = assertDisposableDshHome(process.env.DSH_HOME);
+const DSH_PORT = Number(process.env.M1_TEST_PORT || 39331);
+const PROXY_PORT = Number(process.env.M1_PROXY_PORT || 39332);
+const TOKEN = `m1-narrow-${process.pid}-${Date.now()}`;
+const FIXTURE_TOKEN = `m1-fixture-${process.pid}-${Date.now()}`;
+const SESSION_A = `m1-narrow-a-${process.pid}-${Date.now()}`;
+const SESSION_B = `m1-narrow-b-${process.pid}-${Date.now()}`;
+const AUTH = { authorization: `Bearer ${TOKEN}` };
+const FIXTURE_AUTH = { authorization: `Bearer ${FIXTURE_TOKEN}`, "content-type": "application/json" };
+const TEXT = {
+  oldUser: "M1-NARROW-OLD-USER-A",
+  oldAssistant: "M1-NARROW-OLD-ASSISTANT-A",
+  midUser: "M1-NARROW-MID-USER-A",
+  midAssistant: "M1-NARROW-MID-ASSISTANT-A",
+  recentUser: "M1-NARROW-RECENT-USER-A",
+  recentAssistant: "M1-NARROW-RECENT-ASSISTANT-A",
+  liveReading: "M1-NARROW-LIVE-READING-A",
+  liveFollowing: "M1-NARROW-LIVE-FOLLOWING-A",
+  foreign: "M1-NARROW-FOREIGN-B",
+};
 
-const DSH_PORT = Number(process.env.M1_TEST_PORT || 3196);
-const PROXY_PORT = Number(process.env.M1_PROXY_PORT || 3216);
-const TOKEN = `dev-m1-ne-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-const HOME = join(tmpdir(), `dsh-glasses-m1-narrow-${process.pid}`);
-
-const SENTINEL_A_U = "M1-SYNTHETIC-USER-A";
-const SENTINEL_A_A = "M1-SYNTHETIC-ASSISTANT-A";
-const SENTINEL_B_U = "M1-SYNTHETIC-USER-B";
-const SENTINEL_B_A = "M1-SYNTHETIC-ASSISTANT-B";
-
-function loadClientCores() {
-  const context = { console };
-  vm.runInNewContext(readFileSync(C0_CORE_ASSET, "utf8"), context, { filename: "c0-core.js" });
-  vm.runInNewContext(readFileSync(SNAPSHOT_CORE_ASSET, "utf8"), context, { filename: "snapshot-core.js" });
-  if (!context.GlassesSnapshotCore) throw new Error("GlassesSnapshotCore not installed");
-  return context;
+async function fixture(body) {
+  const response = await httpReq({ port: DSH_PORT, method: "POST", path: "/__test/m1/append", headers: FIXTURE_AUTH, body });
+  assert.equal(response.status, 200, response.text);
+  return response.json;
 }
 
-const results = [];
-const ok = (name) => results.push(["PASS", name]);
-const fail = (name, error) => { results.push(["FAIL", name]); console.error(`FAIL ${name}: ${error}`); };
-const scenario = async (name, fn) => { try { await fn(); ok(name); } catch (e) { fail(name, e); } };
+async function append(sessionId, messageId, text, role = "assistant") {
+  return fixture({ sessionId, messageId, text, role });
+}
 
-let seed = null;
-let configured = null;
-let proxy = null;
-let realA = null;
-let realB = null;
+async function proxyJson(path, headers = AUTH) {
+  const response = await httpReq({ port: PROXY_PORT, path, headers });
+  assert.equal(response.status, 200, response.text);
+  return response.json;
+}
+
+function openSse(snapshot, extraHeaders = {}) {
+  const frames = [];
+  const wake = [];
+  let request;
+  let response;
+  const opened = new Promise((resolveOpen, rejectOpen) => {
+    request = http.get({
+      host: "127.0.0.1",
+      port: PROXY_PORT,
+      path: `/glasses/v1/stream?epoch=${encodeURIComponent(snapshot.connectionEpoch)}&baseStreamSequence=${snapshot.streamSequence}`,
+      headers: { ...AUTH, ...extraHeaders },
+    }, (res) => {
+      response = res;
+      if (res.statusCode !== 200) return rejectOpen(new Error(`SSE ${res.statusCode}`));
+      let buffer = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        buffer += chunk.replaceAll("\r\n", "\n");
+        for (;;) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary < 0) break;
+          const raw = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!raw || raw.startsWith(":")) continue;
+          const frame = { event: "message", id: "", dataText: "", data: null };
+          for (const line of raw.split("\n")) {
+            const split = line.indexOf(":");
+            const field = split < 0 ? line : line.slice(0, split);
+            const value = split < 0 ? "" : line.slice(split + 1).replace(/^ /, "");
+            if (field === "event") frame.event = value;
+            if (field === "id") frame.id = value;
+            if (field === "data") frame.dataText = value;
+          }
+          try { frame.data = JSON.parse(frame.dataText); } catch {}
+          frames.push(frame);
+          for (const notify of wake.splice(0)) notify();
+        }
+      });
+      resolveOpen();
+    });
+    request.on("error", rejectOpen);
+  });
+  async function next(event, after = 0, timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const frame = frames.slice(after).find((candidate) => candidate.event === event);
+      if (frame) return frame;
+      if (Date.now() >= deadline) throw new Error(`timeout waiting for ${event}: ${JSON.stringify(frames)}`);
+      await new Promise((resolveWait) => {
+        const timer = setTimeout(resolveWait, Math.min(100, deadline - Date.now()));
+        wake.push(() => { clearTimeout(timer); resolveWait(); });
+      });
+    }
+  }
+  return { opened, frames, next, close() { response?.destroy(); request?.destroy(); } };
+}
 
 async function spawnProxy() {
   await assertPortSpawnable(PROXY_PORT);
@@ -87,195 +127,186 @@ async function spawnProxy() {
       GLASSES_UPSTREAM: `http://127.0.0.1:${DSH_PORT}`,
       GLASSES_PROXY_HOST: "127.0.0.1",
       GLASSES_PROXY_PORT: String(PROXY_PORT),
+      GLASSES_TEST_FAULTS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
   registerOwnedChild(proc.pid, { port: PROXY_PORT });
   proc.once("exit", () => unregisterOwnedChild(proc.pid));
   const deadline = Date.now() + 30000;
-  for (;;) {
+  while (Date.now() < deadline) {
     if (proc.exitCode !== null) throw new Error(`proxy exited ${proc.exitCode}`);
     try {
-      const r = await httpReq({ port: PROXY_PORT, path: "/glasses/v1/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
-      if (r.json !== null && r.status !== 401) return proc;
+      const response = await httpReq({ port: PROXY_PORT, path: "/api/status" });
+      if (response.status === 403) return proc;
     } catch {}
-    if (Date.now() > deadline) throw new Error("proxy did not come up");
-    await sleep(400);
+    await sleep(200);
   }
+  throw new Error("proxy did not start");
 }
 
-const auth = { authorization: `Bearer ${TOKEN}` };
-const JSON_HEADERS = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+function occurrences(rt, text) {
+  return (rt.w.document.body.textContent || "").split(text).length - 1;
+}
 
+function sendFrame(rt, epoch, frame) {
+  rt.w.glassesOnLine(epoch, frame.event, frame.dataText, frame.id);
+}
+
+let instance;
+let proxy;
+let live;
+let recoveryStream;
 try {
-  await ensureHome(HOME, DSH_PORT);
-
-  const seedId = `seed-${process.pid.toString(36)}`;
-  await scenario("narrow: disposable rc.2 instance boots with auth + reaches HTTP surface", async () => {
-    seed = await spawnInstance({ homeDir: HOME, port: DSH_PORT, sessionId: seedId, token: TOKEN });
-    await waitForServer({ port: DSH_PORT, proc: seed.proc, logBuf: seed.logBuf, token: TOKEN });
+  await ensureHome(HOME, DSH_PORT, { fixturePluginRoot: FIXTURE, bootstrapMaxEvents: 50 });
+  const workspaceA = join(HOME, "workspace-a");
+  const workspaceB = join(HOME, "workspace-b");
+  await mkdir(workspaceA, { recursive: true });
+  await mkdir(workspaceB, { recursive: true });
+  const started = await spawnInstance({
+    homeDir: HOME,
+    port: DSH_PORT,
+    sessionId: SESSION_A,
+    token: TOKEN,
+    extraEnv: { DSH_GLASSES_FIXTURE_TOKEN: FIXTURE_TOKEN },
   });
+  instance = { proc: started.proc };
+  await waitForServer({ port: DSH_PORT, proc: started.proc, logBuf: started.logBuf, token: TOKEN });
+  await fixture({ action: "create", sessionId: SESSION_A, cwd: workspaceA });
+  await fixture({ action: "create", sessionId: SESSION_B, cwd: workspaceB });
 
-  const dirA = join(HOME, "workspace-a");
-  const dirB = join(HOME, "workspace-b");
-  await mkdir(dirA, { recursive: true });
-  await mkdir(dirB, { recursive: true });
+  const initial = [["old-u", TEXT.oldUser, "user"], ["old-a", TEXT.oldAssistant, "assistant"]];
+  for (let i = 0; i < 46; i += 1) initial.push([`filler-${i}`, `M1-NARROW-FILLER-${i}`, i % 2 ? "assistant" : "user"]);
+  initial.push(
+    ["mid-u", TEXT.midUser, "user"], ["mid-a", TEXT.midAssistant, "assistant"],
+    ["recent-u", TEXT.recentUser, "user"], ["recent-a", TEXT.recentAssistant, "assistant"],
+  );
+  for (const [id, text, role] of initial) await append(SESSION_A, `m1-${id}`, text, role);
+  await append(SESSION_B, "m1-foreign", TEXT.foreign, "assistant");
 
-  await scenario("narrow: two REAL disposable sessions A and B created", async () => {
-    realA = await createSession({ port: DSH_PORT, cwd: dirA, homeDir: HOME });
-    realB = await createSession({ port: DSH_PORT, cwd: dirB, homeDir: HOME });
-    if (!realA || !realB || realA === realB) throw new Error(`bad session ids A=${realA} B=${realB}`);
+  proxy = await spawnProxy();
+  const first = await proxyJson("/glasses/v1/bootstrap");
+  const wire = validateSnapshotWire(first, { expectedSessionId: SESSION_A });
+  assert.equal(wire.ok, true, `${wire.code}: ${wire.message}`);
+  assert.equal(first.attachments.length, 1);
+  assert.equal(first.attachments[0].capabilities.liveUpdates, true);
+  assert.ok(!JSON.stringify(first).includes(SESSION_B));
+  assert.ok(!JSON.stringify(first).includes(TEXT.foreign));
+  assert.ok(!JSON.stringify(first).includes(TEXT.oldUser), "old page must be outside bounded bootstrap");
+
+  const beforeSeq = first.attachments[0].history.events[0].seq;
+  const historyPath = `/glasses/v1/history?epoch=${encodeURIComponent(first.connectionEpoch)}&beforeSeq=${beforeSeq}&limit=50`;
+  const older = await proxyJson(historyPath);
+  assert.ok(JSON.stringify(older).includes(TEXT.oldUser));
+  assert.ok(JSON.stringify(older).includes(TEXT.oldAssistant));
+
+  live = openSse(first);
+  await live.opened;
+  const hello = await live.next("hello");
+  let openedStream;
+  const rt = await bootClientDom({
+    session: SESSION_A,
+    endpoint: `http://127.0.0.1:${PROXY_PORT}`,
+    responseFor: ({ path }) => path === "/glasses/v1/bootstrap"
+      ? { status: 200, body: first }
+      : path.startsWith("/glasses/v1/history?") ? { status: 200, body: older } : null,
+    onOpenStream: (request) => { openedStream = request; },
   });
+  await rt.settled("real-narrow-bootstrap");
+  assert.deepEqual({ epoch: openedStream.epoch, base: openedStream.baseStreamSequence }, { epoch: first.connectionEpoch, base: first.streamSequence });
+  rt.w.glassesOnStream(first.connectionEpoch, "open", null);
+  sendFrame(rt, first.connectionEpoch, hello);
+  assert.equal(rt.w.c0DebugState().syncState, "ready");
 
-  await stopInstance(seed.proc, DSH_PORT); seed = null;
+  const chat = rt.$("chat");
+  Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1000 });
+  Object.defineProperty(chat, "clientHeight", { configurable: true, get: () => 200 });
+  chat.scrollTop = 100;
+  chat.dispatchEvent(new rt.w.Event("scroll"));
+  assert.equal(rt.w.c0DebugState().presentationMode, "history-reading");
+  const anchorBeforePage = rt.w.c0DebugState().anchor?.blockId;
+  chat.scrollTop = 0;
+  chat.dispatchEvent(new rt.w.Event("scroll"));
+  assert.equal(occurrences(rt, TEXT.oldUser), 1, "real older page prepends once");
+  assert.equal(rt.w.c0DebugState().anchor?.blockId, anchorBeforePage, "paging preserves anchor");
+  assert.equal(rt.w.c0DebugState().unread, false, "paging does not set unread");
 
-  await scenario("narrow: distinct synthetic sentinels spliced into A and B logs", async () => {
-    const tag = process.pid.toString(36);
-    const idA = await seedSyntheticHistory(HOME, realA, [
-      syntheticUserEvent({ id: `ne-a-u-${tag}`, text: SENTINEL_A_U, rpcId: `synth-a-${realA.slice(-6)}` }),
-      syntheticAssistantEvent({ id: `ne-a-a-${tag}`, text: SENTINEL_A_A, provider: "synthetic", model: "harmless" }),
-    ]);
-    const idB = await seedSyntheticHistory(HOME, realB, [
-      syntheticUserEvent({ id: `ne-b-u-${tag}`, text: SENTINEL_B_U, rpcId: `synth-b-${realB.slice(-6)}` }),
-      syntheticAssistantEvent({ id: `ne-b-a-${tag}`, text: SENTINEL_B_A, provider: "synthetic", model: "harmless" }),
-    ]);
-    if (idA < 5 || idB < 5) throw new Error(`seeding did not advance seq (A=${idA} B=${idB})`);
-  });
+  const frameCount = live.frames.length;
+  await append(SESSION_A, "m1-live-reading", TEXT.liveReading);
+  const readingDelta = await live.next("projection", frameCount);
+  sendFrame(rt, first.connectionEpoch, readingDelta);
+  assert.equal(rt.w.c0DebugState().presentationMode, "history-reading");
+  assert.equal(rt.w.c0DebugState().unread, true);
+  assert.equal(rt.w.c0DebugState().anchor?.blockId, anchorBeforePage, "live append preserves reading anchor");
+  assert.equal(occurrences(rt, TEXT.liveReading), 1);
 
-  await scenario("narrow: instance configured for session A", async () => {
-    configured = await startInstance({ homeDir: HOME, port: DSH_PORT, sessionId: realA, token: TOKEN });
-  });
+  chat.scrollTop = 800;
+  chat.dispatchEvent(new rt.w.Event("scroll"));
+  assert.equal(rt.w.c0DebugState().presentationMode, "following");
+  assert.equal(rt.w.c0DebugState().unread, false);
+  const nextFrame = live.frames.length;
+  await append(SESSION_A, "m1-live-following", TEXT.liveFollowing);
+  const followingDelta = await live.next("projection", nextFrame);
+  sendFrame(rt, first.connectionEpoch, followingDelta);
+  assert.equal(rt.w.c0DebugState().presentationMode, "following");
+  assert.equal(rt.w.c0DebugState().unread, false);
+  assert.equal(chat.scrollTop, chat.scrollHeight, "following pins new output");
+  assert.equal(occurrences(rt, TEXT.liveFollowing), 1);
+  const debug = rt.w.c0DebugState();
+  assert.equal(debug.connectionEpoch, first.connectionEpoch);
+  assert.equal(debug.streamSequence, followingDelta.data.streamSequence);
+  assert.equal(debug.historyAsOfSeq, followingDelta.data.event.seq);
+  assert.equal(debug.writeEligible, false);
+  assert.ok(!JSON.stringify(debug).includes(TOKEN), "debug state must not expose bearer token");
+  assert.ok(!rt.requests().some((path) => path.includes("/draft/mutations") || path.includes("/actions")));
+  rt.dom.window.close();
+  live.close(); live = null;
 
-  await scenario("narrow: G0-only dev proxy exposed in front of DSH", async () => {
-    proxy = await spawnProxy();
-  });
+  const faultBody = await proxyJson("/glasses/v1/bootstrap");
+  const faultStream = openSse(faultBody, { "x-glasses-test-fault": "malformed-projection" });
+  await faultStream.opened;
+  const faultHello = await faultStream.next("hello");
+  const malformed = await faultStream.next("projection");
+  assert.equal(malformed.data, null, "proxy injected malformed JSON frame");
+  faultStream.close();
+  const recovery = await proxyJson("/glasses/v1/bootstrap");
+  recoveryStream = openSse(recovery);
+  await recoveryStream.opened;
+  const recoveryHello = await recoveryStream.next("hello");
 
-  let realBody = null;
-  await scenario("narrow: authenticated bootstrap through proxy: exactly one A attachment, B never crosses the edge", async () => {
-    const r = await httpReq({ port: PROXY_PORT, path: "/glasses/v1/bootstrap", headers: auth });
-    if (r.status !== 200) throw new Error(`proxy bootstrap ${r.status}: ${r.text}`);
-    if (Object.hasOwn(r.json, "ok")) throw new Error("canonical snapshot must not carry an ok envelope");
-    const atts = r.json.attachments || [];
-    if (atts.length !== 1) throw new Error(`expected exactly one attachment (got ${atts.length})`);
-    const a0 = atts[0];
-    if (a0.sessionId !== realA) throw new Error(`attached session ${a0.sessionId} != ${realA}`);
-    if (a0.attachmentId === realA || a0.attachmentId.includes(realA) || a0.attachmentId.includes(r.json.serverGeneration)) {
-      throw new Error("attachmentId must be opaque and independent of sessionId/serverGeneration");
-    }
-    const flat = JSON.stringify(r.json);
-    if (flat.includes(realB)) throw new Error("session B id must never cross the glasses edge");
-    for (const b of [SENTINEL_B_U, SENTINEL_B_A]) {
-      if (flat.includes(b)) throw new Error(`B sentinel ${b} must never cross the glasses edge`);
-    }
-    for (const a of [SENTINEL_A_U, SENTINEL_A_A]) {
-      if (!flat.includes(a)) throw new Error(`A sentinel ${a} missing in bootstrap`);
-    }
-    realBody = r.json;
-  });
+  const faultRt = await bootClientDom({ responses: [{ status: 200, body: faultBody }, { status: 200, body: recovery }], session: SESSION_A });
+  await faultRt.settled("real-fault-bootstrap");
+  faultRt.w.glassesOnStream(faultBody.connectionEpoch, "open", null);
+  sendFrame(faultRt, faultBody.connectionEpoch, faultHello);
+  const retainedFaultScreen = JSON.stringify(chatTexts(faultRt));
+  sendFrame(faultRt, faultBody.connectionEpoch, malformed);
+  assert.equal(faultRt.w.c0DebugState().syncState, "resyncing");
+  assert.equal(faultRt.w.c0DebugState().writeEligible, false);
+  assert.equal(JSON.stringify(chatTexts(faultRt)), retainedFaultScreen, "malformed proxy frame retains screen");
+  await sleep(1150);
+  assert.equal(faultRt.w.c0DebugState().connectionEpoch, recovery.connectionEpoch);
+  assert.notEqual(recovery.connectionEpoch, faultBody.connectionEpoch);
+  const reopened = faultRt.requestDetails().filter((request) => request.path === "OPEN_STREAM").at(-1);
+  assert.deepEqual({ epoch: reopened.epoch, base: reopened.baseStreamSequence }, { epoch: recovery.connectionEpoch, base: recovery.streamSequence });
+  faultRt.w.glassesOnStream(recovery.connectionEpoch, "open", null);
+  sendFrame(faultRt, recovery.connectionEpoch, recoveryHello);
+  assert.equal(faultRt.w.c0DebugState().syncState, "ready");
+  assert.equal(occurrences(faultRt, TEXT.liveReading), 1);
+  assert.equal(occurrences(faultRt, TEXT.liveFollowing), 1);
+  sendFrame(faultRt, faultBody.connectionEpoch, malformed);
+  assert.equal(faultRt.w.c0DebugState().syncState, "ready", "old epoch rejected after resync");
+  faultRt.dom.window.close();
 
-  await scenario("narrow: one attachment only + A-only content renders exactly once in the projection", async () => {
-    const a0 = realBody.attachments[0];
-    const events = a0.history?.events || [];
-    if (!events.length || events.length > M1_BOOTSTRAP_MAX_EVENTS) throw new Error(`history out of bound: ${events.length}`);
-    if (a0.history.asOfSeq !== a0.history.events[events.length - 1]?.seq) throw new Error("last event seq must equal asOfSeq");
-    if (realBody.streamSequence !== a0.history.asOfSeq) throw new Error("streamSequence must equal history.asOfSeq");
-    const counts = {};
-    for (const ev of events) {
-      const textBlocks = Array.isArray(ev.blocks) ? ev.blocks.filter((b) => b.kind === "text").map((b) => b.text) : [];
-      for (const t of textBlocks) {
-        if (t) counts[t] = (counts[t] || 0) + 1;
-      }
-    }
-    if (counts[SENTINEL_A_U] !== 1 || counts[SENTINEL_A_A] !== 1) {
-      throw new Error(`A sentinel must appear exactly once each: ${JSON.stringify(counts)}`);
-    }
-    if (counts[SENTINEL_B_U] || counts[SENTINEL_B_A]) throw new Error("B sentinel leaked into A projection");
-    if (a0.attachmentGeneration !== 1 || realBody.attachmentSetRevision !== 1) throw new Error("M1 revision fields must be 1");
-    if (!Array.isArray(realBody.drafts) || realBody.drafts.length !== 0) throw new Error("drafts must be []");
-    const caps = a0.capabilities || {};
-    for (const key of ["liveUpdates", "draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
-      if (caps[key] !== false) throw new Error(`capability ${key} must be false`);
-    }
-    if (caps.historyRead !== true) throw new Error("historyRead must be true");
-    if (!["idle", "running", "waiting-user", "unavailable", "unknown"].includes(a0.state)) throw new Error(`bad agent state ${a0.state}`);
-    if (a0.agent?.state !== a0.state) throw new Error("agent.state must equal attachment.state");
-    const law = validateSnapshotWire(realBody, { expectedSessionId: realA });
-    if (!law.ok) throw new Error(`real bootstrap violates frozen wire law: ${law.code}: ${law.message}`);
-  });
-
-  await scenario("narrow: fresh connectionEpoch + stable attachment identity through the proxy", async () => {
-    const r2 = await httpReq({ port: PROXY_PORT, path: "/glasses/v1/bootstrap", headers: auth });
-    if (r2.status !== 200) throw new Error(`second bootstrap ${r2.status}`);
-    if (realBody.connectionEpoch === r2.json.connectionEpoch) throw new Error("connectionEpoch must be fresh per bootstrap");
-    if (realBody.serverGeneration !== r2.json.serverGeneration) throw new Error("serverGeneration must be stable per process");
-    if (realBody.attachments[0].attachmentId !== r2.json.attachments[0].attachmentId) throw new Error("attachmentId must be stable");
-  });
-
-  await scenario("narrow: negatives — stock DSH 403, write/unknown 404, unauth 401 (all through proxy)", async () => {
-    const status = await httpReq({ port: PROXY_PORT, path: "/api/status" });
-    if (status.status !== 403) throw new Error(`/api/status ${status.status} (wanted 403)`);
-    const lst = await httpReq({ port: PROXY_PORT, path: "/api/session.list" });
-    if (lst.status !== 403) throw new Error(`/api/session.list ${lst.status} (wanted 403)`);
-    const prm = await httpReq({ port: PROXY_PORT, method: "POST", path: "/api/session.prompt", headers: JSON_HEADERS, body: { text: "hi" } });
-    if (prm.status !== 403) throw new Error(`/api/session.prompt ${prm.status} (wanted 403)`);
-    const mut = await httpReq({ port: PROXY_PORT, method: "POST", path: "/glasses/v1/draft/mutations", headers: JSON_HEADERS, body: { operationId: "x", expectedRevision: 0, mutation: { kind: "replace", text: "hi" } } });
-    if (mut.status !== 404) throw new Error(`/glasses/v1/draft/mutations ${mut.status} (wanted 404)`);
-    const act = await httpReq({ port: PROXY_PORT, method: "POST", path: "/glasses/v1/actions", headers: JSON_HEADERS, body: { kind: "send", operationId: "x", draftRevision: 0 } });
-    if (act.status !== 404) throw new Error(`/glasses/v1/actions ${act.status} (wanted 404)`);
-    const unk = await httpReq({ port: PROXY_PORT, path: "/glasses/v1/nonexistent", headers: auth });
-    if (unk.status !== 404) throw new Error(`/glasses/v1/nonexistent ${unk.status} (wanted 404)`);
-    const una = await httpReq({ port: PROXY_PORT, path: "/glasses/v1/bootstrap" });
-    if (una.status !== 401) throw new Error(`unauthenticated bootstrap ${una.status} (wanted 401)`);
-  });
-
-  await scenario("narrow: real bootstrap is accepted by snapshot-core for A and rejected for B", async () => {
-    const ctx = loadClientCores();
-    const stagedA = ctx.GlassesSnapshotCore.stageSnapshot(realBody, { expectedSessionId: realA });
-    if (!stagedA.ok) throw new Error(`stage for A rejected: ${JSON.stringify(stagedA)}`);
-    if (stagedA.snapshot.attachment.sessionId !== realA) throw new Error("staged attachment must carry session A");
-    const stagedItems = ctx.C0Core.conversationItems(stagedA.snapshot.conversation);
-    if (stagedItems.length !== 2) throw new Error(`expected 2 staged items, got ${stagedItems.length}`);
-    const stagedB = ctx.GlassesSnapshotCore.stageSnapshot(realBody, { expectedSessionId: realB });
-    if (stagedB.ok || stagedB.code !== "wrong-sessionId") throw new Error(`stage for B must reject wrong-sessionId: ${JSON.stringify(stagedB)}`);
-  });
-
-  await scenario("narrow: real bootstrap renders exactly once in the shipped client DOM assets", async () => {
-    const rt = await bootClientDom({ responses: [{ status: 200, body: realBody }], session: realA });
-    await rt.settled("narrow-real-render");
-    const items = chatTexts(rt);
-    if (items.length !== 2) throw new Error(`expected 2 rendered articles, got ${items.length}`);
-    if (items[0].role !== "you" || items[0].body !== SENTINEL_A_U) throw new Error("user A sentinel not rendered as you");
-    if (items[1].role !== "assistant" || items[1].body !== SENTINEL_A_A) throw new Error("assistant A sentinel not rendered");
-    const docText = rt.w.document.body.textContent || "";
-    const occurrences = (s) => docText.split(s).length - 1;
-    if (occurrences(SENTINEL_A_U) !== 1 || occurrences(SENTINEL_A_A) !== 1) throw new Error(`A sentinel must render exactly once (u=${occurrences(SENTINEL_A_U)} a=${occurrences(SENTINEL_A_A)})`);
-    for (const b of [SENTINEL_B_U, SENTINEL_B_A, realB]) {
-      if (docText.includes(b)) throw new Error(`B surface ${b} leaked into rendered DOM`);
-    }
-    const state = rt.w.c0DebugState();
-    if (state.installed !== true) throw new Error("client must be installed");
-    if (state.generation !== realBody.serverGeneration) throw new Error("client generation must adopt the bootstrap generation");
-    if (rt.$("composer").classList.contains("hidden") !== true) throw new Error("composer must stay hidden");
-    if (rt.$("mode").textContent !== "NAV") throw new Error("HUD must stay NAV");
-    if (!rt.$("wsv").textContent.toLowerCase().includes("readonly")) throw new Error("write state must be readonly");
-    const paths = rt.requests();
-    for (const bad of ["/glasses/v1/draft/mutations", "/glasses/v1/actions", "OPEN_STREAM"]) {
-      if (paths.includes(bad)) throw new Error(`write/live path ${bad} must not be called`);
-    }
-    rt.dom.window.close();
-  });
-} catch (error) {
-  fail("narrow: fatal", error?.stack || error);
+  const blockedFixture = await httpReq({ port: PROXY_PORT, method: "POST", path: "/__test/m1/append", headers: FIXTURE_AUTH, body: {} });
+  assert.equal(blockedFixture.status, 403, "narrow proxy never exposes fixture route");
+  for (const path of ["/api/status", "/api/session.list"]) assert.equal((await httpReq({ port: PROXY_PORT, path })).status, 403);
+  assert.equal((await httpReq({ port: PROXY_PORT, path: "/glasses/v1/bootstrap" })).status, 401);
+  assert.equal((await httpReq({ port: PROXY_PORT, method: "POST", path: "/glasses/v1/actions", headers: { ...AUTH, "content-type": "application/json" }, body: {} })).status, 404);
+  console.log("m1-narrow-edge.test.mjs: PASS");
 } finally {
+  live?.close();
+  recoveryStream?.close();
   if (proxy) await stopOwnedProcess(proxy.pid, PROXY_PORT);
-  if (configured) await stopInstance(configured.proc, DSH_PORT);
-  if (seed) await stopInstance(seed.proc, DSH_PORT);
-  if (process.env.KEEP_HOME !== "1") await rm(HOME, { recursive: true, force: true }).catch(() => {});
+  if (instance) await stopInstance(instance.proc, DSH_PORT);
+  if (process.env.KEEP_HOME !== "1") await rm(HOME, { recursive: true, force: true });
 }
-
-console.log("\n=== m1-narrow-edge SUMMARY ===");
-for (const [r, n] of results) console.log(`${r} ${n}`);
-const failed = results.filter(([r]) => r === "FAIL");
-if (failed.length) { console.log(`FAILED: ${failed.length}`); process.exit(1); }
-console.log(`ALL PASS (${results.length} checks)`);
-process.exit(0);

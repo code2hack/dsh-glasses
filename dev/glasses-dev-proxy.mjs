@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 const UPSTREAM = process.env.GLASSES_UPSTREAM ?? "http://127.0.0.1:3190";
 const HOST = process.env.GLASSES_PROXY_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.GLASSES_PROXY_PORT ?? 3200);
+const TEST_FAULTS = process.env.GLASSES_TEST_FAULTS === "1";
 const PREFIX = "/glasses/v1/";
 const HOP_BY_HOP = new Set([
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -65,8 +66,22 @@ const server = createServer(async (req, res) => {
     if (res.destroyed) return;
     res.writeHead(upstreamResponse.status, responseHeaders(upstreamResponse.headers));
     if (upstreamResponse.body) {
+      const injectMalformedProjection = TEST_FAULTS &&
+        incomingUrl.pathname === "/glasses/v1/stream" &&
+        req.headers["x-glasses-test-fault"] === "malformed-projection";
+      let firstFrame = "";
       for await (const chunk of upstreamResponse.body) {
         if (res.destroyed) break;
+        if (injectMalformedProjection) {
+          firstFrame += Buffer.from(chunk).toString("utf8").replaceAll("\r\n", "\n");
+          const boundary = firstFrame.indexOf("\n\n");
+          if (boundary < 0) continue;
+          res.write(firstFrame.slice(0, boundary + 2));
+          res.write("event: projection\ndata: {malformed-test-frame\n\n");
+          res.end();
+          controller.abort(new Error("test-fault-injected"));
+          return;
+        }
         if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
       }
     }

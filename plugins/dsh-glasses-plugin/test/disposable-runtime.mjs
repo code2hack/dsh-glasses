@@ -210,7 +210,7 @@ export async function httpReq({ port, method = "GET", path, headers = {}, body, 
   });
 }
 
-function writeProfileFiles(homeDir, port, { fixturePluginRoot } = {}) {
+function writeProfileFiles(homeDir, port, { fixturePluginRoot, bootstrapMaxEvents } = {}) {
   const profileDir = join(homeDir, "profiles", "web");
   const settings = [
     "webserver:",
@@ -241,6 +241,7 @@ function writeProfileFiles(homeDir, port, { fixturePluginRoot } = {}) {
       "    - id: dsh-glasses-plugin",
       "      name: dsh-glasses-plugin",
     ];
+    if (Number.isInteger(bootstrapMaxEvents)) plugins.push("      config:", `        bootstrapMaxEvents: ${bootstrapMaxEvents}`);
     if (fixturePluginRoot) plugins.push("    - id: dsh-glasses-live-test-fixture", "      name: dsh-glasses-live-test-fixture");
     await writeFile(join(profileDir, "cordis.patch.yml"), plugins.join("\n") + "\n");
     await writeFile(join(profileDir, "pnpm-workspace.yaml"), "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");

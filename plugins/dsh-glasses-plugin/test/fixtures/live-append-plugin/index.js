@@ -40,17 +40,25 @@ export function apply(ctx) {
       if (typeof body.messageId !== "string" || !body.messageId || typeof body.text !== "string" || !body.text) {
         return json(res, 400, { ok: false, error: "invalid-fixture-event" });
       }
-      const event = session.append("assistant/message", {
-        turn: 0,
-        step: session.seq,
-        message: {
+      const role = body.role || "assistant";
+      const event = role === "user"
+        ? session.append("user/message", {
           id: body.messageId,
-          role: "assistant",
+          role: "user",
           content: [{ type: "text", text: body.text }],
-          source: { kind: "model", provider: "fixture", model: "deterministic" },
-        },
-        usage: { inputTokens: 0, outputTokens: body.text.length },
-      }, { surfaceOp: "append" });
+          source: { kind: "user", rpcId: `fixture-${body.messageId}` },
+        }, { surfaceOp: "append" })
+        : session.append("assistant/message", {
+          turn: 0,
+          step: session.seq,
+          message: {
+            id: body.messageId,
+            role: "assistant",
+            content: [{ type: "text", text: body.text }],
+            source: { kind: "model", provider: "fixture", model: "deterministic" },
+          },
+          usage: { inputTokens: 0, outputTokens: body.text.length },
+        }, { surfaceOp: "append" });
       await ctx.sessions.flush(session);
       return json(res, 200, { ok: true, seq: event.seq, messageId: body.messageId });
     } catch (error) {
