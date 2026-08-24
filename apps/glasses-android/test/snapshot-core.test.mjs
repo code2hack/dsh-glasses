@@ -73,6 +73,7 @@ function snapshotPlain(staged) {
   const s = res.snapshot;
   assert.equal(s.attachment.sessionId, SESSION);
   assert.equal(s.attachment.capabilities.historyRead, true);
+  assert.equal(s.attachment.capabilities.liveUpdates, true);
   for (const k of ['draftMutations', 'send', 'steer', 'interrupt', 'resolveRequest']) assert.equal(s.attachment.capabilities[k], false);
   assert.deepEqual(JSON.parse(JSON.stringify(s.drafts)), []);
   const items = JSON.parse(JSON.stringify(s.items));
@@ -154,8 +155,8 @@ const NEGATIVES = [
   ['invalid attachment state', (s) => { s.attachments[0].state = 'ready'; }, 'invalid-attachment-state'],
   ['malformed attachment', (s) => { s.attachments[0] = null; }, 'malformed-attachment'],
   ['historyRead != true', (s) => { s.attachments[0].capabilities.historyRead = false; }, 'historyRead-not-true'],
-  ['missing liveUpdates capability', (s) => { delete s.attachments[0].capabilities.liveUpdates; }, 'mutation-capability-enabled'],
-  ['liveUpdates true', (s) => { s.attachments[0].capabilities.liveUpdates = true; }, 'mutation-capability-enabled'],
+  ['missing liveUpdates capability', (s) => { delete s.attachments[0].capabilities.liveUpdates; }, 'liveUpdates-not-true'],
+  ['liveUpdates false', (s) => { s.attachments[0].capabilities.liveUpdates = false; }, 'liveUpdates-not-true'],
   ['draftMutations true', (s) => { s.attachments[0].capabilities.draftMutations = true; }, 'mutation-capability-enabled'],
   ['send true', (s) => { s.attachments[0].capabilities.send = true; }, 'mutation-capability-enabled'],
   ['steer true', (s) => { s.attachments[0].capabilities.steer = true; }, 'mutation-capability-enabled'],
@@ -283,7 +284,7 @@ for (const [name, mutate, expectCode] of NEGATIVES) {
     ['invalid state', (s) => { s.attachments[0].state = 'ready'; }],
     ['historyRead false', (s) => { s.attachments[0].capabilities.historyRead = false; }],
     ['missing liveUpdates', (s) => { delete s.attachments[0].capabilities.liveUpdates; }],
-    ['liveUpdates true', (s) => { s.attachments[0].capabilities.liveUpdates = true; }],
+    ['liveUpdates false', (s) => { s.attachments[0].capabilities.liveUpdates = false; }],
     ['send true', (s) => { s.attachments[0].capabilities.send = true; }],
     ['non-empty drafts', (s) => { s.drafts.push({ op: 1 }); }],
     ['agent state mismatch', (s) => { s.attachments[0].agent.state = 'running'; }],

@@ -115,7 +115,7 @@
       var key = MUTATION_CAPABILITIES[ci];
       if (caps[key] !== false) return fail('mutation-capability-enabled', 'capability ' + key + ' must be false in M1');
     }
-    if (caps.liveUpdates !== false) return fail('mutation-capability-enabled', 'capability liveUpdates must be false in M1');
+    if (caps.liveUpdates !== true) return fail('liveUpdates-not-true', 'capability liveUpdates must be true');
 
     var agent = att.agent;
     if (!agent || typeof agent !== 'object') return fail('missing-agent-projection', 'attachment must include the agent projection');

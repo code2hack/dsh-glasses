@@ -140,7 +140,7 @@ const NEGATIVES = [
   ["invalid attachment state", (s) => { s.attachments[0].state = "ready"; }, "invalid-attachment-state"],
   ["malformed attachment", (s) => { s.attachments[0] = null; }, "malformed-attachment"],
   ["historyRead != true", (s) => { s.attachments[0].capabilities.historyRead = false; }, "historyRead-not-true"],
-  ["liveUpdates true", (s) => { s.attachments[0].capabilities.liveUpdates = true; }, "mutation-capability-enabled"],
+  ["liveUpdates false", (s) => { s.attachments[0].capabilities.liveUpdates = false; }, "liveUpdates-not-true"],
   ["draftMutations true", (s) => { s.attachments[0].capabilities.draftMutations = true; }, "mutation-capability-enabled"],
   ["send true", (s) => { s.attachments[0].capabilities.send = true; }, "mutation-capability-enabled"],
   ["steer true", (s) => { s.attachments[0].capabilities.steer = true; }, "mutation-capability-enabled"],

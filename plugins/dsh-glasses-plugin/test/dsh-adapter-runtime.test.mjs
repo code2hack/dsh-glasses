@@ -131,7 +131,8 @@ try {
     // drafts empty + all write capabilities false (AC5)
     if (!Array.isArray(body.drafts) || body.drafts.length !== 0) throw new Error("drafts must be []");
     const caps = attachments[0].capabilities || {};
-    for (const key of ["liveUpdates", "draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
+    if (caps.liveUpdates !== true) throw new Error("capability liveUpdates must be true in M1");
+    for (const key of ["draftMutations", "send", "steer", "interrupt", "resolveRequest"]) {
       if (caps[key] !== false) throw new Error(`capability ${key} must be false in M1`);
     }
     if (caps.historyRead !== true) throw new Error("historyRead must be true");

@@ -26,6 +26,7 @@ import z from "@deepseek-ai/schemastery";
 import { projectEvent } from "./projection.js";
 import { createGlassesDshAdapter } from "./dsh-adapter.js";
 import { buildCanonicalSnapshot, M1_BOOTSTRAP_MAX_EVENTS } from "./snapshot.js";
+import { createIssuedBaseRegistry } from "./live-sync.js";
 
 export const name = "dsh-glasses-plugin";
 
@@ -90,6 +91,7 @@ export async function apply(ctx, config) {
   let connectionEpochCounter = 0;
   const nextConnectionEpoch = () =>
     `epoch-${(++connectionEpochCounter).toString(36)}-${randomUUID().slice(0, 8)}`;
+  const issuedBases = createIssuedBaseRegistry();
   const log = (...args) => console.log("[dsh-glasses-plugin]", ...args);
 
   // SPEC §5 isolation: the M1 read path touches DSH internals only through the
@@ -119,6 +121,7 @@ export async function apply(ctx, config) {
         connectionEpoch: nextConnectionEpoch(),
         maxEvents: effBootstrapMaxEvents,
       });
+      issuedBases.issue(snapshot);
       return sendJson(res, 200, snapshot);
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e?.message ?? e) });

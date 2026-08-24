@@ -59,7 +59,7 @@ function baseArgs(over = {}) {
   assert.equal(a.label, M1_ATTACHMENT_LABEL);
   assert.equal(a.order, 0);
   assert.equal(a.state, "idle");
-  assert.deepEqual(a.capabilities, { historyRead: true, liveUpdates: false, draftMutations: false, send: false, steer: false, interrupt: false, resolveRequest: false });
+  assert.deepEqual(a.capabilities, { historyRead: true, liveUpdates: true, draftMutations: false, send: false, steer: false, interrupt: false, resolveRequest: false });
   assert.equal(a.agent.state, a.state);
   assert.equal(a.agent.serverGeneration, SERVER_GENERATION);
   assert.equal(a.agent.attachmentGeneration, a.attachmentGeneration);

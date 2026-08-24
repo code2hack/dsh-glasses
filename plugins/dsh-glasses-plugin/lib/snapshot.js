@@ -22,7 +22,7 @@ export const M1_STATES = Object.freeze(["idle", "running", "waiting-user", "unav
 
 export const M1_CAPABILITIES = Object.freeze({
   historyRead: true,
-  liveUpdates: false, // M1 does not advertise/consume SSE as a capability
+  liveUpdates: true,
   draftMutations: false,
   send: false,
   steer: false,
@@ -100,7 +100,8 @@ function validateSnapshotWireInner(snapshot, { expectedSessionId, maxEvents = M1
   const caps = att.capabilities;
   if (!caps || typeof caps !== "object") return bad("malformed-capabilities", "capabilities must be an object");
   if (caps.historyRead !== true) return bad("historyRead-not-true", "historyRead must be true");
-  for (const key of ["liveUpdates", ...MUTATION_CAPABILITIES]) {
+  if (caps.liveUpdates !== true) return bad("liveUpdates-not-true", "liveUpdates must be true");
+  for (const key of MUTATION_CAPABILITIES) {
     if (caps[key] !== false) return bad("mutation-capability-enabled", `capability ${key} must be false in M1`);
   }
 
